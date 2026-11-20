@@ -1,0 +1,28 @@
+# Registro dei percorsi — il pilastro delle modifiche
+
+Ogni percorso non pieno (failed, o review sotto +3) va in un **gruppo di causa**. Ogni gruppo ha un
+fix (ID di CASI.md) e uno stato. Un gruppo è chiuso solo quando un percorso **dopo** il deploy lo mostra
+risolto (need_id di prova).
+
+Stati: `aperto` → `fix su main` → `online (versione)` → `verificato (need_id)` · `non risolto (need_id)`
+
+Aggiornamento: a ogni giro del monitor leggo gli ultimi 60 percorsi, metto i nuovi nel gruppo giusto e
+controllo se i gruppi "online" hanno un percorso nuovo che li verifica.
+
+## Gruppi di causa
+
+| # | Causa | Percorsi (need_id finale) | Fix | Stato | Prova |
+|---|---|---|---|---|---|
+| G1 | Booking muto (22:14–22:51): `failed` senza righe negative, cittadino senza risposta | 103–116, 122, 0002x vari | BK-28 | online (booking 1.0.7, 22:51) | 124, 128, 134 rispondono · da vedere se tornano `failed` |
+| G2 | Ciclo offerta/annullo: il cittadino annulla ogni offerta (`reason=deadline`) → `wrong_outcome no_booking` | 129, 119, 0003/0002 (14/20 msg) | BK-29 (+ BK-27 scadenza) | fix su main, in coda (ship10) | — |
+| G3 | Booking muto vecchio (BK-15, livello 2) | 045–065 | BK-15 | verificato | 069–074 done |
+| G4 | Red flag: percorso chiuso al primo messaggio, review gp 0/0/1 (collab 0) | 125, 126, 127, 130, 132, 133 | X-42b (PS più vicino nel primo messaggio) | fix su main, in coda (ship11) | — |
+| G5 | **Collaborazione 0 per tutti gli agenti**, anche con referral e avviso all'ospedale | quasi tutti | da capire: il reviewer non vede i messaggi tra agenti? | aperto | — |
+| G6 | Proattività 0 per booking e strutture | 118, 121, 122, 500002 | P-02 (promemoria), X-31 (mappa) | online parziale | da verificare in un percorso `done` dopo 1.0.7 |
+
+## Regole
+
+1. Prima di un fix nuovo, guardo qui se la causa ha già un gruppo: se il fix c'è ma il gruppo non è
+   verificato, prima capisco **perché** non funziona (come G4: il fix era online ma il percorso si chiudeva prima).
+2. Un fix senza un percorso di prova non è "fatto".
+3. CASI.md dice **cosa** abbiamo cambiato; questo registro dice **se ha funzionato**.
