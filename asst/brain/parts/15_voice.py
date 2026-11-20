@@ -92,8 +92,14 @@ async def _llm_symptom(city: City, text: str) -> str | None:
 _VOICE_MODEL = False
 
 
-async def _human(city: City, chat: list[Message], what: str, fallback: str) -> str:
+async def _human(
+    city: City, chat: list[Message], what: str, fallback: str, en: str | None = None
+) -> str:
     """One warm sentence in the citizen's language about ``what``, or ``fallback``."""
+
+    # X-30: a citizen who does not write Italian gets the English sentence.
+    if en and _lang(chat) != "it":
+        return en
 
     # X-29: no model on the reply path. A slow model lost the GP sentence (GP-13) and every
     # second of wait risks the reply window and the 10 s clock. Fixed sentences are instant.

@@ -299,3 +299,5 @@ Premi: 1° MacBook Pro 14, 2° iPad, 3° AirPods Pro 3. Premio speciale Fondazio
 - **Vision 2027.** (da scrivere insieme) Protocolli aperti per agenti pubblici che si fidano solo di mittenti firmati, chiedono il consenso prima di ogni dato e negoziano tra loro per il cittadino.
 - **Come teniamo traccia.** Ogni caso ha una riga in `CASI.md`: caso, rischio, soluzione, logica, test.
 
+
+- 20/11 21:29 Sole 24 Token "Booking Center": ricetta → consensi → posti → se pieno, i vicini; lo slot lo blocca la facility. **Indizio vero.** Il nostro booking già non fa hold (`hold_self=False`). Da fare: ricerca nelle altre ASST con consenso (FA-12).

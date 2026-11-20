@@ -78,10 +78,45 @@ def _number(chat: list[Message]) -> str | None:
     return None
 
 
+# X-30: the citizen writes to the GP without lang=, so the language comes from the words.
+_IT_WORDS = frozenset("il lo la le gli un una di da che non per con sono ho mi ma è al del della dolore male vorrei grazie buongiorno salve gentile dottore visita sento".split())
+_EN_WORDS = frozenset("the a an i i'm im my is are have has of to and with for it this that pain hurts would please thank thanks hello hi dear doctor feel been since".split())
+_LANG_OF: OrderedDict[str, str] = OrderedDict()
+
+
+def _guess_lang(text: str) -> str | None:
+    tokens = [t.strip(".,;:!?()\"'").lower() for t in text.split() if "=" not in t]
+    it = sum(t in _IT_WORDS for t in tokens)
+    en = sum(t in _EN_WORDS for t in tokens)
+    if it == en == 0:
+        return None
+    return "en" if en > it else "it"
+
+
+def _note_lang(message: Message) -> None:
+    """Remember the citizen's language for the need, for later turns whose history misses it."""
+    if not message.sender.startswith("citizen:") or not message.need_id:
+        return
+    lang = fields_of(message.text).get("lang") or _guess_lang(message.text)
+    if lang:
+        _LANG_OF[message.need_id] = lang
+        _LANG_OF.move_to_end(message.need_id)
+        while len(_LANG_OF) > _SENT_NEEDS:
+            _LANG_OF.popitem(last=False)
+
+
 def _lang(chat: list[Message]) -> str:
     for row in chat:
         if row.sender.startswith("citizen:"):
             lang = fields_of(row.text).get("lang", "")
+            if lang:
+                return lang
+    for row in chat:
+        if row.need_id and row.need_id in _LANG_OF:
+            return _LANG_OF[row.need_id]
+    for row in chat:
+        if row.sender.startswith("citizen:"):
+            lang = _guess_lang(row.text)
             if lang:
                 return lang
     return "it"
@@ -354,6 +389,10 @@ async def _advance_alone(
             "Ecco i posti liberi adatti a lei, tutti nei tempi della sua ricetta e con un medico che "
             "parla la sua lingua. Mi risponda con quello che preferisce e lo blocco subito; se "
             "nessuno le va bene, me lo dica e cerco altri giorni o la metto in lista d'attesa.",
+            en="Here are the free appointments that suit you, all within the time of your "
+            "prescription and with a doctor who speaks your language. Reply with the one you "
+            "prefer and I will lock it straight away; if none suits you, tell me and I will look "
+            "for other days or put you on the waiting list.",
         )
         text = "\n".join([_offer_line(slot, number, priority) for slot in picks] + [line])
         if await _say(city, citizen, text):
@@ -396,6 +435,9 @@ async def _relaxed(
         "Mi dispiace, al momento non c'è un posto adatto a lei nei tempi previsti. La metto "
         "subito in lista d'attesa: appena si libera un posto adatto glielo proponiamo. Se nel "
         "frattempo il disturbo cambia, ricontatti il suo medico di base.",
+        en="I am sorry, right now there is no suitable appointment within the time allowed. I "
+        "am putting you on the waiting list now: as soon as a suitable slot opens we will offer "
+        "it to you. If your symptoms change in the meantime, contact your GP again.",
     )
     parts = ["offer", f"offer_id={offer_id}", "waiting_list=true", f"procedure={procedure}"]
     if priority:
@@ -471,6 +513,10 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
         + _FACILITY_WHERE.get(message.sender, "in struttura")
         + " con questa ricevuta e la tessera sanitaria per il check-in. Se non può venire, "
         "ci scriva prima: le spostiamo l'appuntamento e liberiamo il posto per un altro cittadino.",
+        en="Your visit is booked and confirmed. On the day, please come "
+        + _FACILITY_WHERE_EN.get(message.sender, "to the facility")
+        + " with this receipt and your health card for check-in. If you cannot come, write to "
+        "us first: we will move the appointment and free the slot for another citizen.",
     )
     await _say(
         city, citizen, f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref} {line}"

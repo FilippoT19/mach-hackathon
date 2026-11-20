@@ -75,6 +75,11 @@ _FACILITY_WHERE = {
     "agent:jmjfst55vgjz": "dal nostro specialista in Viale Ca' Granda 28",
     "agent:mm18nddkfc5w": "al nostro consultorio in Via Giolli Raffaello 23",
 }
+_FACILITY_WHERE_EN = {
+    "agent:jdj692g4145e": "to our hospital at Via Arganini Gerolamo 38 (wheelchair accessible)",
+    "agent:jmjfst55vgjz": "to our specialist at Viale Ca' Granda 28",
+    "agent:mm18nddkfc5w": "to our family counselling centre at Via Giolli Raffaello 23",
+}
 
 
 async def _peer(city: City, family: str, query: str) -> str | None:
