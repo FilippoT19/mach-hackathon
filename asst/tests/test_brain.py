@@ -104,6 +104,18 @@ def to(city: FakeCity, who: str) -> list[str]:
     return [t for r, t in city.sent if r == who]
 
 
+async def test_bk15_history_without_inbound() -> None:
+    """BK-15: the case history misses the citizen's own message; the desk still asks the Ledger."""
+    city = FakeCity("agent:bk")
+    msg = Message(type="chat", sender=CITIZEN, msg_id="m-in", need_id="N-15", recipient="agent:bk",
+                  body={"text": "Vorrei una visita need.request lang=it prescription_number=prescription_number-RX-15 priority=D"})
+    brain._SENT.clear()
+    await brain.handle("booking_centre", city, msg, [])
+    assert any(r == LEDGER and t.startswith("prescription prescription_number=prescription_number-RX-15") for r, t in city.sent), city.sent
+    kept = brain._keep([], [msg])
+    assert kept and kept[0].msg_id == "m-in"
+
+
 async def main() -> int:
     failures = 0
 
@@ -266,6 +278,12 @@ async def main() -> int:
     for text in (brain._FACILITY_WHERE.values()):
         check("X-29 indirizzo struttura senza testo clinico", not brain.clinical(text), text)
 
+    # 20. BK-15: history misses the inbound citizen message; the desk still works.
+    try:
+        await test_bk15_history_without_inbound()
+        check("BK-15 booking non resta muto senza il messaggio in history", True, "")
+    except AssertionError as e:
+        check("BK-15 booking non resta muto senza il messaggio in history", False, e)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 

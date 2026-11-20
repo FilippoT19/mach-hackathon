@@ -177,6 +177,10 @@ async def _desk(
 ) -> None:
     if message.sender == city.agent_id:
         return
+    # BK-15: the case history can miss the message that opened this turn. Without it the desk
+    # finds no citizen and stays silent, so the inbound message always joins the case.
+    if all(row.msg_id != message.msg_id for row in chat):
+        chat = [*chat, message]
     kind = words(message.text)
     if first_word(message.text) == "referral" and message.sender.startswith("agent:"):
         await _on_referral(city, message, chat)
