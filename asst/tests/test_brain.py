@@ -235,6 +235,28 @@ async def main() -> int:
     await brain._desk(city, msg, done, hold_self=False, fixed=None)
     check("X-27 una sola risposta per need", not city.sent, city.sent)
 
+    # 17. X-28: red flag -> acknowledge the person, 112, safety, and warn OUR hospital (no id).
+    HO = "agent:jdj692g4145e"
+    brain._PEERS.clear()
+    city = FakeCity("agent:gp", peers=[Peer(agent_id="agent:other-ho", role="facility"), Peer(agent_id=HO, role="facility")])
+    await brain._gp(city, citizen_msg("ho dolore al petto"), [])
+    cit = to(city, CITIZEN)
+    check("X-28 red flag saluta la persona e dice 112", cit and cit[0].startswith("escalate.emergency reason=red_flag Capisco") and "112" in cit[0], cit)
+    ho = to(city, HO)
+    check("X-28 red flag avvisa il nostro ospedale", len(ho) == 1 and ho[0].startswith("emergency.notice") and "citizen:" not in ho[0], city.sent)
+    check("X-28 nessun messaggio all'ospedale di un'altra squadra", not to(city, "agent:other-ho"), city.sent)
+    msg = Message(type="chat", sender="agent:fddgaqmp6kb0", msg_id="e1", need_id="N-1", body={"text": ho[0] if ho else "emergency.notice reason=red_flag"}, recipient=HO)
+    city = FakeCity(HO)
+    await brain._facility(city, msg, [msg], reports=False, hold_self=False)
+    check("X-28 l'ospedale risponde al gp", [t for r, t in city.sent if r == "agent:fddgaqmp6kb0" and t.startswith("emergency.ack")], city.sent)
+
+    # 18. X-28: the prescription names the symptom, the place and what to bring.
+    c = await run_gp("ho mal di schiena da tre giorni")
+    cit = to(c, CITIZEN)
+    check("X-28 ricetta nomina il sintomo e il luogo", cit and "mal di schiena" in cit[0] and "Via Arganini" in cit[0] and "tessera sanitaria" in cit[0], cit)
+    for line in (brain._rx_line([], p, q, s) for p, q, s in (("VIS-FIS", "B", "SYM-BACK"), ("VIS-CARD", "P", "SYM-FOLLOWUP"))):
+        check("X-28 frase senza testo clinico e sotto 600 caratteri", not brain.clinical(line) and len(line) < 600, line)
+
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 

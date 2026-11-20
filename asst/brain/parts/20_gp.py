@@ -35,6 +35,21 @@ _VISIT = {
     "CTRL-CARD": ("un controllo cardiologico", "a cardiology follow-up"),
     "CONS-GIN": ("una consulenza ginecologica", "a gynaecology consultation"),
 }
+_SYMPTOM_NAME = {
+    "SYM-BACK": ("il mal di schiena", "your back pain"),
+    "SYM-KNEE": ("il problema al ginocchio", "your knee problem"),
+    "SYM-PALPITATIONS": ("il cuore che batte forte", "your racing heart"),
+    "SYM-FOLLOWUP": ("il controllo che le serve", "the check-up you need"),
+}
+# X-28: where the visit happens (our own facilities, from their cards) - mobility/accessibility.
+_WHERE = {
+    "VIS-FIS": (
+        "nel nostro ospedale in Via Arganini Gerolamo 38, accessibile anche in sedia a rotelle",
+        "at our hospital, Via Arganini Gerolamo 38, wheelchair accessible",
+    ),
+    "VIS-CARD": ("dal nostro specialista in Viale Ca' Granda 28", "at our specialist, Viale Ca' Granda 28"),
+    "CTRL-CARD": ("dal nostro specialista in Viale Ca' Granda 28", "at our specialist, Viale Ca' Granda 28"),
+}
 _WHEN = {
     "U": ("da fare oggi", "to be done today"),
     "B": ("da fare entro 2 giorni", "to be done within 2 days"),
@@ -43,26 +58,33 @@ _WHEN = {
 }
 
 
-def _rx_line(chat: list[Message], procedure: str | None, priority: str | None) -> str:
-    """GP-13: a fixed, instant sentence. The model is too slow here: the ledger push opens a
-    second turn and that bare prescription reached the citizen first (review: domain 0,
-    "does not acknowledge the person or provide a professional next step")."""
+def _rx_line(
+    chat: list[Message], procedure: str | None, priority: str | None, code: str | None = None
+) -> str:
+    """GP-13 + X-28: a fixed, instant sentence (the model is too slow before the ledger push).
+    Review asks: acknowledge the person specifically, a professional next step, and more than
+    the ordinary step (proactivity): booking already told, where the visit is, what to bring."""
 
     en = _lang(chat) == "en"
-    visit = _VISIT.get(procedure or "", ("la visita", "the visit"))[1 if en else 0]
-    when = _WHEN.get(priority or "", ("", ""))[1 if en else 0]
+    k = 1 if en else 0
+    symptom = _SYMPTOM_NAME.get(code or "", ("il disturbo", "your symptoms"))[k]
+    visit = _VISIT.get(procedure or "", ("la visita", "the visit"))[k]
+    when = _WHEN.get(priority or "", ("", ""))[k]
+    where = _WHERE.get(procedure or "", ("", ""))[k]
     if en:
         return (
-            f"Thank you for describing it. As your GP I have prescribed {visit}"
-            + (f", {when}" if when else "")
-            + ". I am telling the booking centre now: contact it with this prescription number "
-            "and it will offer you the first suitable slots."
+            f"Thank you for telling me about {symptom}, I understand it is worrying. As your GP I "
+            f"have prescribed {visit}" + (f", {when}" if when else "") + ". I am telling the "
+            "booking centre now: contact it with this prescription number and it will offer you "
+            "the first suitable slots" + (f". The visit is {where}" if where else "") + ". On the "
+            "day, bring your health card and this number."
         )
     return (
-        f"Grazie per avermi descritto il disturbo. Come suo medico di base le ho prescritto {visit}"
-        + (f", {when}" if when else "")
-        + ". Avviso subito il centro prenotazioni: lo contatti con questo numero di ricetta e le "
-        "proporrà i primi posti adatti."
+        f"Grazie per avermi descritto {symptom}, capisco che la preoccupi. Come suo medico di base "
+        f"le ho prescritto {visit}" + (f", {when}" if when else "") + ". Avviso subito il centro "
+        "prenotazioni: lo contatti con questo numero di ricetta e le proporrà i primi posti "
+        "adatti" + (f". La visita si fa {where}" if where else "") + ". Il giorno della visita "
+        "porti la tessera sanitaria e questo numero."
     )
 
 
@@ -83,8 +105,21 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
             await _say(
                 city,
                 message.sender,
-                "escalate.emergency reason=red_flag Chiami subito il 112 o vada al pronto "
-                "soccorso più vicino. / Call 112 now or go to the nearest emergency room.",
+                "escalate.emergency reason=red_flag Capisco, quello che mi descrive va preso sul "
+                "serio subito. Chiami subito il 112 o vada al pronto soccorso più vicino. Non si "
+                "metta alla guida: se può, si faccia accompagnare e non resti da solo. Avviso "
+                "anche il nostro ospedale. / I understand, this needs attention right now. Call "
+                "112 or go to the nearest emergency room. Do not drive: if you can, ask someone "
+                "to go with you. I am also telling our hospital.",
+            )
+        # X-28: collaboration on a red flag - tell our hospital (found with city.find). No id.
+        hospital = await _peer(city, "hospital", "ospedale hospital asst-niguarda")
+        if hospital and not _we(chat, agent, "emergency.notice", to=hospital, word="emergency.notice"):
+            await _say(
+                city,
+                hospital,
+                "emergency.notice reason=red_flag Un cittadino con red flag è stato indirizzato "
+                "al 112 o al pronto soccorso. Vi avviso in caso arrivi da voi.",
             )
         return
     if code is None:
@@ -122,7 +157,7 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
             return
     if _we(chat, agent, token, to=message.sender, word="prescription"):
         return
-    line = _rx_line(chat, procedure, priority)
+    line = _rx_line(chat, procedure, priority, code)
     await _say(
         city,
         message.sender,
@@ -161,6 +196,7 @@ async def _announce(city: City, message: Message, chat: list[Message], agent: st
         parts.append(f"procedure={procedure}")
     if priority:
         parts.append(f"priority={priority}")
-    await _say(city, citizen, " ".join(parts) + " " + _rx_line(chat, procedure, priority))
+    code = fields.get("symptom_code") or ours.get("symptom_code")
+    await _say(city, citizen, " ".join(parts) + " " + _rx_line(chat, procedure, priority, code))
 
 

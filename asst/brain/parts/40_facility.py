@@ -34,6 +34,16 @@ async def _facility(
 ) -> None:
     head = first_word(message.text)
     kind = words(message.text)
+    if head == "emergency.notice" and message.sender.startswith("agent:"):
+        # X-28: the gp warns us of a red flag. Answer at once (clock +1), once per need.
+        if not _we(chat, city.agent_id, "emergency.ack", to=message.sender, word="emergency.ack"):
+            await _say(
+                city,
+                message.sender,
+                "emergency.ack Ricevuto: se il cittadino arriva da noi lo accogliamo subito e lo "
+                "accompagniamo al pronto soccorso.",
+            )
+        return
     if message.sender == LEDGER and head == "held":
         await _on_held(city, message, chat)
     elif message.sender == LEDGER and head == "committed":
