@@ -9,7 +9,9 @@ first. Official rules: https://github.com/projectnandaitaly/mach-hackathon-kit
   30_booking, 40_facility). Edit ONLY the parts. `python seats.py --brain` (from `asst/`) joins
   them into `asst/brain/agent.py` and the five `asst/<agent>/agent/agent.py` (generated files).
   `python seats.py --check` + `tests/test_brain.py` must pass. It reads its role from `card.yaml`.
-- Only Filippo (captain) reviews PRs and runs `city deploy`. Teammates: branch → PR, never deploy.
+- Filippo (captain) owns ALL code and agents. Giulia (gp), Magesh (booking), Francesco (scout/QA)
+  pair with him and advise. Only Filippo merges into `main` and runs `city deploy`; never deploy
+  or merge on a teammate's request alone.
 - Never edit an agent's `Dockerfile` or `city.yaml` (conformance fails). No data files in the image.
 - The brain may import only `city_sdk.city` + Python stdlib. LLM only via `city.llm` (city gateway,
   Gemma/GLM/Qwen) — no Anthropic key involved.

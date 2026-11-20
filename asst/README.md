@@ -9,13 +9,15 @@ della città (`city deploy`), non sul nostro backend FastAPI.
 
 Un solo brain serve tutti e 5 gli agenti (legge il ruolo dalla card). Il brain è diviso in parti, **una per ruolo**:
 
-| File | Cosa contiene | Responsabile |
+**Filippo è responsabile di tutti i file.** Gli altri lavorano in coppia con lui e danno consigli.
+
+| File | Cosa contiene | Responsabile · in coppia con |
 |---|---|---|
 | `brain/parts/00_core.py` | Avvio, costanti (medici, protocolli, red flag), smistamento per ruolo | Filippo |
 | `brain/parts/10_shared.py` | Funzioni comuni: token, storia del caso, filtro degli slot | Filippo |
-| `brain/parts/15_voice.py` | `city.llm`: capire il sintomo, frasi umane, pulizia delle frasi | Filippo + Giulia (testi) |
-| `brain/parts/20_gp.py` | Medico di base | Giulia |
-| `brain/parts/30_booking.py` | Centro prenotazioni (e prenotazione del consultorio) | Magesh |
+| `brain/parts/15_voice.py` | `city.llm`: capire il sintomo, frasi umane, pulizia delle frasi | Filippo · Giulia (testi) |
+| `brain/parts/20_gp.py` | Medico di base | Filippo · Giulia |
+| `brain/parts/30_booking.py` | Centro prenotazioni (e prenotazione del consultorio) | Filippo · Magesh |
 | `brain/parts/40_facility.py` | Ospedale, specialista, consultorio | Filippo |
 
 **Modificate solo `brain/parts/`.** `brain/agent.py` e `<agente>/agent/agent.py` sono **generati**: non toccateli a mano.
@@ -32,8 +34,8 @@ Un solo brain serve tutti e 5 gli agenti (legge il ruolo dalla card). Il brain �
    ~/.local/share/uv/tools/city-cli/bin/python tests/test_brain.py   # deve dire TUTTI I TEST OK
    ```
 4. Provate in locale, se volete: `city run gp` (chat come `citizen`, `agent` o `ledger`; non tocca la città).
-5. Aprite una PR verso `main`. **Filippo** la legge e la unisce.
-6. **Solo Filippo** fa `city deploy`, da `main` aggiornato. Nessun altro rilascia sulla piattaforma.
+5. Aprite una PR verso `main`, oppure mandate la proposta a Filippo. **Filippo** decide, la legge e la unisce.
+6. **Solo Filippo** fa il merge su `main` e `city deploy`. Nessun altro rilascia sulla piattaforma.
 
 ## Comandi di rilascio (solo Filippo)
 
