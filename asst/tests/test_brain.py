@@ -332,6 +332,16 @@ async def main() -> int:
     await brain._desk(city5, reply, chat2 + [reply], hold_self=False, fixed=None)
     out = to(city5, CITIZEN)
     check("X-32 ospedale più vicino in città", out and "Via Vicina 1" in out[0] and "112" in out[0], out)
+    # 24. X-33: preferences in words -> said to the citizen and passed to booking.
+    check("X-33 prefs en+f", brain._prefs("I would prefer a female doctor who speaks English") == {"lang": "en", "gender": "f"}, brain._prefs("I would prefer a female doctor who speaks English"))
+    c = await run_gp("I have back pain, I'd be more comfortable with a doctor who speaks English")
+    cit = to(c, CITIZEN)
+    check("X-33 GP conferma la preferenza", cit and "speaks English" in cit[0], cit)
+    brain._PREF_BY_RX.clear()
+    ref = Message(type="chat", sender="agent:gp", msg_id="r33", need_id="N-33", recipient="agent:bk", body={"text": "referral prescription_number=RX-33 procedure=VIS-FIS priority=D gender=f Ricetta emessa."})
+    await brain._desk(FakeCity("agent:bk"), ref, [ref], hold_self=False, fixed=None)
+    later = [row(CITIZEN, "agent:bk", "need.request prescription_number=RX-33 lang=it", 1)]
+    check("X-33 booking usa la preferenza del GP", brain._gender(later) == "f", brain._PREF_BY_RX)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 
