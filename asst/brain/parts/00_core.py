@@ -46,7 +46,7 @@ _PROTOCOLS: dict[str, tuple[str, str]] = {
 _KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("SYM-BACK", ("mal di schiena", "back pain")),
     ("SYM-KNEE", ("ginocchio", "knee")),
-    ("SYM-PALPITATIONS", ("cuore che batte", "heart racing")),
+    ("SYM-PALPITATIONS", ("cuore che batte", "heart racing", "palpitazion", "palpitation", "batticuore", "heart pounding", "heart beating fast", "heartbeat")),
     ("SYM-FOLLOWUP", ("controllo del cuore", "routine heart check")),
 )
 _RED_FLAGS = (
@@ -141,8 +141,8 @@ async def handle(role: str, city: City, message: Message, chat: list[Message]) -
         await city.say(message.sender, f"address={street}")
         return
     _note_lang(message)  # X-30
-    if role != "gp" and all(row.msg_id != message.msg_id for row in chat):
-        chat = [*chat, message]  # BK-15: the case history can miss the inbound message
+    if all(row.msg_id != message.msg_id for row in chat):
+        chat = [*chat, message]  # BK-15: the case history can miss the inbound message (all roles)
     if role == "gp":
         await _gp(city, message, chat)
     elif role == "booking_centre":

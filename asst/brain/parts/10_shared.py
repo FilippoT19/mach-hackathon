@@ -213,6 +213,7 @@ async def _await_line(
             fresh = await city.history(need_id=need_id)
         except CapError:
             fresh = chat
+        fresh = _keep(fresh, chat)  # simulator bug 3: keep booking's confirm under BK-15
         hit = _latest(fresh, head, token)
         if hit is not None:
             return hit, fresh
