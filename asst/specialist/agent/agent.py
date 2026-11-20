@@ -263,11 +263,22 @@ _KNOWN_PARTNERS = {
     "agent:yzcs4p44ep39", "agent:hkrtm1gzjb24", "agent:x0vr9rbwpesr", "agent:h8425ac7btd8", "agent:p0n57t7vtpq0",
     # Lambrate (Municipio 3), team ltf-jecatt — h3 ja
     "agent:gdrf9b9kxxss", "agent:c2ewegr2ea3v", "agent:nanpr5mgm2py", "agent:pky3vqyqbepa", "agent:atp772whjkgd",
+    # Giambellino (RED-AGENT, MACH-1) — h3 ka
+    "agent:cdc7x6m21nj6", "agent:c32jyk0cyan7", "agent:h6r1v45esk77", "agent:hnpe58epeyh1", "agent:bzs050xacs1m",
+    # Greco (tartufi-pazzi) — h3 si
+    "agent:h3n6kfd18r3g", "agent:bmrcsmqq6at2", "agent:xtj1dk9x3qej", "agent:q18es2d82f8r", "agent:pxvd2kk2yx5j",
+    # Bicocca (p4radigm) — h3 ti
+    "agent:ez8cb7j167p2", "agent:rng5wcrzvhsj", "agent:bb01ggxymm05", "agent:sh35cbsy287d", "agent:nkh372rd16yq",
+    # Bovisa (prompt-soccorso)
+    "agent:vgtmj5nqfkxj", "agent:h82xpx3rkn9e", "agent:gxq3vzgt3h5t", "agent:tty8erdj6t41", "agent:txar5994gbkj",
+    # Isola (Diuo), only two ids known — h3 tl
+    "agent:etpwrfmfa8hm", "agent:mkfzagfe8jtt",
 }
 # Rare language of each ASST's h3 physiatrist (shared table in the mods' group).
 _RARE_LANG_BY_ASST = {"giambellino": "ka", "toros": "ro", "precotto": "ro", "nord": "ur",
                       "corvetto": "fr", "brera": "fa", "niguarda": "vi",
-                      "isola": "tl", "ortica": "wo", "greco": "si", "bicocca": "ti", "lambrate": "ja"}
+                      "isola": "tl", "ortica": "wo", "greco": "si", "bicocca": "ti", "lambrate": "ja",
+                      "gorla": "sq", "forlanini": "de"}
 
 
 def _ours(sender: str) -> bool:
