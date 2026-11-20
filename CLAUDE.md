@@ -1,14 +1,22 @@
-# MACH hackathon project
+# MACH: Milano Agentic City Hackathon (20–21 Nov 2026)
 
-Multi-agent citizen assistant. Read README.md for setup.
+**What scores is `asst/`**: five agents (gp, booking_centre, hospital, specialist,
+family_counseling) deployed to the city platform with `city deploy`. Read `asst/README.md`
+first. Official rules: https://github.com/projectnandaitaly/mach-hackathon-kit
+(`docs/kit/e19-rules.md`: rubric, message formats, rule changes, levels).
 
-- Backend: FastAPI + SQLAlchemy async (`backend/app`). Agents live in `app/agents/`:
-  `registry.py` (one `AgentSpec` per domain), `tools.py` (tools closed over user_id + DB),
-  `orchestrator.py` (router → specialist via the Anthropic SDK tool runner).
-- Model: `claude-opus-5-5` via `CLAUDE_MODEL`. Effort set per role in `config.py`.
-  Don't send `temperature`/`budget_tokens`/forced `tool_choice` — this model rejects them.
-- New domain = add an `AgentSpec`; new capability = add a tool factory to `TOOL_FACTORIES`.
-- Schema changes: edit `models.py`; tables are created on startup (`create_all`, no migrations).
-  Dropping/renaming a column needs a manual `ALTER` or a DB reset.
-- Tests: `make test` (SQLite, LLM stubbed — no key needed). Keep them green before pushing.
-- Branch per feature, small PRs into `main`; never commit `.env`.
+- One shared brain: edit `asst/brain/agent.py`, then `python seats.py --brain` (from `asst/`)
+  copies it into the five `asst/<agent>/agent/agent.py`. It reads its role from `card.yaml`.
+- Never edit an agent's `Dockerfile` or `city.yaml` (conformance fails). No data files in the image.
+- The brain may import only `city_sdk.city` + Python stdlib. LLM only via `city.llm` (city gateway,
+  Gemma/GLM/Qwen) — no Anthropic key involved.
+- Messages are text: act word + `key=value` tokens. Write to the Ledger before telling the citizen.
+- Test locally with `city run <agent>`; ship with `city deploy <agent>` (specialist before hospital);
+  undo with `city rollback agent:<agent> --to <version>`.
+- NEVER run `city retire` (permanent). Never retry a 4xx. Never commit `~/.config/city/` or `.city/`.
+- Level descriptions appear during the race in "Il Token della Sera" on https://projectnandaitaly.ai;
+  journeys and verdicts are in the team console https://projectnandaitaly.ai/team → Journeys.
+
+`backend/` and `frontend/` (FastAPI + Next.js) are the earlier generic starter; they don't affect
+the score. Only use them for side tooling (e.g. a monitoring dashboard).
+Branch per change, small PRs into `main` when there's time; during the race, speed wins.
