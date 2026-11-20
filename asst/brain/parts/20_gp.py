@@ -9,7 +9,10 @@ def _emergency(message: Message) -> bool:
     if (message.need_id or message.msg_id) in _EMERGENCY_NEEDS:
         return True
     lowered = message.text.lower()
-    if any(flag in lowered for flag in _RED_FLAGS + _RED_FLAGS_MORE):
+    if any(flag in lowered for flag in _RED_FLAGS + _RED_FLAGS_MORE + (
+        "non sento più le gambe", "non riesco a muovere le gambe",
+        "can't feel my legs", "cannot feel my legs", "can't move my legs",
+    )):
         return True
     # CO-10 (P-magesh-6): pregnancy + bleeding, strong pain, contractions or waters -> 112.
     pregnant = any(w in lowered for w in ("incinta", "gravidanza", "pregnant", "pregnancy"))
@@ -27,27 +30,32 @@ def _red_flag(message: Message) -> bool:
 async def _escalate(city: City, message: Message, chat: list[Message]) -> None:
     """X-41: 112 + notice to our hospital, from any role."""
     agent = city.agent_id
+    en = _lang([*chat, message]) != "it"
     if not _we(chat, agent, "escalate.emergency", to=message.sender, word="escalate.emergency"):
         # X-45: nearest hospital to the citizen's zone (Index doors), inside the 112 message.
         zone = await _zone_point(city, [*chat, message])
-        near = await _nearest_line(city, zone, False, "") if zone else ""
+        near = await _nearest_line(city, zone, en, "") if zone else ""
         await _say(
             city,
             message.sender,
-            near.strip() + (" " if near else "") + "escalate.emergency reason=red_flag Capisco, quello che mi descrive va preso sul "
-            "serio subito. Chiami subito il 112 o vada al pronto soccorso più vicino. Non si "
-            "metta alla guida: se può, si faccia accompagnare e non resti da solo. Il pronto "
-            "soccorso più vicino nella nostra zona è il nostro ospedale in Via Arganini Gerolamo 38 "
-            "(accessibile in sedia a rotelle): li avviso io adesso. / I understand, this needs "
+            "escalate.emergency reason=red_flag " + (
+            "I understand, this needs "
             "attention right now. Call 112 or go to the nearest emergency room. Do not drive: if "
             "you can, ask someone to go with you. The nearest emergency room in our area is our "
-            "hospital at Via Arganini Gerolamo 38 (wheelchair accessible): I am telling them now.",
+            "hospital at Via Arganini Gerolamo 38 (wheelchair accessible): I am telling them now."
+            if en else
+            "Capisco, quello che mi descrive va preso sul serio subito. Chiami subito il 112 o "
+            "vada al pronto soccorso più vicino. Non si metta alla guida: se può, si faccia "
+            "accompagnare e non resti da solo. Il pronto soccorso più vicino nella nostra zona è "
+            "il nostro ospedale in Via Arganini Gerolamo 38 (accessibile in sedia a rotelle): "
+            "li avviso io adesso."
+            ) + (" " + near.strip() if near else ""),
         )
     # X-42: proactive — ask where the citizen is, then name the nearest emergency room (map).
     if message.sender.startswith("citizen:") and not _we(chat, agent, "purpose=emergency", to=message.sender, word="data.request"):
-        await _say(city, message.sender, "data.request purpose=emergency fields=address "
-                   "Mi dice dove si trova adesso? Le indico subito il pronto soccorso più vicino a lei. "
-                   "/ Where are you now? I will tell you the nearest emergency room right away.")
+        await _say(city, message.sender, "data.request purpose=emergency fields=address " + (
+                   "Where are you now? I will tell you the nearest emergency room right away." if en else
+                   "Mi dice dove si trova adesso? Le indico subito il pronto soccorso più vicino a lei."))
     hospital = await _peer(city, "hospital", "ospedale hospital asst-niguarda")
     if hospital and hospital != agent and not _we(chat, agent, "emergency.notice", to=hospital, word="emergency.notice"):
         await _say(
@@ -113,7 +121,7 @@ def _rx_line(
     Review asks: acknowledge the person specifically, a professional next step, and more than
     the ordinary step (proactivity): booking already told, where the visit is, what to bring."""
 
-    en = _lang(chat) == "en"
+    en = _lang(chat) != "it"
     k = 1 if en else 0
     symptom = _SYMPTOM_NAME.get(code or "", ("il disturbo", "your symptoms"))[k]
     visit = _VISIT.get(procedure or "", ("la visita", "the visit"))[k]
@@ -150,6 +158,7 @@ async def _renew_prescription(
     city: City, message: Message, chat: list[Message], old_number: str
 ) -> None:
     agent = city.agent_id
+    en = _lang([*chat, message]) != "it"
     source = _renewal_source(chat, old_number)
     if source is None:
         if not _we(chat, agent, f"prescription_number={old_number}", to=LEDGER, word="prescription"):
@@ -165,12 +174,19 @@ async def _renew_prescription(
         await _say(
             city,
             message.sender,
+            "I could not retrieve the prescription to renew. Please describe your symptoms to your GP."
+            if en else
             "Mi dispiace, non riesco a recuperare la ricetta da rinnovare. Descriva il problema al medico di base.",
         )
         return
     procedure = source.get("procedure", "")
     priority = source.get("priority", "D")
-    new_number = _rx(message.need_id, message.msg_id)
+    # A predecessor always maps to the same renewal, even on replay with incomplete history.
+    base = _rx(message.need_id, old_number)[len("prescription_number-"):]
+    suffix = sha256(old_number.encode()).hexdigest()[:16].upper()
+    new_number = f"prescription_number-{base[:22]}-R{suffix}"
+    if new_number == old_number:
+        new_number = f"prescription_number-{base[:22]}-S{suffix}"
     if not _we(chat, agent, f"prescription_number={new_number}", to=LEDGER, word="prescribe"):
         if not await _say(
             city,
@@ -178,14 +194,15 @@ async def _renew_prescription(
             f"prescribe patient={message.sender} procedure={procedure} priority={priority} "
             f"prescription_number={new_number} renewal_of={old_number}",
         ):
+            await _say(city, message.sender, "Please try requesting the renewal again." if en else
+                       "Può riprovare a chiedere il rinnovo della ricetta?")
             return
-    if _we(chat, agent, f"prescription_number={new_number}", to=message.sender, word="prescription"):
-        return
     await _say(
         city,
         message.sender,
         f"prescription prescription_number={new_number} procedure={procedure} priority={priority} "
-        "La ricetta è stata rinnovata. Ora può contattare il centro prenotazioni.",
+        + ("Your prescription has been renewed. You can now contact the booking centre." if en else
+           "La ricetta è stata rinnovata. Ora può contattare il centro prenotazioni."),
     )
 
 
@@ -210,15 +227,16 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     if not message.sender.startswith("citizen:"):
         return
     fields = fields_of(message.text)
-    if not _emergency(message) and "prescription_number" in fields and _symptom(message) is None:
+    emergency = _emergency(message)
+    code = None if emergency else _symptom(message)
+    if not emergency and code is None and "prescription_number" in fields:
         await _renew_prescription(city, message, chat, fields["prescription_number"])
         return
-    code = None if _emergency(message) else _symptom(message)
-    if code is None and not _emergency(message):
-        # Free text the fixed phrases miss ("mi fa male la schiena", "petto che stringe"):
-        # the team model maps it to one of OUR codes, or to RED_FLAG. It never invents one.
-        code = await _llm_symptom(city, message.text)
-    if _emergency(message) or code == "RED_FLAG":
+    if not emergency:
+        assessed = await _llm_symptom(city, message.text, emergency_only=code is not None)
+        emergency = assessed == "RED_FLAG"
+        code = code or assessed
+    if emergency:
         await _escalate(city, message, chat)  # X-42: one path for all roles (112, notice, nearest ER)
         return
     if code is None:

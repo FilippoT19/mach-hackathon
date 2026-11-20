@@ -242,6 +242,13 @@ async def test_facility_proposals(check) -> None:
     check("P-francesco-1 check-in già registrato: ripete conferma senza Ledger",
           len(to(city, LEDGER)) == 1 and to(city, CITIZEN)[-1] == to(city, CITIZEN)[-2], city.sent)
 
+    brain._CHECKIN_REQUESTS.clear()
+    city = FacilityCity({"checkin": ["checked_in booking_id=B-QUESTION"]})
+    await city.turn("checkin booking_id=B-QUESTION ledger_ref=L1 Sono arrivata, quanto devo aspettare?")
+    check("P-francesco-12 must not break: atto checkin con domanda arriva al Ledger",
+          to(city, LEDGER) == [f"checkin booking_id=B-QUESTION citizen={CITIZEN}"]
+          and to(city, CITIZEN)[0].startswith("checkin booking_id=B-QUESTION "), city.sent)
+
     city = FacilityCity()
     city.post(booking, hospital, f"confirm offer_id=O1 slot_id=S1 citizen={CITIZEN}")
     city.post(hospital, LEDGER, "hold slot_id=S2 consent_ref=cons-other")
@@ -620,6 +627,313 @@ async def main() -> int:
     check("BK-27 slot dentro la scadenza tenuto", brain._before_rx_deadline({"at": "2026-11-04T15:00:00Z"}, rep, "B"), "")
     check("BK-27 senza data nessun filtro", brain._before_rx_deadline({"at": "2026-11-30T10:00:00Z"}, {}, "B"), "")
     await test_facility_proposals(check)
+    booking = "agent:bk"
+    hospital = brain._OUR_AGENTS["hospital"]
+    remote = "agent:remote"
+    other = "agent:other-remote"
+    rx_number = "prescription_number-FRAN"
+
+    def booking_chat(slots):
+        return [
+            row(CITIZEN, booking, f"need.request lang=it prescription_number={rx_number}", 0),
+            row(LEDGER, booking, f"prescription prescription_number={rx_number} procedure=VIS-CARD priority=B state=issued", 1),
+            row(LEDGER, booking, f"agenda agenda_now={NOW}", 2),
+            row(LEDGER, booking, slots, 3),
+        ]
+
+    async def desk_turn(city, msg, chat):
+        await brain.handle("booking_centre", city, msg, chat)
+
+    async def test_francesco_14(check):
+        brain._SENT.clear()
+        city = FakeCity(booking)
+        chat = booking_chat(slots_three())
+        await desk_turn(city, chat[0], chat)
+        initial = to(city, CITIZEN)
+        check("P-francesco-14 must not break: prima offerta con tutti e tre i posti",
+              len(initial) == 1 and len(brain._offer_rows(initial[0])) == 3, initial)
+        if not initial:
+            return
+        original = row(booking, CITIZEN, initial[0], 4)
+        cancel = row(CITIZEN, booking, "cancel offer_id=of-S-1 reason=deadline", 5)
+        await desk_turn(city, cancel, [*chat, original, cancel])
+        replacement = to(city, CITIZEN)[-1]
+        check("P-francesco-14 annullo: conserva solo gli altri due posti",
+              {r.get("slot_id") for r in brain._offer_rows(replacement)} == {"S-2", "S-3"}, replacement)
+        ack = row(booking, CITIZEN, to(city, CITIZEN)[1], 6)
+        again = row(CITIZEN, booking, "cancel offer_id=of-S-2 reason=deadline", 7)
+        await desk_turn(city, again, [*chat, original, cancel, ack, again])
+        wait = to(city, CITIZEN)[-1]
+        check("P-francesco-14 secondo annullo: lista d'attesa è un'offerta",
+              wait.startswith("offer offer_id=wl-N-1 waiting_list=true procedure=VIS-CARD priority=B "), wait)
+
+        for available in (True, False):
+            brain._SENT.clear()
+            city = FakeCity(booking)
+            chat = booking_chat(slots_near().replace("page=1/1", "page=1/2"))
+            await desk_turn(city, chat[0], chat)
+            offers = to(city, CITIZEN)
+            if not offers:
+                check("P-francesco-14 prima pagina con offerta", False, city.sent)
+                continue
+            original = row(booking, CITIZEN, offers[0], 4)
+            cancel = row(CITIZEN, booking, "cancel offer_id=of-S-NEAR reason=deadline", 5)
+            await desk_turn(city, cancel, [*chat, original, cancel])
+            check("P-francesco-14 annullo esaurisce pagina 1 e richiede pagina 2",
+                  to(city, LEDGER) == ["world procedure=VIS-CARD page=2"], city.sent)
+            page = slots_near().replace("page=1/1", "page=2").replace("S-NEAR", "S-PAGE-2")
+            page = page if available else "slots page=2/2"
+            reply = row(LEDGER, booking, page, 7)
+            await desk_turn(city, reply, [*chat, original, cancel, reply])
+            offers = [t for t in to(city, CITIZEN)[1:] if t.startswith("offer ")]
+            expected = "slot_id=S-PAGE-2" if available else "offer_id=wl-N-1 waiting_list=true"
+            check(f"P-francesco-14 pagina 2: {expected}", len(offers) == 1 and expected in offers[0], city.sent)
+
+        class PageCity(FakeCity):
+            async def history(self, peer=None, *, need_id=None):
+                return [row(LEDGER, booking, "slots page=2/2", 7)]
+
+        brain._SENT.clear()
+        city = PageCity(booking)
+        chat = booking_chat(slots_near().replace("page=1/1", "page=1/2"))
+        original = row(booking, CITIZEN, "offer offer_id=of-S-NEAR slot_id=S-NEAR", 4)
+        cancel = row(CITIZEN, booking, "cancel offer_id=of-S-NEAR reason=deadline", 5)
+        await desk_turn(city, cancel, [*chat, original, cancel])
+        check("P-francesco-14 pagina presente solo in history: offre la lista nello stesso turno",
+              any(t.startswith("offer offer_id=wl-N-1 waiting_list=true") for t in to(city, CITIZEN)), city.sent)
+
+    async def test_francesco_15(check):
+        brain._SENT.clear()
+        peers = [{"id": who, "role": "facility"} for who in (remote, other)]
+        request_id = "request_id=cross-N-1"
+        offer_a = row(remote, booking, f"offer offer_id=O1 slot_id=S1 doctor_id=d-s1 facility={remote} "
+                      f"doctor_lang=it/fr doctor_gender=m {request_id} wheelchair=true mandateci confirm",
+                      8)
+        offer_b = row(other, booking, f"offer offer_id=O2 slot_id=S2 doctor_id=d-s2 facility={other} {request_id}\n"
+                      f"offer offer_id=O3 slot_id=S3 facility={other} doctor_lang=fr {request_id}", 9)
+
+        class CrossCity(FakeCity):
+            async def history(self, peer=None, *, need_id=None):
+                return [offer_a, offer_b]
+
+        city = CrossCity(booking, peers=peers)
+        chat = booking_chat(slots_far("1/1"))
+        ask = row(booking, CITIZEN, "consent purpose=cross_asst", 4)
+        yes = row(CITIZEN, booking, "consent purpose=cross_asst consent_ref=C-CROSS", 5)
+        await desk_turn(city, yes, [*chat, ask, yes])
+        await asyncio.gather(*(desk_turn(city, r, [*chat, ask, yes, r]) for r in (offer_a, offer_b)))
+        out = to(city, CITIZEN)
+        check("P-francesco-15 offerte compatibili insieme e con soli token pubblici",
+              len(out) == 1 and {r.get("offer_id") for r in brain._offer_rows(out[0])} == {"O1", "O2"}
+              and not any(token in out[0] for token in ("doctor_lang", "doctor_gender", "request_id",
+                                                      "wheelchair", "mandateci", "O3")), out)
+        confirm = row(CITIZEN, booking, "confirm offer_id=O1 consent_ref=C-BOOKING", 10)
+        if out:
+            await desk_turn(city, confirm, [*chat, ask, yes, row(booking, CITIZEN, out[0], 11), confirm])
+        check("P-francesco-15 must not break: offerta remota confermabile",
+              any(t.startswith("confirm offer_id=O1 slot_id=S1")
+                  and "cross_asst_consent_ref=C-CROSS" in t for t in to(city, remote)), city.sent)
+
+    async def test_francesco_16(check):
+        from unittest.mock import patch
+
+        brain._SENT.clear()
+        chat = booking_chat(slots_near())
+        fake = row(other, booking, "booking.receipt booking_id=B-IMPOSTOR ledger_ref=L-IMPOSTOR", 4)
+        offer = row(other, booking, f"offer offer_id=O16 slot_id=S16 facility={other}", 5)
+        cancel = row(other, booking, "cancel offer_id=of-S-NEAR", 6)
+        confirm = row(booking, remote, "confirm offer_id=O16 slot_id=S16", 7)
+        real = row(remote, booking, "booking.receipt booking_id=B-REAL ledger_ref=L-REAL slot_id=S16", 8)
+        check("P-francesco-16 filtro spento nella configurazione", not brain._TRUSTED_PARTNERS)
+        off = FakeCity(booking)
+        off_receipt = row(other, booking, "booking.receipt booking_id=B-LEGACY ledger_ref=L-LEGACY", 9)
+        await desk_turn(off, off_receipt, [*chat, off_receipt])
+        check("P-francesco-16 must not break: filtro spento mantiene le ricevute senza storico confirm",
+              any(t.startswith("booking.receipt ") for t in to(off, CITIZEN)), off.sent)
+        with patch.object(brain, "_TRUSTED_PARTNERS", {"agent:fixture-only"}):
+            city = FakeCity(booking)
+            for msg in (fake, offer, cancel):
+                await desk_turn(city, msg, [*chat, confirm, msg])
+            check("P-francesco-16 filtro attivo solo in fixture: ignora offerte, ricevute e annulli inattesi",
+                  not to(city, CITIZEN) and len(to(city, other)) == 3, city.sent)
+            await desk_turn(city, real, [*chat, confirm, real])
+            check("P-francesco-16 must not break: ricevuta dal destinatario del confirm",
+                  any(t.startswith("booking.receipt booking_id=B-REAL") for t in to(city, CITIZEN)), city.sent)
+            brain._sent("N-1").cross_peers.add(remote)
+            expected = row(remote, booking, f"offer offer_id=O16 slot_id=S16 facility={remote}", 9)
+            await desk_turn(city, expected, [*chat, expected])
+            check("P-francesco-16 must not break: offerta dal destinatario del need.request",
+                  any(t.startswith("offer offer_id=O16") for t in to(city, CITIZEN)), city.sent)
+
+    async def test_francesco_18(check):
+        gp = "agent:gp"
+        msg = citizen_msg("need.request lang=en prescription_number=prescription_number-N-100")
+        old = brain._rx(msg.need_id, msg.msg_id)
+        msg = citizen_msg(f"need.request lang=en prescription_number={old}")
+        history = [
+            row(gp, LEDGER, f"prescribe prescription_number={old} procedure=VIS-CARD priority=B", 1),
+            row(gp, CITIZEN, f"prescription prescription_number={old}", 2),
+            row(LEDGER, gp, f"prescription prescription_number={old} procedure=VIS-CARD priority=B state=expired", 3),
+        ]
+        city = FakeCity(gp)
+        await brain._gp(city, msg, [*history, msg])
+        writes = to(city, LEDGER)
+        new = brain.fields_of(writes[0]).get("prescription_number", "") if writes else ""
+        check("P-francesco-18 rinnovo nello stesso need usa un numero nuovo e valido",
+              bool(brain._RX.fullmatch(new)) and new != old and f"renewal_of={old}" in writes[0], city.sent)
+        check("P-francesco-18 must not break: rinnovo conserva procedura e priorità, e consegna la ricetta",
+              bool(writes) and "procedure=VIS-CARD priority=B" in writes[0]
+              and any(f"prescription_number={new}" in t and "has been renewed" in t for t in to(city, CITIZEN)),
+              city.sent)
+        if writes:
+            replay = FakeCity(gp)
+            await brain._gp(replay, msg, [*history, row(gp, LEDGER, writes[0], 4), msg])
+            check("P-francesco-18 rinnovo ripetuto restituisce la ricetta già emessa",
+                  not to(replay, LEDGER) and bool(to(replay, CITIZEN)), replay.sent)
+
+    async def test_francesco_19(check):
+        hidden = await run_gp("ho mal di schiena e non riesco più a stare in piedi", model("RED_FLAG"))
+        check("P-francesco-19 red flag dal modello anche con sintomo noto",
+              not to(hidden, LEDGER) and any(t.startswith("escalate.emergency") for t in to(hidden, CITIZEN)),
+              hidden.sent)
+        exact = await run_gp("ho mal di schiena e non sento più le gambe")
+        check("P-francesco-19 red flag della proposta riconosciuta senza modello",
+              not to(exact, LEDGER) and any(t.startswith("escalate.emergency") for t in to(exact, CITIZEN)),
+              exact.sent)
+        ordinary = await run_gp("ho mal di schiena da tre giorni", model("SYM-KNEE"))
+        check("P-francesco-19 must not break: il mal di schiena ordinario conserva VIS-FIS B",
+              any(t.startswith("prescribe ") and "procedure=VIS-FIS priority=B" in t
+                  for t in to(ordinary, LEDGER))
+              and any(t.startswith("prescription ") for t in to(ordinary, CITIZEN)), ordinary.sent)
+
+    async def test_francesco_20(check):
+        brain._SENT.clear()
+        chat = booking_chat(slots_far("1/1"))
+        ask = row(booking, CITIZEN, "consent purpose=cross_asst", 4)
+        reply = row(CITIZEN, booking, "Sì, non ho problemi", 5)
+        city = FakeCity(booking, peers=[{"id": remote, "role": "facility"}])
+        await desk_turn(city, reply, [*chat, ask, reply])
+        check("P-francesco-20 frase con non: chiede riferimento senza aprire la ricerca",
+              any(t.startswith("consent purpose=cross_asst") for t in to(city, CITIZEN))
+              and not to(city, remote) and not any("waiting_list=" in t for t in to(city, CITIZEN)), city.sent)
+        yes = row(CITIZEN, booking, "consent purpose=cross_asst consent_ref=C-CROSS", 6)
+        await desk_turn(city, yes, [*chat, ask, reply, yes])
+        check("P-francesco-20 must not break: consenso con riferimento avvia need.request",
+              any(t.startswith("need.request ") for t in to(city, remote)), city.sent)
+        brain._SENT.clear()
+        city = FakeCity(booking, peers=[{"id": remote, "role": "facility"}])
+        no = row(CITIZEN, booking, "No, preferisco di no.", 5)
+        await desk_turn(city, no, [*chat, ask, no])
+        check("P-francesco-20 must not break: rifiuto esplicito offre la lista",
+              not to(city, remote) and any("waiting_list=true" in t for t in to(city, CITIZEN)), city.sent)
+
+    async def test_francesco_21(check):
+        centre = brain._OUR_AGENTS["family_counseling"]
+
+        class ConsentCity(FakeCity):
+            def __init__(self):
+                super().__init__(centre)
+                self.rows = []
+
+            async def say(self, to, text, *, status=None):
+                await super().say(to, text, status=status)
+                self.rows.append(row(centre, to, text, 20 + len(self.rows)))
+                if text.startswith("hold "):
+                    self.rows.append(row(LEDGER, centre, "held hold_id=H-CONSENT slot_id=S-CONSENT", 30))
+                elif text.startswith("commit "):
+                    self.rows.append(row(LEDGER, centre, "committed booking_id=H-CONSENT ledger_ref=L-CONSENT", 31))
+                return self.rows[-1].msg_id
+
+            async def history(self, peer=None, *, need_id=None):
+                return self.rows
+
+        for has_consent in (True, False):
+            brain._RECEIPTS.clear()
+            city = ConsentCity()
+            offer = row(centre, CITIZEN, f"offer offer_id=O-CONSENT slot_id=S-CONSENT facility={centre}", 1)
+            text = "confirm offer_id=O-CONSENT" + (" consent_ref=C-BOOKING" if has_consent else "")
+            msg = row(CITIZEN, centre, text, 2)
+            await brain.handle("family_counseling", city, msg, [offer, msg])
+            if not has_consent:
+                out = to(city, CITIZEN)
+                check("P-francesco-21 consenso richiesto con purpose e senza riferimento inventato",
+                      len(out) == 1 and out[0].startswith("consent purpose=booking offer_id=O-CONSENT slot_id=S-CONSENT")
+                      and "consent_ref_required" not in out[0] and not to(city, LEDGER), city.sent)
+                yes = row(CITIZEN, centre, "consent purpose=booking consent_ref=C-BOOKING", 3)
+                await brain.handle("family_counseling", city, yes, [offer, msg, *city.rows, yes])
+            check(f"P-francesco-21 must not break: hold + commit senza fence, consenso iniziale={has_consent}",
+                  to(city, LEDGER) == [f"hold slot_id=S-CONSENT citizen={CITIZEN} consent_ref=C-BOOKING",
+                                       "commit hold_id=H-CONSENT consent_ref=C-BOOKING"]
+                  and any(t.startswith("booking.receipt ") for t in to(city, CITIZEN)), city.sent)
+
+    async def test_francesco_22(check):
+        brain._RECEIPTS.clear()
+
+        class SlowCity(FakeCity):
+            async def say(self, to, text, *, status=None):
+                await asyncio.sleep(0)
+                return await super().say(to, text, status=status)
+
+        facility = SlowCity(hospital)
+        confirmed = row(booking, hospital, f"confirm offer_id=O22 slot_id=S22 consent_ref=C22 citizen={CITIZEN}", 1)
+        await brain.handle("hospital", facility, confirmed, [confirmed])
+        committed = row(LEDGER, hospital, "committed booking_id=B22 slot_id=S22 ledger_ref=L22", 2)
+        citizen = row(CITIZEN, booking, "need.request lang=it", 0)
+        await asyncio.gather(*(brain.handle("hospital", facility, committed, [citizen, committed])
+                               for _ in range(2)))
+        receipts = [t for t in to(facility, booking) if t.startswith("booking.receipt ")]
+        check("P-francesco-22 due committed e history incompleta: una ricevuta dalla struttura al booking",
+              receipts == ["booking.receipt booking_id=B22 ledger_ref=L22"] and not to(facility, CITIZEN),
+              facility.sent)
+
+        city = SlowCity(booking)
+        receipt = row(hospital, booking, "booking.receipt booking_id=B22 ledger_ref=L22", 3)
+        await asyncio.gather(*(desk_turn(city, receipt, [citizen, receipt]) for _ in range(2)))
+        check("P-francesco-22 must not break: una ricevuta con ledger_ref e indicazioni arriva al cittadino",
+              len([t for t in to(city, CITIZEN) if t.startswith("booking.receipt booking_id=B22 ledger_ref=L22")]) == 1
+              and len([t for t in to(city, CITIZEN) if t.startswith("data.request purpose=booking")]) == 1,
+              city.sent)
+        later = Message(type="chat", sender=hospital, recipient=booking, msg_id="receipt-other",
+                        need_id="N-OTHER", body={"text": receipt.text})
+        other_citizen = Message(type="chat", sender="citizen:other-need", recipient=booking,
+                                msg_id="citizen-other", need_id="N-OTHER", body={"text": citizen.text})
+        await desk_turn(city, later, [other_citizen, later])
+        check("P-francesco-22 must not break: stesso booking_id in un altro need ha ricevuta",
+              any(t.startswith("booking.receipt booking_id=B22") for t in to(city, other_citizen.sender)), city.sent)
+        direct = SlowCity(hospital)
+        direct_confirm = row(CITIZEN, hospital, "confirm slot_id=S-DIRECT consent_ref=C-DIRECT", 4)
+        direct_commit = row(LEDGER, hospital, "committed booking_id=B-DIRECT slot_id=S-DIRECT ledger_ref=L-DIRECT", 5)
+        await brain.handle("hospital", direct, direct_commit, [direct_confirm, direct_commit])
+        check("P-francesco-22 must not break: conferma diretta riceve la ricevuta dalla struttura",
+              to(direct, CITIZEN) == ["booking.receipt booking_id=B-DIRECT ledger_ref=L-DIRECT"], direct.sent)
+
+    async def test_francesco_23(check):
+        for lang, expected in (("it", "ci riscriva"), ("en", "write to us again")):
+            brain._SENT.clear()
+            city = FakeCity(booking)
+            chat = booking_chat(slots_near())
+            chat[0] = row(CITIZEN, booking, f"need.request lang={lang} prescription_number={rx_number}", 0)
+            chat[1] = row(LEDGER, booking,
+                          f"prescription prescription_number={rx_number} procedure=VIS-CARD priority=P state=issued", 1)
+            await desk_turn(city, chat[0], chat)
+            out = to(city, CITIZEN)
+            check(f"P-francesco-23 lista {lang} senza promessa di ricontatto",
+                  len(out) == 1 and expected in out[0] and "appena si libera" not in out[0]
+                  and "as soon as" not in out[0], out)
+            check(f"P-francesco-23 must not break: offerta lista P con dati ricetta ({lang})",
+                  len(out) == 1 and out[0].startswith("offer offer_id=wl-N-1 waiting_list=true "
+                                                     "procedure=VIS-CARD priority=P prescription_number="),
+                  out)
+
+    await test_francesco_14(check)
+    await test_francesco_15(check)
+    await test_francesco_16(check)
+    await test_francesco_18(check)
+    await test_francesco_19(check)
+    await test_francesco_20(check)
+    await test_francesco_21(check)
+    await test_francesco_22(check)
+    await test_francesco_23(check)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 

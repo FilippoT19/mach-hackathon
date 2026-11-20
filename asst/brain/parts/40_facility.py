@@ -267,21 +267,51 @@ async def _on_held(city: City, message: Message, chat: list[Message]) -> bool:
     return await _say(city, LEDGER, " ".join(parts))
 
 
+_BOOKING_REQUESTS: OrderedDict[tuple[str, str, str], str] = OrderedDict()
+
+
+def _remember_booking_request(agent: str, need_id: str | None, slot: str, sender: str) -> None:
+    if need_id:
+        _BOOKING_REQUESTS[agent, need_id, slot] = sender
+        if len(_BOOKING_REQUESTS) > _SENT_NEEDS:
+            _BOOKING_REQUESTS.popitem(last=False)
+
+
 async def _on_committed(city: City, message: Message, chat: list[Message]) -> None:
     fields = fields_of(message.text)
     booking_id = fields.get("booking_id", "")
     ledger_ref = fields.get("ledger_ref", "")
     if not booking_id or not ledger_ref:
         return
-    slot = fields.get("slot_id") or _hold_slot(chat, city.agent_id, fields.get("hold_id", ""))
-    sender, _, _ = _booking_of(chat, city.agent_id, slot) if slot else ("", "", None)
-    target = sender or _citizen(chat)
-    if not target:
-        return
-    token = f"booking_id={booking_id}"
-    if _we(chat, city.agent_id, token, to=target, word="booking.receipt"):
-        return
-    await _say(city, target, f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref}")
+    agent = city.agent_id
+    async with _receipt_turn(city, message, chat, booking_id) as fresh:
+        if fresh is None:
+            return
+        token = f"booking_id={booking_id}"
+        if any(row.sender == agent and first_word(row.text) == "booking.receipt"
+               and fields_of(row.text).get("booking_id") == booking_id for row in fresh):
+            _remember_receipt(agent, message.need_id, booking_id)
+            return
+        slot = fields.get("slot_id") or _hold_slot(fresh, agent, fields.get("hold_id") or booking_id)
+        sender, _, _ = _booking_of(fresh, agent, slot)
+        if slot and message.need_id:
+            sender = _BOOKING_REQUESTS.get((agent, message.need_id, slot), sender)
+        if not slot:
+            # Some committed replies omit the slot. A single booking centre in the
+            # case is enough to route the receipt, even if the hold is out of view.
+            centres = {
+                row.sender for row in fresh if row.recipient == agent and row.sender.startswith("agent:")
+                and first_word(row.text) == "confirm"
+            }
+            if message.need_id:
+                centres.update(sender for (owner, need, _), sender in _BOOKING_REQUESTS.items()
+                               if owner == agent and need == message.need_id)
+            if len(centres) > 1:
+                return
+            sender = next(iter(centres), "")
+        target = sender or _citizen(fresh)
+        if target and await _say(city, target, f"booking.receipt {token} ledger_ref={ledger_ref}"):
+            _remember_receipt(agent, message.need_id, booking_id)
 
 
 async def _cancel_booking(
