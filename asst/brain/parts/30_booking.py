@@ -997,6 +997,13 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
         + _prep_line((_prescription_reply(chat, _number(chat)) or {}).get("procedure", ""), _lang(chat) != "it"),  # P-02
     ):
         return
+    # G5 collaboration: tell the GP the visit is booked, so the GP can follow up after the report.
+    gp = await _peer(city, "gp", "medico di base gp asst-niguarda")
+    if gp and gp != city.agent_id and not _we(chat, city.agent_id, token, to=gp, word="booking.notice"):
+        number = _number(chat) or ""
+        await _say(city, gp, f"booking.notice {token} ledger_ref={ledger_ref} facility={message.sender} "
+                   + (f"prescription_number={number} " if number else "")
+                   + "Visita prenotata e confermata per il vostro paziente: vi avvisiamo per il controllo dopo il referto.")
     # X-31: proactive next step — ask where the citizen lives and how they move, then tell them
     # the best way to reach the facility (distance from the map, transit, access, Area B).
     if message.need_id:

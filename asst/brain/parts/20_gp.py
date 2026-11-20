@@ -191,6 +191,19 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     if message.sender == LEDGER:
         await _announce(city, message, chat, agent)
         return
+    if first_word(message.text) == "report.notice" and message.sender.startswith("agent:"):
+        bid = fields_of(message.text).get("booking_id", "")
+        if not _we(chat, agent, f"booking_id={bid}", to=message.sender, word="report.notice.ack"):
+            await _say(city, message.sender, f"report.notice.ack booking_id={bid} Grazie, leggo il referto "
+                       "e richiamo io il paziente se serve un controllo.")
+        return
+    if first_word(message.text) == "booking.notice" and message.sender.startswith("agent:"):
+        # G5: the booking tells us the visit is booked; we close the loop for the follow-up.
+        bid = fields_of(message.text).get("booking_id", "")
+        if not _we(chat, agent, f"booking_id={bid}", to=message.sender, word="booking.notice.ack"):
+            await _say(city, message.sender, f"booking.notice.ack booking_id={bid} Grazie: annoto la visita "
+                       "nel fascicolo del paziente. Dopo la visita leggo il referto e propongo io il controllo.")
+        return
     if not message.sender.startswith("citizen:"):
         return
     fields = fields_of(message.text)

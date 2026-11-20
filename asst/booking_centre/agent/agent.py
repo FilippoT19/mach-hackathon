@@ -843,6 +843,19 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     if message.sender == LEDGER:
         await _announce(city, message, chat, agent)
         return
+    if first_word(message.text) == "report.notice" and message.sender.startswith("agent:"):
+        bid = fields_of(message.text).get("booking_id", "")
+        if not _we(chat, agent, f"booking_id={bid}", to=message.sender, word="report.notice.ack"):
+            await _say(city, message.sender, f"report.notice.ack booking_id={bid} Grazie, leggo il referto "
+                       "e richiamo io il paziente se serve un controllo.")
+        return
+    if first_word(message.text) == "booking.notice" and message.sender.startswith("agent:"):
+        # G5: the booking tells us the visit is booked; we close the loop for the follow-up.
+        bid = fields_of(message.text).get("booking_id", "")
+        if not _we(chat, agent, f"booking_id={bid}", to=message.sender, word="booking.notice.ack"):
+            await _say(city, message.sender, f"booking.notice.ack booking_id={bid} Grazie: annoto la visita "
+                       "nel fascicolo del paziente. Dopo la visita leggo il referto e propongo io il controllo.")
+        return
     if not message.sender.startswith("citizen:"):
         return
     fields = fields_of(message.text)
@@ -1998,6 +2011,13 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
         + _prep_line((_prescription_reply(chat, _number(chat)) or {}).get("procedure", ""), _lang(chat) != "it"),  # P-02
     ):
         return
+    # G5 collaboration: tell the GP the visit is booked, so the GP can follow up after the report.
+    gp = await _peer(city, "gp", "medico di base gp asst-niguarda")
+    if gp and gp != city.agent_id and not _we(chat, city.agent_id, token, to=gp, word="booking.notice"):
+        number = _number(chat) or ""
+        await _say(city, gp, f"booking.notice {token} ledger_ref={ledger_ref} facility={message.sender} "
+                   + (f"prescription_number={number} " if number else "")
+                   + "Visita prenotata e confermata per il vostro paziente: vi avvisiamo per il controllo dopo il referto.")
     # X-31: proactive next step — ask where the citizen lives and how they move, then tell them
     # the best way to reach the facility (distance from the map, transit, access, Area B).
     if message.need_id:
@@ -2813,6 +2833,11 @@ async def _on_reported(city: City, message: Message, chat: list[Message]) -> Non
         "you if a follow-up is needed. Thank you for trusting us.",
     )
     await _say(city, citizen, f"report booking_id={booking_id} outcome_code=VISIT {line}")
+    # G5 / SP-20: share the report with the citizen's GP (inside our ASST) for the follow-up.
+    gp = await _peer(city, "gp", "medico di base gp asst-niguarda")
+    if gp and gp != city.agent_id and not _we(chat, city.agent_id, token, to=gp, word="report.notice"):
+        await _say(city, gp, f"report.notice {token} outcome_code=VISIT Referto archiviato per il vostro "
+                   "paziente: potete leggerlo e decidere il controllo.")
 
 
 # --- FA-12: cross-ASST request from another booking centre (format agreed in the group) ------

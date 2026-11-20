@@ -174,3 +174,6 @@ Nella PR scrivere: ID dei casi toccati, prima e dopo, test fatti.
 | X-42b | gp (e tutti) | Nei percorsi 126-133 (gp 1.0.7) il journey si chiude con escalate.emergency: la domanda sull indirizzo non arriva mai al cittadino. | Il primo messaggio del 112 nomina già il pronto soccorso più vicino della nostra zona (Via Arganini Gerolamo 38, accessibile) e dice che lo avvisiamo. La domanda sull indirizzo resta come passo in più. | Proattività nel solo messaggio che conta. |
 
 | X-44 | booking | La need.request cross-ASST non portava le preferenze del cittadino: un partner con la lingua rara giusta non poteva sceglierla (consiglio dal gruppo). | La richiesta porta lang= (se non italiano), gender= e days= quando il cittadino li ha detti. Nessun dato personale. | Collaborazione tra ASST che serve davvero al cittadino. |
+
+| G5-a | booking, gp | Collaborazione 0 ovunque: referral + "Ricevuto" non fa avanzare il need (regola e19, nota su 120). | Dopo la ricevuta il booking manda booking.notice al gp (booking_id, struttura, ricetta); il gp risponde e annota il controllo. | Scambio che porta avanti la cura (continuità). |
+| G5-b / SP-20 | strutture, gp | Il referto restava solo al cittadino. | Dopo il report la struttura manda report.notice al gp; il gp risponde che legge il referto e propone il controllo. | Scambio dopo la visita: chiude il percorso di cura. |
