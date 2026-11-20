@@ -76,3 +76,19 @@ class Memory(Base):
     agent: Mapped[str] = mapped_column(String(64))
     content: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class Place(Base):
+    """A point of interest in Milan imported from dati.comune.milano.it (see app/opendata.py)."""
+
+    __tablename__ = "places"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_id)
+    category: Mapped[str] = mapped_column(String(64), index=True)
+    name: Mapped[str] = mapped_column(String(300))
+    address: Mapped[str | None] = mapped_column(String(300))
+    nil: Mapped[str | None] = mapped_column(String(120))  # neighbourhood (Nucleo d'Identità Locale)
+    municipio: Mapped[str | None] = mapped_column(String(8))
+    lat: Mapped[float | None]
+    lon: Mapped[float | None]
+    data: Mapped[dict] = mapped_column(JSON, default=dict)  # remaining source columns
+    source: Mapped[str] = mapped_column(String(200))

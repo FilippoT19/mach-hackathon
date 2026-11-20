@@ -1,8 +1,3 @@
-"""Runs without Postgres or an API key: SQLite + a stubbed orchestrator."""
-import os
-
-os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///./test.db"
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -16,8 +11,6 @@ def stub_llm(monkeypatch):
         return orchestrator.AgentReply("general", f"echo: {kw['user_msg']}")
     monkeypatch.setattr(orchestrator, "handle_turn", fake)
     yield
-    if os.path.exists("test.db"):
-        os.remove("test.db")
 
 
 def test_flow():

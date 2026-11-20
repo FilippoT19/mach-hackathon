@@ -7,5 +7,7 @@ web:       ## frontend on :3000
 	cd frontend && npm run dev
 dev: db    ## everything (api + web) in one terminal
 	$(MAKE) -j2 api web
+data:      ## import Milan open data into the places table
+	cd backend && ../.venv/bin/python -m app.opendata
 test:
 	cd backend && ../.venv/bin/python -m pytest -q

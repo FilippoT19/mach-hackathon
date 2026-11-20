@@ -7,7 +7,10 @@ from anthropic import beta_async_tool
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import Memory, Task
+import math
+
+from ..models import Memory, Place, Task
+from ..opendata import CATEGORIES
 
 
 def build_tools(names: list[str], *, db: AsyncSession, user_id: str, agent: str) -> list:
@@ -109,7 +112,65 @@ def _update_task(db: AsyncSession, user_id: str, agent: str):
     return update_task
 
 
+def _km(lat1, lon1, lat2, lon2) -> float:
+    p = math.pi / 180
+    a = (math.sin((lat2 - lat1) * p / 2) ** 2
+         + math.cos(lat1 * p) * math.cos(lat2 * p) * math.sin((lon2 - lon1) * p / 2) ** 2)
+    return 12742 * math.asin(math.sqrt(a))
+
+
+def _find_places(db: AsyncSession, user_id: str, agent: str):
+    @beta_async_tool
+    async def find_places(category: str, near: str = "", neighbourhood: str = "",
+                          query: str = "", limit: int = 5) -> str:
+        """Search real points of interest in Milan (official open data of the Comune di Milano).
+
+        Categories: pharmacy, metro_stop, bus_tram_stop, recycling_center, water_house,
+        street_market, mm_housing_office.
+
+        Args:
+            category: One of the categories above.
+            near: Optional landmark to sort by distance from, given as the name of a metro
+                station or stop (e.g. "Duomo", "Loreto"). Use this when the user names a place.
+            neighbourhood: Optional NIL neighbourhood name, e.g. "Isola", "Navigli", "Città Studi".
+            query: Optional words to match in the name or address.
+            limit: Max results (default 5).
+        """
+        if category not in CATEGORIES:
+            return f"error: unknown category; use one of {sorted(CATEGORIES)}"
+        stmt = select(Place).where(Place.category == category)
+        if neighbourhood:
+            stmt = stmt.where(Place.nil.ilike(f"%{neighbourhood}%"))
+        for w in query.split():
+            stmt = stmt.where(or_(Place.name.ilike(f"%{w}%"), Place.address.ilike(f"%{w}%")))
+        rows = (await db.scalars(stmt.limit(5000))).all()
+        origin = None
+        if near:
+            anchor = await db.scalar(
+                select(Place).where(Place.category.in_(["metro_stop", "bus_tram_stop"]),
+                                    Place.name.ilike(f"%{near}%"), Place.lat.is_not(None))
+                .order_by(Place.category.desc()).limit(1))  # prefer metro over surface
+            if anchor is None:
+                return f"error: no metro or bus stop matching '{near}' to measure distance from"
+            origin = (anchor.lat, anchor.lon, anchor.name)
+            rows = sorted((r for r in rows if r.lat is not None),
+                          key=lambda r: _km(origin[0], origin[1], r.lat, r.lon))
+        out = []
+        for r in rows[: max(1, min(limit, 20))]:
+            item = {"name": r.name, "address": r.address, "neighbourhood": r.nil,
+                    "municipio": r.municipio, "lat": r.lat, "lon": r.lon, "info": r.data}
+            if origin:
+                item["km_from_" + origin[2]] = round(_km(origin[0], origin[1], r.lat, r.lon), 2)
+            out.append(item)
+        if not out:
+            return "[] (no match; data may not be imported yet: run `make data`)"
+        return json.dumps(out, ensure_ascii=False)
+
+    return find_places
+
+
 TOOL_FACTORIES: dict[str, Callable] = {
+    "find_places": _find_places,
     "remember": _remember,
     "recall": _recall,
     "create_task": _create_task,

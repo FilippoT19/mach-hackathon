@@ -108,3 +108,27 @@ async def chat(body: ChatIn, db: AsyncSession = DB):
                    content=reply.text))
     await db.commit()
     return {"conversation_id": conv.id, "agent": reply.agent, "reply": reply.text}
+
+
+@app.get("/places")
+async def places(category: str, near: str = "", neighbourhood: str = "", query: str = "",
+                 limit: int = 10, db: AsyncSession = DB):
+    """Same search the agents use (handy for maps in the UI)."""
+    import json as _json
+
+    from .agents.tools import _find_places
+
+    tool = _find_places(db, "", "api")
+    out = await tool.call({"category": category, "near": near, "neighbourhood": neighbourhood,
+                           "query": query, "limit": limit})
+    try:
+        return _json.loads(out)
+    except ValueError:
+        raise HTTPException(400, out)
+
+
+@app.get("/places/categories")
+async def place_categories():
+    from .opendata import CATEGORIES
+
+    return CATEGORIES

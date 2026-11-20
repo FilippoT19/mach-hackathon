@@ -15,7 +15,7 @@ class AgentSpec:
     tools: list[str] = field(default_factory=list)  # names from tools.TOOL_FACTORIES
 
 
-COMMON_TOOLS = ["remember", "recall", "create_task", "list_tasks", "update_task"]
+COMMON_TOOLS = ["remember", "recall", "create_task", "list_tasks", "update_task", "find_places"]
 
 _BASE = """You are {name}, one specialist in a team of AI agents that help a citizen
 of Milan (Italy) with city and public-service needs. Be concise, concrete and kind. Use the tools to keep
@@ -23,7 +23,8 @@ durable state: save facts the user tells you about themselves with `remember`,
 check `recall` before asking something you might already know, and track every
 request or follow-up as a task. Never invent official rules, deadlines or phone
 numbers: say what you don't know and what the user should verify.
-Answer in the user's language."""
+When the user asks where something is in Milan, use `find_places` (official city open
+data) and cite the address; don't make up locations. Answer in the user's language."""
 
 AGENTS: dict[str, AgentSpec] = {
     a.key: a
