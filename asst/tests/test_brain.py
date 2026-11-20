@@ -297,6 +297,32 @@ async def main() -> int:
     rowx = Message(type="chat", sender=LEDGER, msg_id="lx", need_id="N-EN", recipient="agent:bk", body={"text": "agenda"})
     line = await brain._human(FakeCity("agent:bk"), [rowx], "x", "Frase.", en="Sentence.")
     check("X-30 lingua ricordata per need", line == "Sentence.", line)
+    # 22. X-31: after the receipt, ask where the citizen lives; answer with the route.
+    HOSP = "agent:jdj692g4145e"
+    rows = [
+        row(CITIZEN, "agent:bk", "need.request lang=it prescription_number=prescription_number-RX-31", 0),
+        row(HOSP, "agent:bk", "booking.receipt booking_id=B-31 ledger_ref=L-31", 1),
+    ]
+    city = FakeCity("agent:bk")
+    await brain._desk(city, rows[1], rows, hold_self=False, fixed=None)
+    cit = to(city, CITIZEN)
+    check("X-31 ricevuta poi data.request indirizzo", len(cit) == 2 and cit[1].startswith("data.request purpose=booking fields=address"), cit)
+    asked = [row(s2, r2, t2, 2 + i) for i, (r2, t2) in enumerate(city.sent) for s2 in ["agent:bk"]]
+    chat2 = rows + asked
+    reply = row(CITIZEN, "agent:bk", "data.response address=Via_Ornato_10 lat=45.5190 lon=9.1900 disability=motor car=true car_euro_class=EURO-3", 9)
+    city2 = FakeCity("agent:bk")
+    await brain._desk(city2, reply, chat2 + [reply], hold_self=False, fixed=None)
+    out = to(city2, CITIZEN)
+    check("X-31 distanza, accessibilità e Area B", out and " km " in out[0] and "sedia a rotelle" in out[0] and "Area B" in out[0] and not brain.clinical(out[0]), out)
+    city3 = FakeCity("agent:bk")
+    await brain._desk(city3, reply, chat2 + [reply], hold_self=False, fixed=None)
+    check("X-31 una sola risposta per need", not to(city3, CITIZEN), city3.sent)
+    brain._ANSWERED_WHERE.clear()
+    no = row(CITIZEN, "agent:bk", "preferisco non dirlo", 9)
+    city4 = FakeCity("agent:bk")
+    await brain._desk(city4, no, chat2 + [no], hold_self=False, fixed=None)
+    out = to(city4, CITIZEN)
+    check("X-31 rifiuto: indicazioni generiche", out and out[0].startswith("Nessun problema.") and "M5" in out[0], out)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 
