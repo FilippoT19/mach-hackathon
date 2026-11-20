@@ -41,9 +41,9 @@ def _offered(chat: list[Message], agent: str) -> set[str]:
     for row in chat:
         if row.sender != agent or "offer" not in words(row.text):
             continue
-        slot = fields_of(row.text).get("slot_id")
-        if slot:
-            found.add(slot)
+        for offer in _offer_rows(row.text):
+            if offer.get("slot_id"):
+                found.add(offer["slot_id"])
     return found
 
 
@@ -54,11 +54,11 @@ def _withdrawn(chat: list[Message], agent: str) -> set[str]:
     for row in chat:
         if row.sender != agent or "offer" not in words(row.text):
             continue
-        fields = fields_of(row.text)
-        offer_id = fields.get("offer_id")
-        slot = fields.get("slot_id")
-        if offer_id and slot:
-            by_offer[offer_id] = slot
+        for fields in _offer_rows(row.text):
+            offer_id = fields.get("offer_id")
+            slot = fields.get("slot_id")
+            if offer_id and slot:
+                by_offer[offer_id] = slot
     dropped: set[str] = set()
     for row in chat:
         if "cancel" not in words(row.text):
@@ -120,7 +120,7 @@ def _our_offer(chat: list[Message], agent: str, offer_id: str) -> dict[str, str]
     token = f"offer_id={offer_id}"
     for row in chat:
         if row.sender == agent and token in row.text.split() and "offer" in words(row.text):
-            return fields_of(row.text)
+            return _line_fields(row.text, token)
     return {}
 
 
@@ -319,8 +319,18 @@ async def _advance_alone(
         if slot.get("slot_id") not in taken
     ]
     if chosen:
-        for slot in chosen[:3]:
-            if await _say(city, citizen, _offer_line(slot, number, priority)):
+        # BK-14: every slot in ONE message, one offer per line. The citizen chooses in the turn of
+        # the first message that names a place; a later message does not enter that choice.
+        picks = chosen[:3]
+        line = await _human(
+            city,
+            chat,
+            "here are the free appointments that fit; the citizen picks one and confirms it",
+            "Ecco i posti liberi adatti a lei: mi dica quale preferisce.",
+        )
+        text = "\n".join([_offer_line(slot, number, priority) for slot in picks] + [line])
+        if await _say(city, citizen, text):
+            for slot in picks:
                 sent.offers.add(slot["slot_id"])
                 if replacing:
                     sent.again.add(slot["slot_id"])
