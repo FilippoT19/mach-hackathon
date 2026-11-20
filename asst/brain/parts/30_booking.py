@@ -228,6 +228,9 @@ async def _desk(
     if "booking.receipt" in kind and message.sender.startswith("agent:"):
         await _forward_receipt(city, message, chat)
         return
+    if message.sender.startswith("citizen:") and _asked_where(chat, city.agent_id, message):
+        await _on_where(city, message, chat)
+        return
     if "cancel" in kind and message.sender.startswith("agent:"):
         await _partner_cancel(city, message, chat, fixed=fixed)
         return
@@ -518,9 +521,28 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
         + " with this receipt and your health card for check-in. If you cannot come, write to "
         "us first: we will move the appointment and free the slot for another citizen.",
     )
-    await _say(
+    if not await _say(
         city, citizen, f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref} {line}"
-    )
+    ):
+        return
+    # X-31: proactive next step — ask where the citizen lives and how they move, then tell them
+    # the best way to reach the facility (distance from the map, transit, access, Area B).
+    if message.need_id:
+        _BOOKED_AT[message.need_id] = message.sender
+    if not _we(chat, city.agent_id, "purpose=booking", to=citizen, word="data.request"):
+        en = _lang(chat) != "it"
+        await _say(
+            city,
+            citizen,
+            f"data.request purpose=booking fields={_WHERE_FIELDS} "
+            + (
+                "To help you get there: may I have your address, and do you need any assistance "
+                "or plan to come by car? I will tell you the easiest way to reach the visit."
+                if en
+                else "Per aiutarla ad arrivare: mi indica il suo indirizzo, se le serve assistenza "
+                "e se pensa di venire in auto? Le dico il modo più comodo per raggiungere la visita."
+            ),
+        )
 
 
 async def _partner_cancel(
@@ -538,3 +560,131 @@ async def _partner_cancel(
     await _advance(city, message, chat, fixed=fixed, replacing=True)
 
 
+
+
+# --- X-31: map — how the citizen reaches the facility --------------------------------------
+_WHERE_FIELDS = "address,disability,car,car_euro_class"
+_BOOKED_AT: OrderedDict[str, str] = OrderedDict()
+_DOORS: dict[str, tuple[float, float, str]] = {}
+_ANSWERED_WHERE: set[str] = set()
+# Fallback doors (Index cards carry the exact coordinates; these are used only if find fails).
+_DOOR_FALLBACK = {
+    "agent:jdj692g4145e": (45.5155, 9.1835, "Via Arganini Gerolamo 38"),
+    "agent:jmjfst55vgjz": (45.5106, 9.1867, "Viale Ca' Granda 28"),
+    "agent:mm18nddkfc5w": (45.5080, 9.1950, "Via Giolli Raffaello 23"),
+}
+_NUM = re.compile(r"-?\d{1,2}\.\d{3,}")
+
+
+def _asked_where(chat: list[Message], agent: str, message: Message) -> bool:
+    """True when our last word to this citizen was the X-31 data.request, still unanswered."""
+    if message.need_id and message.need_id in _ANSWERED_WHERE:
+        return False
+    last = None
+    for row in chat:
+        if row.sender == agent and row.recipient == message.sender:
+            last = row
+    return last is not None and "data.request" in words(last.text) and "fields=" + _WHERE_FIELDS in last.text.split()
+
+
+async def _door(city: City, facility: str) -> tuple[float, float, str] | None:
+    if facility in _DOORS:
+        return _DOORS[facility]
+    try:
+        peers = await asyncio.wait_for(city.find("ospedale specialista consultorio asst-niguarda"), timeout=4.0)
+    except Exception:
+        peers = []
+    for peer in peers:
+        addr = getattr(peer, "address", None)
+        if addr is not None and getattr(addr, "lat", None) is not None:
+            _DOORS[peer.agent_id] = (float(addr.lat), float(addr.lon), str(addr.label))
+    return _DOORS.get(facility) or _DOOR_FALLBACK.get(facility)
+
+
+def _km(a: tuple[float, float], b: tuple[float, float]) -> float:
+    lat1, lon1, lat2, lon2 = map(math.radians, (a[0], a[1], b[0], b[1]))
+    h = math.sin((lat2 - lat1) / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin((lon2 - lon1) / 2) ** 2
+    return 6371.0 * 2 * math.asin(math.sqrt(h))
+
+
+def _citizen_point(text: str) -> tuple[float, float] | None:
+    fields = fields_of(text)
+    lat, lon = fields.get("lat") or fields.get("latitude"), fields.get("lon") or fields.get("lng") or fields.get("longitude")
+    try:
+        if lat and lon:
+            return float(lat), float(lon)
+    except ValueError:
+        pass
+    nums = [float(n) for n in _NUM.findall(text)]
+    pair = [n for n in nums if 44.0 < n < 47.0], [n for n in nums if 8.0 < n < 10.5]
+    if pair[0] and pair[1]:
+        return pair[0][0], pair[1][0]
+    return None
+
+
+def _route_line(en: bool, km: float | None, door: tuple[float, float, str] | None, fields: dict[str, str]) -> str:
+    street = door[2] if door else ("the facility" if en else "la struttura")
+    out: list[str] = []
+    if km is None:
+        out.append(
+            f"The visit is at {street}, near the M5 metro (Ca' Granda stop) and several ATM bus lines."
+            if en else
+            f"La visita è in {street}, vicino alla metro M5 (fermata Ca' Granda) e a diverse linee ATM."
+        )
+    elif km < 1.2:
+        mins = max(5, round(km * 13))
+        out.append(
+            f"{street} is about {km:.1f} km from you: an easy walk of about {mins} minutes."
+            if en else
+            f"{street} è a circa {km:.1f} km da lei: una passeggiata di circa {mins} minuti."
+        )
+    else:
+        mins = round(10 + km * 4)
+        out.append(
+            f"{street} is about {km:.1f} km from you: by public transport (M5 metro, Ca' Granda stop, "
+            f"or ATM buses) it takes about {mins} minutes; please allow some extra time."
+            if en else
+            f"{street} è a circa {km:.1f} km da lei: con i mezzi pubblici (metro M5, fermata Ca' Granda, "
+            f"o bus ATM) servono circa {mins} minuti; tenga un po' di margine."
+        )
+    disability = fields.get("disability", "none").lower()
+    if disability == "motor":
+        out.append("The building is wheelchair accessible; our staff can meet you at the entrance." if en
+                   else "La struttura è accessibile in sedia a rotelle; il nostro personale può accoglierla all'ingresso.")
+    elif disability in {"visual", "hearing", "cognitive"}:
+        out.append("Tell the front desk when you arrive: someone will accompany you to the visit." if en
+                   else "All'arrivo lo dica all'accoglienza: qualcuno la accompagna fino alla visita.")
+    car = fields.get("car", "").lower() == "true"
+    euro = fields.get("car_euro_class", "")
+    if car:
+        old = euro[-1:].isdigit() and int(euro[-1]) <= 4
+        out.append(
+            (f"If you come by car: with a {euro} vehicle check the Area B limits first; public transport is "
+             "easier and greener." if old else "If you come by car, check Area B and parking nearby; public "
+             "transport is often easier and greener.")
+            if en else
+            (f"Se viene in auto: con un'auto {euro} controlli prima i limiti di Area B; i mezzi pubblici sono "
+             "più comodi e inquinano meno." if old else "Se viene in auto, controlli Area B e i parcheggi "
+             "vicini; spesso i mezzi pubblici sono più comodi e inquinano meno.")
+        )
+    out.append("See you at the visit!" if en else "A presto alla visita!")
+    return " ".join(out)
+
+
+async def _on_where(city: City, message: Message, chat: list[Message]) -> None:
+    key = message.need_id or message.msg_id
+    if key in _ANSWERED_WHERE:
+        return
+    _ANSWERED_WHERE.add(key)
+    facility = _BOOKED_AT.get(key) or next(
+        (row.sender for row in reversed(chat) if row.sender.startswith("agent:") and "booking.receipt" in words(row.text)),
+        "agent:jdj692g4145e",
+    )
+    door = await _door(city, facility)
+    point = _citizen_point(message.text)
+    km = _km(point, door[:2]) if point and door else None
+    en = _lang(chat) != "it"
+    head = "Thank you." if en else "Grazie."
+    if km is None and "address" not in fields_of(message.text):
+        head = "No problem." if en else "Nessun problema."
+    await _say(city, message.sender, f"{head} {_route_line(en, km, door, fields_of(message.text))}")
