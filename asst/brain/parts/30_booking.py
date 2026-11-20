@@ -949,6 +949,10 @@ async def _on_confirm(
     ]
     if number:
         parts.append(f"prescription_number={number}")
+    if offer.get("cross_asst") == "true" or target not in _OUR_AGENTS.values():
+        accepted, cross_ref = _cross_consent(chat, agent)
+        if accepted and cross_ref:
+            parts.append(f"cross_asst_consent_ref={cross_ref}")  # common format between ASSTs
     await _say(city, target, " ".join(parts))
 
 

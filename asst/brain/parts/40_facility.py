@@ -419,6 +419,7 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
     lines = [
         f"offer offer_id=of-{s['slot_id']} slot_id={s['slot_id']} doctor_id={s['doctor_id']} facility={agent} "
         f"procedure={s['procedure']} agenda_date={s['at']} {_doctor_tokens(s['doctor_id'])} request_id={request_id}"
+        + (" wheelchair=true" if agent == "agent:jdj692g4145e" else "")  # common format: accessible hospital
         for s in picks
     ]
     await _say(city, message.sender, "\n".join(lines + [
