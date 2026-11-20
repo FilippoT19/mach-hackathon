@@ -12,7 +12,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 > Nota per Claude: il codice del check-in (`_on_checkin`, `_on_checked_in`) è comune a ospedale,
 > specialista e consultorio; le correzioni 1-3 valgono per tutti e tre.
 
-### [ ] P-francesco-1: check-in rifiutato, il cittadino riprova e non viene mai registrato (FA-03)
+### [~] P-francesco-1 (FA-03, in deploy): check-in rifiutato, il cittadino riprova e non viene mai registrato (FA-03)
 - Journey: — (da codice; **da verificare nei Journeys**) — ruolo: hospital (anche specialist, family_counseling)
 - Codice: `40_facility.py:268-270` (`_on_checkin`): `if not _we(chat, agent, token, to=LEDGER, word="checkin")`
 - Cosa fa il cittadino: `checkin booking_id=B1 ledger_ref=L1` in anticipo → il Ledger rifiuta. Poi riscrive dentro la fascia (08-13 / 13-18 agenda).
@@ -23,7 +23,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 - Test a parole: "dato `checkin booking_id=B1` + rifiuto + nuovo `checkin booking_id=B1`, mi aspetto un secondo `checkin booking_id=B1 citizen=…` al Ledger"; "dopo 3 rifiuti, al quarto messaggio nessun `checkin` al Ledger e una frase finale (vedi P-francesco-3)"; "dopo `checked_in`, un reinvio non scrive al Ledger e ripete la conferma".
 - Priorità secondo me: **P1**
 
-### [ ] P-francesco-2: il rifiuto del Ledger in testo libero non viene riconosciuto (FA-03)
+### [~] P-francesco-2 (FA-03, in deploy): il rifiuto del Ledger in testo libero non viene riconosciuto (FA-03)
 - Journey: — (**da verificare nei Journeys**: testo reale di un rifiuto di check-in) — ruolo: hospital (e tutte le strutture)
 - Codice: `10_shared.py:220-224` (`_await_line`): rifiuto = riga che comincia con `refused` **e** contiene `checkin`.
 - Cosa fa il cittadino: `checkin booking_id=B1` fuori fascia o con booking non valido.
@@ -49,7 +49,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 - Test a parole: "dato `checkin ledger_ref=L1`, mi aspetto la domanda sul numero e nessun `checkin` al Ledger"; "dato un rifiuto, mi aspetto una frase con 08-13 / 13-18 e nessuna parola `checkin`".
 - Priorità secondo me: **P0** (agente muto)
 
-### [ ] P-francesco-4: una domanda sul check-in diventa un check-in vero (FA-20, introdotto con X-40)
+### [~] P-francesco-4 (FA-20, in deploy): una domanda sul check-in diventa un check-in vero (FA-20, introdotto con X-40)
 - Journey: — — ruolo: hospital (e tutte le strutture, `_facility_free_text`)
 - Codice: `40_facility.py:74-83`: basta `"booking_id=" in message.text` **oppure** una parola di `_ARRIVED` (`"check in"`, `"check-in"`…); il `booking_id` può essere preso dalla **storia** (ricevuta).
 - Cosa fa il cittadino: "Quando posso fare il check in?" oppure "Posso spostare la visita booking_id=B1?" oppure "Vorrei annullare booking_id=B1".
@@ -69,7 +69,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 - Test a parole: "dato `confirm offer_id=of-S1 slot_id=S1 citizen=citizen:x` da `agent:bk` senza `consent_ref`, mi aspetto `cancel offer_id=of-S1 reason=missing_consent_ref` ad `agent:bk` e nessun messaggio al cittadino".
 - Priorità secondo me: **P0** (agente muto verso il booking, prenotazione bloccata)
 
-### [ ] P-francesco-6: `consent_ref` inventato nel `commit` (FA-01)
+### [~] P-francesco-6 (FA-01, in deploy): `consent_ref` inventato nel `commit` (FA-01)
 - Journey: — (**da verificare**: commit rifiutati con `CONSENT_MISSING` o verdetti audit) — ruolo: hospital (e tutte le strutture)
 - Codice: `40_facility.py:201-205` (`consent = f"cons-{need}-booking"`), `40_facility.py:213` (`fence` = `1` se manca).
 - Cosa fa il cittadino: — (caso interno: la riga `held` non riporta il consenso e la storia non ha più l'`hold`).
@@ -79,7 +79,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 - Test a parole: "dato `held hold_id=H1 slot_id=S1` senza consenso nella storia, mi aspetto nessun `commit` con `cons-…` inventato e un `cancel` al mittente".
 - Priorità secondo me: **P2** (da verificare quanto capita)
 
-### [ ] P-francesco-7: hold/commit rifiutato: motivo generico e hold non liberato (FA-02)
+### [~] P-francesco-7 (FA-02, in deploy): hold/commit rifiutato: motivo generico e hold non liberato (FA-02)
 - Journey: — (**da verificare**: testi reali di `NO_CAPACITY`, `PRESCRIPTION_EXPIRED`, `CONSENT_MISSING`) — ruolo: hospital (e tutte le strutture)
 - Codice: `40_facility.py:257` (`reason=facility_cancelled` fisso); `40_facility.py:241-244` (prende l'**ultimo** slot con `hold`, non quello rifiutato); `40_facility.py:184-185` (commit rifiutato: nessun `cancel hold_id=…`).
 - Cosa fa il cittadino: — (il booking ha confermato, il Ledger rifiuta hold o commit).
@@ -89,7 +89,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 - Test a parole: "dato `refused commit … PRESCRIPTION_EXPIRED`, mi aspetto `cancel offer_id=… reason=prescription_expired` al booking e `cancel hold_id=…` al Ledger".
 - Priorità secondo me: **P1** se una regola P1/P2/P3 è attiva, altrimenti **P2**
 
-### [ ] P-francesco-8: secondo messaggio libero all'ospedale senza risposta (FA-20)
+### [~] P-francesco-8 (FA-20, in deploy): secondo messaggio libero all'ospedale senza risposta (FA-20)
 - Journey: — — ruolo: hospital (e tutte le strutture)
 - Codice: `40_facility.py:84-85`: `facility.note` una sola volta per caso.
 - Cosa fa il cittadino: "dove posso parcheggiare?" e poi "c'è un ascensore?".
@@ -99,7 +99,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 - Test a parole: "dati due messaggi liberi di seguito, mi aspetto due risposte".
 - Priorità secondo me: **P1**
 
-### [ ] P-francesco-9: conferma del check-in senza i valori del registro (FA-03)
+### [~] P-francesco-9 (FA-03, in deploy): conferma del check-in senza i valori del registro (FA-03)
 - Journey: — (**da verificare**: testo reale della riga `checked_in`) — ruolo: hospital (e tutte le strutture)
 - Codice: `40_facility.py:290-301` (`_on_checked_in`): al cittadino solo `checkin booking_id=… <frase>`.
 - Cosa fa il cittadino: `checkin booking_id=B1 ledger_ref=L1` → il Ledger risponde `checked_in booking_id=B1 …`.
@@ -109,7 +109,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 - Test a parole: "dato `checked_in booking_id=B1 slot_id=S9 at=…`, mi aspetto `checkin booking_id=B1 slot_id=S9 at=… <frase>`".
 - Priorità secondo me: **P2**
 
-### [ ] P-francesco-10: richieste cross-ASST: lingua rara e attributi del medico (FA-12)
+### [~] P-francesco-10 (FA-12, in deploy): richieste cross-ASST: lingua rara e attributi del medico (FA-12)
 - Journey: — (**da verificare**: verdetti audit su offerte cross-ASST) — ruolo: hospital
 - Codice: `10_shared.py:251-258` (`_speaks`: `*` = qualsiasi lingua non it/en); `40_facility.py:334, 338-346, 381-382` (`doctor_lang`, `doctor_gender` dalla tabella `_DOCTORS` scritta nel codice).
 - Cosa fa l'altra ASST: `need.request procedure=VIS-FIS priority=B lang=fr request_id=r1`.
@@ -119,7 +119,8 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 - Test a parole: "dato `need.request … lang=fr`, mi aspetto nessuno slot di h3"; "dato `lang=vi`, mi aspetto solo slot di h3".
 - Priorità secondo me: **P2** (P1 dal livello 4, scarsità tra ASST)
 
-### [ ] P-francesco-11: da verificare nei Journeys prima di toccare il codice
+### [-] P-francesco-11: da verificare nei Journeys prima di toccare il codice
+- Motivo: servono messaggi e misure dei Journeys reali per verificare i quattro punti.
 - `40_facility.py:174-175`: `_finish_booking` cerca `committed` con `booking_id=<hold_id>`. Se nel Ledger vero `booking_id` ≠ `hold_id`, la ricevuta parte solo se il `committed` apre un turno suo. Guardare una riga `committed` reale.
 - `00_core.py:150-163` (X-40): a una domanda clinica rispondiamo con `scope.note`. e19 "Comportamento del brain" dice `OutOfScope`, senza mandare nulla. Conformance ok (stadio "NOT TESTED"), ma da confermare che non costi in audit.
 - `40_facility.py:37-46`: `emergency.ack` all'agente che avvisa ("lo accompagniamo al pronto soccorso"): promessa che l'ospedale non può mantenere da solo; valutare una frase più neutra.

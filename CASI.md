@@ -156,3 +156,13 @@ Nella PR scrivere: ID dei casi toccati, prima e dopo, test fatti.
 | X-43 | booking, hospital | Formato comune cross-ASST (Lorenteggio, Corvetto): servono wheelchair=true dall ospedale e cross_asst_consent_ref nel confirm. | Offerte del nostro ospedale con wheelchair=true; confirm verso altra ASST con cross_asst_consent_ref. Salvati gli id di Lorenteggio (_KNOWN_PARTNERS, non ancora attivi) e la tabella lingue rare. | Collaborazione tra ASST senza errori di formato. |
 
 | CO-10b | tutti (consultorio) | Gravidanza con sangue, perdite, dolore forte o contrazioni: il consultorio proponeva posti invece del 112 (P-magesh-6). | Nuova red flag: parola di gravidanza + parola di pericolo -> escalate.emergency, 112, avviso all ospedale, nessuna offerta. Controllo in gravidanza senza pericolo resta normale. | Sicurezza (P0). |
+| ID | ruolo | caso | soluzione | logica |
+| --- | --- | --- | --- | --- |
+| FA-03 | strutture | Il cittadino riprova il check-in (P-francesco-1). | Fino a tre invii al Ledger per prenotazione. Se già registrato, ripete la conferma. | Ogni nuovo messaggio riceve risposta. |
+| FA-03 | strutture | Il Ledger rifiuta il check-in in testo libero (P-francesco-2). | Riconosce il rifiuto diretto alla struttura dopo la richiesta e avvisa il cittadino. | L'avviso vale anche se il rifiuto arriva in ritardo. |
+| FA-20 | strutture | Una domanda sul check-in o sulla visita sembra un arrivo (P-francesco-4). | Registra solo un arrivo esplicito. Indica la fascia o il centro prenotazioni. | Chiedere informazioni non registra l'arrivo. |
+| FA-01 | strutture | Manca il riferimento al consenso quando arriva l'hold (P-francesco-6). | Usa il consenso del confirm o dell'hold. Se manca, libera il posto e avvisa il mittente. | Il consenso deve essere verificabile. |
+| FA-02 | strutture | Il Ledger rifiuta un hold o un commit (P-francesco-7). | Comunica il codice disponibile per l'offerta giusta. Dopo un commit rifiutato, libera l'hold. | Il booking può proporre il passo adatto. |
+| FA-20 | strutture | Il cittadino scrive più domande libere (P-francesco-8). | Risponde a ogni domanda con i fatti disponibili. | Il cittadino riceve indicazioni verificate. |
+| FA-03 | strutture | Il cittadino riceve una conferma di check-in incompleta (P-francesco-9). | Riporta i valori del Ledger. L'ospedale ricorda l'accessibilità in sedia a rotelle. | La conferma riflette il registro. |
+| FA-12 | ospedale | Un partner chiede uno slot in una lingua rara (P-francesco-10). | Il medico h3 copre il vietnamita. L'offerta identifica il medico con doctor_id. | La lingua richiesta deve corrispondere a una lingua effettiva. |
