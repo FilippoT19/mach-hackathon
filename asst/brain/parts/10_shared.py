@@ -59,6 +59,21 @@ def fields_of(text: str) -> dict[str, str]:
     return found
 
 
+def _line_fields(text: str, token: str) -> dict[str, str]:
+    """Fields of the one line that carries ``token``. BK-14: one message holds several offers."""
+
+    for line in text.splitlines():
+        if token in line.split():
+            return fields_of(line)
+    return fields_of(text)
+
+
+def _offer_rows(text: str) -> list[dict[str, str]]:
+    """Every offer line of one message (``offer_id=`` on each line)."""
+
+    return [fields_of(line) for line in text.splitlines() if "offer_id=" in line]
+
+
 def _when(value: str) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))

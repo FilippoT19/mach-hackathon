@@ -208,6 +208,21 @@ def fields_of(text: str) -> dict[str, str]:
     return found
 
 
+def _line_fields(text: str, token: str) -> dict[str, str]:
+    """Fields of the one line that carries ``token``. BK-14: one message holds several offers."""
+
+    for line in text.splitlines():
+        if token in line.split():
+            return fields_of(line)
+    return fields_of(text)
+
+
+def _offer_rows(text: str) -> list[dict[str, str]]:
+    """Every offer line of one message (``offer_id=`` on each line)."""
+
+    return [fields_of(line) for line in text.splitlines() if "offer_id=" in line]
+
+
 def _when(value: str) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -676,9 +691,9 @@ def _offered(chat: list[Message], agent: str) -> set[str]:
     for row in chat:
         if row.sender != agent or "offer" not in words(row.text):
             continue
-        slot = fields_of(row.text).get("slot_id")
-        if slot:
-            found.add(slot)
+        for offer in _offer_rows(row.text):
+            if offer.get("slot_id"):
+                found.add(offer["slot_id"])
     return found
 
 
@@ -689,11 +704,11 @@ def _withdrawn(chat: list[Message], agent: str) -> set[str]:
     for row in chat:
         if row.sender != agent or "offer" not in words(row.text):
             continue
-        fields = fields_of(row.text)
-        offer_id = fields.get("offer_id")
-        slot = fields.get("slot_id")
-        if offer_id and slot:
-            by_offer[offer_id] = slot
+        for fields in _offer_rows(row.text):
+            offer_id = fields.get("offer_id")
+            slot = fields.get("slot_id")
+            if offer_id and slot:
+                by_offer[offer_id] = slot
     dropped: set[str] = set()
     for row in chat:
         if "cancel" not in words(row.text):
@@ -755,7 +770,7 @@ def _our_offer(chat: list[Message], agent: str, offer_id: str) -> dict[str, str]
     token = f"offer_id={offer_id}"
     for row in chat:
         if row.sender == agent and token in row.text.split() and "offer" in words(row.text):
-            return fields_of(row.text)
+            return _line_fields(row.text, token)
     return {}
 
 
@@ -954,8 +969,18 @@ async def _advance_alone(
         if slot.get("slot_id") not in taken
     ]
     if chosen:
-        for slot in chosen[:3]:
-            if await _say(city, citizen, _offer_line(slot, number, priority)):
+        # BK-14: every slot in ONE message, one offer per line. The citizen chooses in the turn of
+        # the first message that names a place; a later message does not enter that choice.
+        picks = chosen[:3]
+        line = await _human(
+            city,
+            chat,
+            "here are the free appointments that fit; the citizen picks one and confirms it",
+            "Ecco i posti liberi adatti a lei: mi dica quale preferisce.",
+        )
+        text = "\n".join([_offer_line(slot, number, priority) for slot in picks] + [line])
+        if await _say(city, citizen, text):
+            for slot in picks:
                 sent.offers.add(slot["slot_id"])
                 if replacing:
                     sent.again.add(slot["slot_id"])
@@ -963,8 +988,44 @@ async def _advance_alone(
     if taken and not replacing:
         return
     page, pages = _page(world)
-    if page < pages and page < _MAX_PAGE and not _asked(chat, agent, procedure, page + 1):
-        await _say(city, LEDGER, f"world procedure={procedure} page={page + 1}")
+    if page < pages and page < _MAX_PAGE:
+        if not _asked(chat, agent, procedure, page + 1):
+            await _say(city, LEDGER, f"world procedure={procedure} page={page + 1}")
+        return
+    # BK-10: every page read and nothing fits. Silence scores -1 (and risks no_reply); a relaxed
+    # alternative scores 0. The waiting list is the one alternative that never books outside S.
+    await _relaxed(city, message, chat, key, citizen, procedure, number, priority)
+
+
+async def _relaxed(
+    city: City,
+    message: Message,
+    chat: list[Message],
+    key: str,
+    citizen: str,
+    procedure: str,
+    number: str | None,
+    priority: str | None,
+) -> None:
+    offer_id = f"wl-{message.need_id or message.msg_id}"
+    sent = _sent(key)
+    if offer_id in sent.offers or _we(chat, city.agent_id, f"offer_id={offer_id}", to=citizen, word="offer"):
+        return
+    line = await _human(
+        city,
+        chat,
+        "no appointment that fits the citizen is free in the time allowed; we put them on the "
+        "waiting list and will offer the first suitable slot that opens",
+        "Al momento non c'è un posto adatto a lei nei tempi previsti. La metto in lista d'attesa: "
+        "le proponiamo il primo posto libero.",
+    )
+    parts = ["offer", f"offer_id={offer_id}", "waiting_list=true", f"procedure={procedure}"]
+    if priority:
+        parts.append(f"priority={priority}")
+    if number:
+        parts.append(f"prescription_number={number}")
+    if await _say(city, citizen, " ".join(parts) + f" {line}"):
+        sent.offers.add(offer_id)
 
 
 async def _on_confirm(
@@ -1111,7 +1172,7 @@ def _booking_of(chat: list[Message], agent: str, slot_id: str) -> tuple[str, str
     for row in chat:
         if token not in row.text.split():
             continue
-        fields = fields_of(row.text)
+        fields = _line_fields(row.text, token)
         if "confirm" in words(row.text) and row.sender not in (LEDGER, agent):
             sender = row.sender
             consent = fields.get("consent_ref", consent)
@@ -1127,7 +1188,7 @@ def _hold_slot(chat: list[Message], agent: str, hold_id: str) -> str:
     token = f"hold_id={hold_id}"
     for row in chat:
         if token in row.text.split() and (row.sender == agent or row.sender == LEDGER):
-            slot = fields_of(row.text).get("slot_id", "")
+            slot = _line_fields(row.text, token).get("slot_id", "")
             if slot:
                 return slot
     return ""
@@ -1251,7 +1312,7 @@ async def _on_refused(
     offer_id = ""
     for row in chat:
         if f"slot_id={slot}" in row.text.split():
-            offer_id = fields_of(row.text).get("offer_id", offer_id)
+            offer_id = _line_fields(row.text, f"slot_id={slot}").get("offer_id", offer_id)
     if (
         target
         and offer_id

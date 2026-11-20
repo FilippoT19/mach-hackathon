@@ -60,7 +60,7 @@ def _booking_of(chat: list[Message], agent: str, slot_id: str) -> tuple[str, str
     for row in chat:
         if token not in row.text.split():
             continue
-        fields = fields_of(row.text)
+        fields = _line_fields(row.text, token)
         if "confirm" in words(row.text) and row.sender not in (LEDGER, agent):
             sender = row.sender
             consent = fields.get("consent_ref", consent)
@@ -76,7 +76,7 @@ def _hold_slot(chat: list[Message], agent: str, hold_id: str) -> str:
     token = f"hold_id={hold_id}"
     for row in chat:
         if token in row.text.split() and (row.sender == agent or row.sender == LEDGER):
-            slot = fields_of(row.text).get("slot_id", "")
+            slot = _line_fields(row.text, token).get("slot_id", "")
             if slot:
                 return slot
     return ""
@@ -200,7 +200,7 @@ async def _on_refused(
     offer_id = ""
     for row in chat:
         if f"slot_id={slot}" in row.text.split():
-            offer_id = fields_of(row.text).get("offer_id", offer_id)
+            offer_id = _line_fields(row.text, f"slot_id={slot}").get("offer_id", offer_id)
     if (
         target
         and offer_id

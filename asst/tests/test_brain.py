@@ -58,6 +58,44 @@ async def run_gp(text: str, llm=None) -> FakeCity:
     return city
 
 
+def row(sender: str, recipient: str, text: str, n: int) -> Message:
+    return Message(type="chat", sender=sender, msg_id=f"h{n}", need_id="N-1", body={"text": text}, recipient=recipient)
+
+
+NOW = "2026-11-04T09:00:00Z"  # a Wednesday
+
+
+def slots_far(pages: str) -> str:
+    # Cardiology slot 3 weeks away: outside the B window (2 days).
+    return f"slots page={pages}\nslot_id=S-FAR doctor_id=d-s1 facility=agent:spec procedure=VIS-CARD at=2026-11-25T09:00:00Z day=wed free=1"
+
+
+def slots_near() -> str:
+    return "slots page=1/1\nslot_id=S-NEAR doctor_id=d-s1 facility=agent:spec procedure=VIS-CARD at=2026-11-05T15:00:00Z day=wed free=1"
+
+
+def slots_three() -> str:
+    days = [("S-1", "2026-11-04T15:00:00Z", "wed"), ("S-2", "2026-11-05T10:00:00Z", "thu"), ("S-3", "2026-11-05T11:00:00Z", "thu")]
+    doctor = {"wed": "d-s1", "thu": "d-s2"}
+    lines = [f"slot_id={s} doctor_id={doctor[d]} facility=agent:spec procedure=VIS-CARD at={at} day={d} free=1" for s, at, d in days]
+    return "slots page=1/1\n" + "\n".join(lines)
+
+
+async def run_desk(slots: str, already: list[tuple[str, str, str]] | None = None) -> FakeCity:
+    """Booking turn on a case where the Ledger already sent prescription, agenda and slots."""
+    city = FakeCity("agent:bk")
+    texts = [
+        (CITIZEN, "agent:bk", "vorrei prenotare prescription_number=prescription_number-RX-1"),
+        (LEDGER, "agent:bk", "prescription prescription_number=prescription_number-RX-1 procedure=VIS-CARD priority=B state=issued"),
+        (LEDGER, "agent:bk", f"agenda agenda_now={NOW}"),
+        (LEDGER, "agent:bk", slots),
+    ] + (already or [])
+    chat = [row(s, r, t, i) for i, (s, r, t) in enumerate(texts)]
+    brain._SENT.clear()
+    await brain._advance_alone(city, chat[3], chat, "N-1", fixed=None, replacing=False)
+    return city
+
+
 def to(city: FakeCity, who: str) -> list[str]:
     return [t for r, t in city.sent if r == who]
 
@@ -114,6 +152,45 @@ async def main() -> int:
     brain._LLM_TIMEOUT = 8.0
     c = await run_gp("ho mal di schiena", model("Capisco il fastidio: con questa ricetta prenoti subito la visita."))
     check("frase del modello usata", to(c, CITIZEN) and "Capisco il fastidio" in to(c, CITIZEN)[0], c.sent)
+
+    # 10. BK-10: no slot fits and no page is left -> relaxed alternative (waiting list), not silence.
+    c = await run_desk(slots_far(pages="1/1"))
+    cit = to(c, CITIZEN)
+    check("BK-10 nessuno slot -> lista d'attesa al cittadino", len(cit) == 1 and "waiting_list=true" in cit[0] and "offer_id=wl-N-1" in cit[0], c.sent)
+    check("BK-10 lista d'attesa con frase umana", cit and "lista d'attesa" in cit[0].lower(), cit)
+    c = await run_desk(slots_far(pages="1/1"), already=[("agent:bk", CITIZEN, "offer offer_id=wl-N-1 waiting_list=true")])
+    check("BK-10 lista d'attesa una volta sola", not to(c, CITIZEN), c.sent)
+
+    # 11. BK-10: another page exists -> ask the Ledger for it, do not offer the waiting list yet.
+    c = await run_desk(slots_far(pages="1/2"))
+    check("BK-10 c'è pagina 2 -> chiede pagina 2", any("page=2" in t for t in to(c, LEDGER)) and not to(c, CITIZEN), c.sent)
+
+    # 12. A fitting slot is still offered as before.
+    c = await run_desk(slots_near())
+    check("slot adatto -> offerta normale", any(t.startswith("offer ") and "slot_id=S-NEAR" in t for t in to(c, CITIZEN)), c.sent)
+
+    # 13. BK-14: three fitting slots -> ONE message with three offer lines + one human sentence.
+    c = await run_desk(slots_three())
+    cit = to(c, CITIZEN)
+    check("BK-14 un solo messaggio al cittadino", len(cit) == 1, cit)
+    check("BK-14 tre offerte nel messaggio", cit and all(f"slot_id=S-{i}" in cit[0] and f"offer_id=of-S-{i}" in cit[0] for i in (1, 2, 3)), cit)
+    lines = cit[0].splitlines() if cit else []
+    check("BK-14 una offerta per riga", sum(l.startswith("offer ") for l in lines) == 3 and all(l.count("offer_id=") <= 1 for l in lines), lines)
+
+    # 14. BK-14: the citizen confirms the SECOND offer -> we confirm slot S-2, not the first line.
+    bundle = cit[0] if cit else ""
+    city = FakeCity("agent:bk")
+    chat = [
+        row(CITIZEN, "agent:bk", "vorrei prenotare prescription_number=prescription_number-RX-1", 0),
+        row("agent:bk", CITIZEN, bundle, 1),
+        row(CITIZEN, "agent:bk", "confirm offer_id=of-S-2 consent_ref=cons-N-1-booking", 2),
+    ]
+    await brain._on_confirm(city, chat[2], chat, hold_self=False)
+    fac = to(city, "agent:spec")
+    check("BK-14 confirm della seconda offerta -> slot S-2", fac and "slot_id=S-2" in fac[0] and "offer_id=of-S-2" in fac[0], city.sent)
+    check("BK-14 _offered legge tutte le righe", brain._offered(chat, "agent:bk") == {"S-1", "S-2", "S-3"}, brain._offered(chat, "agent:bk"))
+    chat.append(row("agent:bk", CITIZEN, "cancel offer_id=of-S-2 reason=facility_cancelled", 3))
+    check("BK-14 _withdrawn trova la riga giusta", brain._withdrawn(chat, "agent:bk") == {"S-2"}, brain._withdrawn(chat, "agent:bk"))
 
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
