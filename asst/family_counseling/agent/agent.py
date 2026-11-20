@@ -2348,7 +2348,9 @@ async def _facility(
         attempt = _checkin_refused(city.agent_id, message, chat)
         if attempt is not None:
             await _answer_checkin_refusal(city, attempt, chat, reason=message.text)
-    elif head == "checkin" and message.sender.startswith("citizen:") and not _checkin_question(message.text):
+    elif head == "checkin" and message.sender.startswith("citizen:") and (
+        "booking_id=" in message.text or not _checkin_question(message.text)
+    ):  # P-francesco-12: act checkin + booking_id is always registered, even with a question
         await _on_checkin(city, message, chat, reports=reports)
     elif head == "confirm" or ("confirm" in kind and message.sender.startswith("agent:")):
         await _on_confirm(city, message, chat, hold_self=hold_self)
@@ -2519,12 +2521,11 @@ async def _on_held(city: City, message: Message, chat: list[Message]) -> bool:
         if ledger_chat:
             _, consent, number = _booking_of(ledger_chat, agent, slot)
     fence = fields.get("fence", "")
-    if not consent or not fence:
-        reason = "missing_consent_ref" if not consent else "missing_fence"
-        await _cancel_booking(city, chat, slot, reason=reason, hold_id=hold_id)
+    if not consent:
+        await _cancel_booking(city, chat, slot, reason="missing_consent_ref", hold_id=hold_id)
         return False
-
-    parts = ["commit", f"hold_id={hold_id}", f"consent_ref={consent}", f"fence={fence}"]
+    # P-francesco-13: e19 documents commit without fence; never cancel a valid hold for it.
+    parts = ["commit", f"hold_id={hold_id}", f"consent_ref={consent}"] + ([f"fence={fence}"] if fence else [])
     if number:
         parts.append(f"prescription_number={number}")
     return await _say(city, LEDGER, " ".join(parts))

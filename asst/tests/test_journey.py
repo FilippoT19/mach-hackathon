@@ -76,7 +76,7 @@ class World:
                     for i, at in ((1, "2026-11-04T15:00:00Z"), (2, "2026-11-04T16:00:00Z"))]
             reply = "slots page=1/1\n" + "\n".join(rows)
         elif head == "hold":
-            reply = f"held hold_id=H-{f['slot_id']} slot_id={f['slot_id']} need_id={need} fence=1 next=commit"
+            reply = f"held hold_id=H-{f['slot_id']} slot_id={f['slot_id']} need_id={need} next=commit"
         elif head == "commit":
             h = f["hold_id"]
             reply = f"committed booking_id={h} hold_id={h} slot_id={h[2:]} ledger_ref=L-{h}"

@@ -177,3 +177,6 @@ Nella PR scrivere: ID dei casi toccati, prima e dopo, test fatti.
 
 | G5-a | booking, gp | Collaborazione 0 ovunque: referral + "Ricevuto" non fa avanzare il need (regola e19, nota su 120). | Dopo la ricevuta il booking manda booking.notice al gp (booking_id, struttura, ricetta); il gp risponde e annota il controllo. | Scambio che porta avanti la cura (continuità). |
 | G5-b / SP-20 | strutture, gp | Il referto restava solo al cittadino. | Dopo il report la struttura manda report.notice al gp; il gp risponde che legge il referto e propone il controllo. | Scambio dopo la visita: chiude il percorso di cura. |
+
+| P-F13 | strutture | Regressione di P-francesco-6 (Codex): held senza fence= annullava ogni prenotazione. | commit senza fence quando manca (e19); annullo solo senza consent_ref. Il simulatore ora manda held senza fence. | P0: nessuna prenotazione persa. |
+| P-F12 | strutture | Regressione di P-francesco-4: checkin con booking_id e una domanda non veniva registrato. | Atto checkin + booking_id si registra sempre; il controllo sulla domanda vale solo per testo libero. | P0: +2 check-in onorato. |

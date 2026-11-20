@@ -12,7 +12,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 > (X-44), `wheelchair=true`, `cross_asst_consent_ref`, check-in con nuovo tentativo e risposta sempre (P-francesco-1..9).
 > Ordine = priorità. **12 e 13 sono regressioni** dei fix di giro 1: vanno guardate per prime.
 
-### [ ] P-francesco-12: un `checkin` con una domanda non viene registrato (regressione di P-francesco-4)
+### [~] P-francesco-12 (in deploy): un `checkin` con una domanda non viene registrato (regressione di P-francesco-4)
 - Journey: — (**da verificare**: check-in del cittadino con "?" o "quando" seguito da `facility.note`) — ruolo: hospital, specialist, family_counseling
 - Codice: `40_facility.py:87` (`elif head == "checkin" … and not _checkin_question(message.text)`), `40_facility.py:100-102` (`_checkin_question`: basta `?`, `quando`, `when` o una parola di `_RESCHEDULE` come sottostringa: `cancel`, `move`, `cambia`, `spost`, `annull`).
 - Cosa fa il cittadino: `checkin booking_id=B1 ledger_ref=L1 Buongiorno, sono arrivata. Devo aspettare molto?` (tono ansioso: e19 dice che il tono cambia le parole, non l'atto).
@@ -22,7 +22,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 - Test a parole: "dato `checkin booking_id=B1 ledger_ref=L1 sono arrivata, quanto devo aspettare?`, mi aspetto `checkin booking_id=B1 citizen=…` al Ledger".
 - Priorità secondo me: **P0**
 
-### [ ] P-francesco-13: `held` senza `fence=` → ogni prenotazione viene annullata (regressione di P-francesco-6)
+### [~] P-francesco-13 (in deploy): `held` senza `fence=` → ogni prenotazione viene annullata (regressione di P-francesco-6)
 - Journey: — (**da verificare subito**: cercare `cancel … reason=missing_fence` dopo il rilascio di #48) — ruolo: hospital, specialist, family_counseling
 - Codice: `40_facility.py:257-261`: `fence = fields.get("fence", "")`; `if not consent or not fence:` → `cancel hold_id=…` + `cancel … reason=missing_fence`.
 - Cosa fa il booking: `confirm` valido; il Ledger risponde `held hold_id=… slot_id=…`.
