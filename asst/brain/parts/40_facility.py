@@ -58,6 +58,41 @@ async def _facility(
         await _on_checkin(city, message, chat, reports=reports)
     elif "confirm" in kind:
         await _on_confirm(city, message, chat, hold_self=hold_self)
+    elif message.sender.startswith("citizen:"):
+        await _facility_free_text(city, message, chat, reports=reports)
+
+
+_ARRIVED = ("check-in", "check in", "sono arrivat", "sono qui", "i am here", "i'm here", "i have arrived", "arrived")
+
+
+async def _facility_free_text(city: City, message: Message, chat: list[Message], *, reports: bool) -> None:
+    """FA-20: a citizen text that is not a checkin/confirm never gets silence."""
+    low = message.text.lower()
+    if "booking_id=" in message.text or any(w in low for w in _ARRIVED):
+        number = fields_of(message.text).get("booking_id") or next(
+            (fields_of(r.text).get("booking_id") for r in reversed(chat) if fields_of(r.text).get("booking_id")), None
+        )
+        if number:
+            fake = Message(type=message.type, sender=message.sender, recipient=message.recipient,
+                           msg_id=message.msg_id, need_id=message.need_id,
+                           body={"text": f"checkin booking_id={number} {message.text}"})
+            await _on_checkin(city, fake, chat, reports=reports)
+            return
+    if _we(chat, city.agent_id, "", to=message.sender, word="facility.note"):
+        return
+    en = _lang([*chat, message]) != "it"
+    await _say(
+        city,
+        message.sender,
+        "facility.note "
+        + (
+            "Hello, this is the facility. To book or move a visit please write to our booking "
+            "centre; if you are already here, give me the number on your receipt and I will register your arrival."
+            if en
+            else "Buongiorno, sono la struttura. Per prenotare o spostare una visita scriva al nostro "
+            "centro prenotazioni; se è già qui, mi dia il numero della ricevuta e registro subito il suo arrivo."
+        ),
+    )
 
 
 def _booking_of(chat: list[Message], agent: str, slot_id: str) -> tuple[str, str, str | None]:

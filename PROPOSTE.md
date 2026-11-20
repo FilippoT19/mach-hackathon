@@ -16,7 +16,13 @@ implementano; il caso accettato diventa una riga in [CASI.md](CASI.md) con un ID
 - Priorità secondo te: P0 (agente muto, 112) / P1 (punti persi spesso) / P2 (raro)
 ```
 
-Stato di ogni proposta (lo aggiorna Filippo/Claude): `nuova` → `accettata (ID CASI)` / `scartata (perché)`.
+Stato di ogni proposta (lo aggiorna Filippo/Claude), sulla riga del titolo:
+- `[ ] nuova` → Claude la legge al primo controllo (ogni 5 minuti su `main`).
+- `[~] in lavoro (ID CASI)` → accettata, fix in corso.
+- `[x] risolta (ID CASI, versione online)` → fix online e verificato nei journey.
+- `[-] scartata (perché)`.
+
+Si scrive con una PR o direttamente nell'editor di GitHub su questo file (solo questo file).
 
 ## Dove cercare i punti persi
 

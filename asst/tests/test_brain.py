@@ -360,6 +360,22 @@ async def main() -> int:
     check("X-34 cancel del cittadino ha risposta", out and out[0].startswith("cancel.ack"), out)
     nxt = [t for r2, t in c2.sent if r2 == LEDGER] + out[1:]
     check("X-34 poi cerca altri posti o lista d attesa", nxt, c2.sent)
+    # 26. X-40/41, FA-20, BK-24, CO-20.
+    def cm(t, to="agent:x"):
+        return Message(type="chat", sender=CITIZEN, msg_id="m40", need_id="N-40", recipient=to, body={"text": t})
+    c = FakeCity("agent:fn64xfq2jft4", peers=[Peer(agent_id="agent:jdj692g4145e", role="hospital")])
+    brain._PEERS.clear()
+    await brain.handle("booking_centre", c, cm("ho un forte dolore al petto, vorrei prenotare"), [])
+    check("X-41 red flag al booking -> 112", any("112" in t for r, t in c.sent if r == CITIZEN), c.sent)
+    check("X-41 avviso all'ospedale", any(r == "agent:jdj692g4145e" and t.startswith("emergency.notice") for r, t in c.sent), c.sent)
+    c = FakeCity("agent:gp")
+    await brain.handle("gp", c, cm("ho mal di schiena, che dose di ibuprofene prendo?"), [])
+    cit = to(c, CITIZEN)
+    check("X-40 domanda clinica: risposta e poi ricetta", any(t.startswith("scope.note") for t in cit) and any(t.startswith("prescription") for t in cit), cit)
+    c = FakeCity("agent:jdj692g4145e")
+    await brain.handle("hospital", c, cm("buongiorno, a che ora apre?"), [])
+    check("FA-20 testo libero alla struttura ha risposta", to(c, CITIZEN), c.sent)
+    check("X-30b 'ginocchio a pezzi' resta italiano", brain._guess_lang("ho il ginocchio a pezzi") == "it", "")
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 
