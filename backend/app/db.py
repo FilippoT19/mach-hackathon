@@ -6,7 +6,16 @@ from sqlalchemy.orm import DeclarativeBase
 
 from .config import settings
 
-engine = create_async_engine(settings.database_url, pool_pre_ping=True)
+def _engine_kwargs(url: str) -> dict:
+    kw: dict = {"pool_pre_ping": True}
+    if url.startswith("postgresql"):
+        # Supabase/Neon poolers (PgBouncer) don't support asyncpg's prepared-statement cache.
+        kw["connect_args"] = {"statement_cache_size": 0, "prepared_statement_cache_size": 0}
+        kw["pool_size"], kw["max_overflow"] = 5, 5
+    return kw
+
+
+engine = create_async_engine(settings.database_url, **_engine_kwargs(settings.database_url))
 SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 

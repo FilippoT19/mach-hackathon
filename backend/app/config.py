@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     router_effort: str = "low"
     agent_effort: str = "medium"
     cors_origins: str = "http://localhost:3000"
+    # Any Vercel deployment (production + previews) may call the API.
+    cors_origin_regex: str = r"https://.*\.vercel\.app"
 
 
 settings = Settings()
