@@ -139,6 +139,8 @@ async def handle(role: str, city: City, message: Message, chat: list[Message]) -
     if street and _asks_address(message):
         await city.say(message.sender, f"address={street}")
         return
+    if role != "gp" and all(row.msg_id != message.msg_id for row in chat):
+        chat = [*chat, message]  # BK-15: the case history can miss the inbound message
     if role == "gp":
         await _gp(city, message, chat)
     elif role == "booking_centre":

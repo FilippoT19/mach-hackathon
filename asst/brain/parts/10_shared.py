@@ -175,11 +175,19 @@ async def _until(
             fresh = await city.history(need_id=need_id)
         except CapError:
             fresh = chat
+        fresh = _keep(fresh, chat)
         if ready(fresh):
             return fresh
         if attempt + 1 < _PULL_TRIES:
             await asyncio.sleep(_PULL_PAUSE)
     return fresh
+
+
+def _keep(fresh: list[Message], chat: list[Message]) -> list[Message]:
+    """BK-15: a re-read of the case must not drop rows we already had (the inbound message)."""
+
+    seen = {row.msg_id for row in fresh}
+    return list(fresh) + [row for row in chat if row.msg_id not in seen]
 
 
 async def _await_line(

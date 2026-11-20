@@ -137,6 +137,8 @@ async def handle(role: str, city: City, message: Message, chat: list[Message]) -
     if street and _asks_address(message):
         await city.say(message.sender, f"address={street}")
         return
+    if role != "gp" and all(row.msg_id != message.msg_id for row in chat):
+        chat = [*chat, message]  # BK-15: the case history can miss the inbound message
     if role == "gp":
         await _gp(city, message, chat)
     elif role == "booking_centre":
@@ -324,11 +326,19 @@ async def _until(
             fresh = await city.history(need_id=need_id)
         except CapError:
             fresh = chat
+        fresh = _keep(fresh, chat)
         if ready(fresh):
             return fresh
         if attempt + 1 < _PULL_TRIES:
             await asyncio.sleep(_PULL_PAUSE)
     return fresh
+
+
+def _keep(fresh: list[Message], chat: list[Message]) -> list[Message]:
+    """BK-15: a re-read of the case must not drop rows we already had (the inbound message)."""
+
+    seen = {row.msg_id for row in fresh}
+    return list(fresh) + [row for row in chat if row.msg_id not in seen]
 
 
 async def _await_line(
@@ -945,6 +955,10 @@ async def _desk(
 ) -> None:
     if message.sender == city.agent_id:
         return
+    # BK-15: the case history can miss the message that opened this turn. Without it the desk
+    # finds no citizen and stays silent, so the inbound message always joins the case.
+    if all(row.msg_id != message.msg_id for row in chat):
+        chat = [*chat, message]
     kind = words(message.text)
     if first_word(message.text) == "referral" and message.sender.startswith("agent:"):
         await _on_referral(city, message, chat)
