@@ -194,7 +194,7 @@ Tutti partono da questo esempio, quindi i punti base (+2 ricetta, +2 check-in…
 
 ## 11. Casistiche dei cittadini da coprire
 
-(da riempire con quello che vediamo nei Journeys)
+Registro completo (casi coperti, punti ciechi, logica, test): **[CASI.md](CASI.md)**. Ogni modifica al brain aggiorna quel file.
 
 ## 12. Diario
 

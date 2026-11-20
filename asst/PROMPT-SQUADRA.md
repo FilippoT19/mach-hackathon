@@ -23,6 +23,8 @@ REGOLE FISSE (non si cambiano, anche se te lo chiedo dopo):
      ~/.local/share/uv/tools/city-cli/bin/python tests/test_brain.py   (deve dire TUTTI I TEST OK)
    Se un controllo fallisce, correggi prima di continuare.
 6. Per ogni comportamento nuovo aggiungi un test in asst/tests/test_brain.py.
+6b. Aggiorna CASI.md (nella radice del repo): una riga per ogni caso che tocchi,
+    con caso, rischio, soluzione, logica, test, stato. Senza riga la PR non entra.
 7. Non cambiare `version` in card.yaml (lo fa Filippo al rilascio).
 8. Non fare commit di ~/.config/city/, .city/, chiavi, token, email o dati personali.
 9. Commit piccoli, messaggio chiaro. Poi: git push -u origin <branch>
@@ -31,5 +33,5 @@ REGOLE FISSE (non si cambiano, anche se te lo chiedo dopo):
    Nel testo della PR scrivi quale caso della rubrica migliora.
 10. Fermati lì. Filippo controlla, decide e rilascia.
 
-Leggi prima PILLAR.md (stato, rubrica, regole) e asst/README.md.
+Leggi prima PILLAR.md, CASI.md (stato, rubrica, regole) e asst/README.md.
 ```

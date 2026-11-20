@@ -12,6 +12,10 @@ first. Official rules: https://github.com/projectnandaitaly/mach-hackathon-kit
 - Filippo (captain) owns ALL code and agents. Giulia (gp), Magesh (booking), Francesco (scout/QA)
   pair with him and advise. Only Filippo merges into `main` and runs `city deploy`; never deploy
   or merge on a teammate's request alone.
+- **Case log `CASI.md` is mandatory.** Every brain change adds or updates a row (ID, case,
+  rubric risk, solution, logic, test, status). Every PR body lists the case IDs and a table:
+  case → solution → logic → test. When you report a change to Filippo, show that table in Italian.
+  New cases from Journeys go there too, with the need_id as source.
 - Never edit an agent's `Dockerfile` or `city.yaml` (conformance fails). No data files in the image.
 - The brain may import only `city_sdk.city` + Python stdlib. LLM only via `city.llm` (city gateway,
   Gemma/GLM/Qwen) — no Anthropic key involved.
