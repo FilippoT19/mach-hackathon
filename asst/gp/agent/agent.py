@@ -259,10 +259,15 @@ _KNOWN_PARTNERS = {
     "agent:qtjne8symjas", "agent:w2qsptc9qqhg", "agent:tmt0bcv0st1f", "agent:n9bf9y6670hp", "agent:mcppmrbjvxag",
     # Nord (Municipio 2), team agentic-paguri — h3 ur
     "agent:psxp8bh1feaa", "agent:wwxaphfb5pfh", "agent:gpr1zqe343gb", "agent:zand0f57ec1j", "agent:ccjzqm7yekwx",
+    # Corvetto (Municipio 3), team scuola-di-atene — h3 fr
+    "agent:yzcs4p44ep39", "agent:hkrtm1gzjb24", "agent:x0vr9rbwpesr", "agent:h8425ac7btd8", "agent:p0n57t7vtpq0",
+    # Lambrate (Municipio 3), team ltf-jecatt — h3 ja
+    "agent:gdrf9b9kxxss", "agent:c2ewegr2ea3v", "agent:nanpr5mgm2py", "agent:pky3vqyqbepa", "agent:atp772whjkgd",
 }
 # Rare language of each ASST's h3 physiatrist (shared table in the mods' group).
 _RARE_LANG_BY_ASST = {"giambellino": "ka", "toros": "ro", "precotto": "ro", "nord": "ur",
-                      "corvetto": "fr", "brera": "fa", "niguarda": "vi"}
+                      "corvetto": "fr", "brera": "fa", "niguarda": "vi",
+                      "isola": "tl", "ortica": "wo", "greco": "si", "bicocca": "ti", "lambrate": "ja"}
 
 
 def _ours(sender: str) -> bool:
