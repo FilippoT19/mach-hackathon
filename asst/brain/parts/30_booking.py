@@ -97,6 +97,62 @@ def _gender(chat: list[Message]) -> str | None:
     return None
 
 
+_CROSS_SERVICE_TYPES = {
+    "VIS-FIS": "hospital.physiatry",
+    "VIS-CARD": "specialist_care.cardiology",
+    "CTRL-CARD": "specialist_care.cardiology",
+    "CONS-GIN": "family_counseling.gynecology",
+}
+
+
+def _peer_value(peer: object, key: str) -> object:
+    if isinstance(peer, dict):
+        return peer.get(key, "")
+    return getattr(peer, key, "")
+
+
+def _peer_id(peer: object) -> str:
+    for key in ("agent_id", "id", "mailbox"):
+        value = _peer_value(peer, key)
+        if isinstance(value, str) and value.startswith("agent:"):
+            return value
+    value = str(peer)
+    return value if value.startswith("agent:") else ""
+
+
+def _cross_consent(chat: list[Message], agent: str) -> tuple[bool | None, str]:
+    """Return (accepted/refused/unknown, consent_ref) for the latest cross-ASST request."""
+
+    asked = False
+    for row in chat:
+        fields = fields_of(row.text)
+        if row.sender == agent and fields.get("purpose") == "cross_asst":
+            asked = True
+            continue
+        if not asked or not row.sender.startswith("citizen:"):
+            continue
+        consent = fields.get("consent_ref", "")
+        if consent:
+            return True, consent
+        lowered = row.text.lower()
+        if any(word in lowered.split() for word in {"no", "non", "rifiuto", "rifiutato"}):
+            return False, ""
+    return None, ""
+
+
+def _cross_message(message: Message) -> bool:
+    return fields_of(message.text).get("purpose") == "cross_asst"
+
+
+def _partner_offer_ready(chat: list[Message], request_id: str) -> bool:
+    for row in chat:
+        if not row.sender.startswith("agent:") or "offer" not in words(row.text):
+            continue
+        if fields_of(row.text).get("request_id") == request_id:
+            return True
+    return False
+
+
 def _offer_line(slot: dict[str, str], number: str | None, priority: str | None) -> str:
     parts = [
         "offer",
@@ -141,12 +197,16 @@ class _Sent:
     citizen drop all offers, so ``again`` holds only what was re-sent for ``trigger``.
     """
 
-    __slots__ = ("offers", "trigger", "again")
+    __slots__ = ("offers", "trigger", "again", "cross_asked", "cross_sent", "cross_peers", "partner_offers")
 
     def __init__(self) -> None:
         self.offers: set[str] = set()
         self.trigger = ""
         self.again: set[str] = set()
+        self.cross_asked = False
+        self.cross_sent = False
+        self.cross_peers: set[str] = set()
+        self.partner_offers: set[str] = set()
 
 
 # Every Ledger or citizen message opens its own turn, and turns of one need run at the same
@@ -167,6 +227,136 @@ def _sent(key: str) -> _Sent:
     return entry
 
 
+async def _cross_asst(
+    city: City,
+    message: Message,
+    chat: list[Message],
+    key: str,
+    citizen: str,
+    procedure: str,
+    priority: str | None,
+) -> bool:
+    """Ask for cross-ASST consent, then request criteria-only offers from Index peers."""
+
+    sent = _sent(key)
+    accepted, _consent_ref = _cross_consent(chat, city.agent_id)
+    if accepted is False:
+        return False
+    if accepted is None:
+        if sent.cross_asked or _we(
+            chat, city.agent_id, "purpose=cross_asst", to=citizen, word="consent"
+        ):
+            sent.cross_asked = True
+            return True
+        line = await _human(
+            city,
+            chat,
+            "the citizen must consent before we search for an appointment in another ASST",
+            "Nella sua ASST non c'è disponibilità. Posso cercare in un'altra ASST?",
+        )
+        if await _say(city, citizen, f"consent purpose=cross_asst {line}"):
+            sent.cross_asked = True
+        return True
+    if sent.cross_sent:
+        return True
+    finder = getattr(city, "find", None)
+    if not callable(finder):
+        return False
+    service_type = _CROSS_SERVICE_TYPES.get(procedure, "facility")
+    try:
+        peers = await finder(
+            f"facility in another ASST with capability {service_type} for procedure {procedure}"
+        )
+    except Exception:
+        return False
+    request_id = f"cross-{message.need_id or message.msg_id}"
+    sent_any = False
+    for peer in peers or []:
+        target = _peer_id(peer)
+        if not target or target == city.agent_id or target in sent.cross_peers:
+            continue
+        role = _peer_value(peer, "role")
+        capabilities = _peer_value(peer, "capabilities")
+        if role and role != "facility" and service_type not in str(capabilities):
+            continue
+        parts = [
+            "need.request",
+            f"service_type={service_type}",
+            f"procedure={procedure}",
+            f"request_id={request_id}",
+        ]
+        if priority:
+            parts.append(f"priority={priority}")
+        if await _say(city, target, " ".join(parts)):
+            sent.cross_peers.add(target)
+            sent_any = True
+    sent.cross_sent = sent_any
+    if not sent_any:
+        return False
+    fresh = await _until(
+        city,
+        message.need_id,
+        chat,
+        lambda rows: _partner_offer_ready(rows, request_id),
+    )
+    for row in reversed(fresh):
+        if row.sender.startswith("agent:") and fields_of(row.text).get("request_id") == request_id:
+            await _partner_offer(city, row, fresh)
+            return True
+    return False
+
+
+async def _index_facility(
+    city: City, procedure: str, preferred: str | None = None
+) -> str | None:
+    """Resolve a facility through the Index before sending it a booking message."""
+
+    finder = getattr(city, "find", None)
+    if not callable(finder):
+        return None
+    service_type = _CROSS_SERVICE_TYPES.get(procedure, "facility")
+    try:
+        peers = await finder(f"facility offering {service_type} for procedure {procedure}")
+    except Exception:
+        return None
+    candidates: list[str] = []
+    for peer in peers or []:
+        target = _peer_id(peer)
+        if not target or target in candidates:
+            continue
+        role = _peer_value(peer, "role")
+        capabilities = _peer_value(peer, "capabilities")
+        if role and role != "facility" and service_type not in str(capabilities):
+            continue
+        candidates.append(target)
+    if preferred:
+        return preferred if preferred in candidates else None
+    return candidates[0] if candidates else None
+
+
+async def _partner_offer(city: City, message: Message, chat: list[Message]) -> None:
+    """Forward a remote facility's criteria-only offer to the citizen."""
+
+    fields = fields_of(message.text)
+    offer_id = fields.get("offer_id", "")
+    slot = fields.get("slot_id", "")
+    facility = fields.get("facility", "")
+    citizen = _citizen(chat)
+    if not offer_id or not slot or not facility or not citizen:
+        return
+    key = message.need_id or message.msg_id
+    sent = _sent(key)
+    if offer_id in sent.partner_offers or _we(
+        chat, city.agent_id, f"offer_id={offer_id}", to=citizen, word="offer"
+    ):
+        return
+    text = message.text
+    if "cross_asst=true" not in text.split():
+        text = f"{text} cross_asst=true"
+    if await _say(city, citizen, text):
+        sent.partner_offers.add(offer_id)
+
+
 async def _desk(
     city: City,
     message: Message,
@@ -178,10 +368,19 @@ async def _desk(
     if message.sender == city.agent_id:
         return
     kind = words(message.text)
+    if _cross_message(message) and message.sender.startswith("citizen:"):
+        await _advance(city, message, chat, fixed=fixed, replacing=False)
+        return
+    if "consent" in kind and message.sender.startswith("citizen:"):
+        await _on_confirm(city, message, chat, hold_self=hold_self)
+        return
     if "confirm" in kind and (
         message.sender.startswith("citizen:") or message.sender.startswith("agent:")
     ):
         await _on_confirm(city, message, chat, hold_self=hold_self)
+        return
+    if "offer" in kind and message.sender.startswith("agent:"):
+        await _partner_offer(city, message, chat)
         return
     if "booking.receipt" in kind and message.sender.startswith("agent:"):
         await _forward_receipt(city, message, chat)
@@ -342,8 +541,10 @@ async def _advance_alone(
         if not _asked(chat, agent, procedure, page + 1):
             await _say(city, LEDGER, f"world procedure={procedure} page={page + 1}")
         return
-    # BK-10: every page read and nothing fits. Silence scores -1 (and risks no_reply); a relaxed
-    # alternative scores 0. The waiting list is the one alternative that never books outside S.
+    # Search another ASST only after the complete local catalogue has been exhausted.
+    if await _cross_asst(city, message, chat, key, citizen, procedure, priority):
+        return
+    # BK-10: every page read and no partner can serve it. The waiting list is the safe fallback.
     await _relaxed(city, message, chat, key, citizen, procedure, number, priority)
 
 
@@ -388,12 +589,41 @@ async def _on_confirm(
     offer = _our_offer(chat, agent, offer_id) if offer_id else {}
     slot = fields.get("slot_id") or offer.get("slot_id", "")
     facility = fields.get("facility") or offer.get("facility", "")
-    if not slot or not consent:
+    if not slot:
         return
     citizen = fields.get("citizen") or (
         message.sender if message.sender.startswith("citizen:") else ""
     )
+    if not consent and offer.get("cross_asst") == "true":
+        accepted, cross_ref = _cross_consent(chat, agent)
+        if accepted:
+            consent = cross_ref
+    if not consent:
+        if not citizen:
+            return
+        consent_ref = f"cons-{message.need_id or message.msg_id}-booking"
+        token = f"offer_id={offer_id}" if offer_id else f"slot_id={slot}"
+        if _we(chat, agent, token, to=citizen, word="consent"):
+            return
+        line = await _human(
+            city,
+            chat,
+            "the citizen must give consent before the selected appointment can be booked",
+            "Per procedere con la prenotazione e la condivisione dei dati necessari, confermi il consenso.",
+        )
+        parts = [
+            "consent",
+            "consent_required=true",
+            token,
+            f"slot_id={slot}",
+            f"consent_ref_required={consent_ref}",
+        ]
+        if facility:
+            parts.append(f"facility={facility}")
+        await _say(city, citizen, " ".join(parts) + f" {line}")
+        return
     number = fields.get("prescription_number") or offer.get("prescription_number")
+    procedure = fields.get("procedure") or offer.get("procedure", "")
     book_here = hold_self or message.sender.startswith("agent:") or facility == agent
     if book_here:
         if not _we(chat, agent, f"slot_id={slot}", to=LEDGER, word="hold"):
@@ -409,7 +639,10 @@ async def _on_confirm(
         return
     if not facility or not citizen:
         return
-    if _we(chat, agent, f"slot_id={slot}", to=facility, word="confirm"):
+    target = await _index_facility(city, procedure, preferred=facility)
+    if not target:
+        return
+    if _we(chat, agent, f"slot_id={slot}", to=target, word="confirm"):
         return
     parts = [
         "confirm",
@@ -421,7 +654,7 @@ async def _on_confirm(
     ]
     if number:
         parts.append(f"prescription_number={number}")
-    await _say(city, facility, " ".join(parts))
+    await _say(city, target, " ".join(parts))
 
 
 async def _forward_receipt(city: City, message: Message, chat: list[Message]) -> None:

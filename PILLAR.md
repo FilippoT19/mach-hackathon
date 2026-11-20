@@ -163,9 +163,9 @@ Un solo file, `asst/brain/agent.py`, per i 5 agenti. Legge il ruolo dalla card. 
 1. Riceve il cittadino con `prescription_number`. Chiede al Ledger `prescription` (procedura, priorità, stato) e `agenda` (ora).
 2. Priorità P → offre subito `waiting_list=true`.
 3. Chiede `world procedure=…` e filtra gli slot (`fitting`): futuri (+4 ore agenda), liberi, entro la scadenza della priorità, non nella riserva U, medico che parla la lingua del cittadino, giorno del medico, genere se il cittadino lo chiede.
-4. Offre i primi 3 slot in un solo giro. Se nessuno va bene, chiede la pagina dopo (max 8). Se ancora niente: **silenzio**.
-5. `confirm` del cittadino → gira `confirm` alla struttura. `booking.receipt` della struttura → la gira al cittadino. `cancel` della struttura → annulla e rioffre.
-- **Non gestisce:** i giorni preferiti dal cittadino (`days`), alternativa quando non c'è niente, altre ASST (non usa mai `city.find`), consenso cross-ASST (P2), rinnovo (P1), domande di dati.
+4. Offre i primi 3 slot in un solo giro. Se nessuno va bene, chiede la pagina dopo (max 8); poi chiede il consenso `cross_asst`, cerca facility partner con `city.find` e invia solo criteri in `need.request`. Se nessuno risponde, offre la lista d'attesa.
+5. `confirm` del cittadino → cerca la facility nell'Index e gira `confirm` all'identificativo restituito con `city.say`. `booking.receipt` della struttura → la gira al cittadino. `cancel` della struttura → annulla e rioffre.
+- **Non gestisce ancora:** i giorni preferiti dal cittadino (`days`), rinnovo (P1), domande di dati.
 
 ### Ospedale / Specialista / Consultorio (`_facility`)
 1. `confirm` dal centro prenotazioni → `hold` → `commit` → `booking.receipt`.
@@ -182,9 +182,9 @@ Tutti partono da questo esempio, quindi i punti base (+2 ricetta, +2 check-in…
 | # | Idea | Punti in gioco | Chi |
 |---|---|---|---|
 | 1 | **Frasi umane e proattive** in ogni messaggio (accanto ai token): empatia, prossimo passo, orari, indirizzo della struttura. Adattate al tono del cittadino | `city:review` +1 proattivo, evita −1 freddo, **per ogni agente di ogni percorso** | tutti |
-| 2 | **Mai silenzio**: se non c'è slot, offrire alternativa rilassata (altro giorno, altro medico, lista d'attesa) o cercare in un'altra ASST | da −1 a 0 o +1, evita `no_reply` | booking |
+| 2 | **Mai silenzio**: se non c'è slot, offrire alternativa rilassata (altro giorno, altro medico, lista d'attesa) o cercare in un'altra ASST | da −1 a 0 o +1, evita `no_reply` | booking · parziale |
 | 3 | **Giorni preferiti** del cittadino (`days`) nel filtro → prenotazione in `S_pref` | +2 invece di +1 | booking |
-| 4 | **Altre ASST**: `city.find` per trovare le strutture partner, consenso `cross_asst` prima, nessun dato prima | casi che oggi perdiamo (−1) | booking |
+| 4 | **Altre ASST**: `city.find` per trovare le strutture partner, consenso `cross_asst` prima, nessun dato prima | casi che oggi perdiamo (−1) | booking · implementato |
 | 5 | **Rispondere alle altre ASST**: le nostre strutture offrono slot ai centri prenotazioni delle altre squadre | collaborazione +1, slot onorato +1, check-in +2 dai loro cittadini | facility |
 | 6 | **Rinnovo ricetta (P1)**: gp rinnova; booking chiede `data.request purpose=prescription_renewal` | casi persi oggi | gp + booking |
 | 7 | **Specialista completo**: `consent purpose=report_sharing`, referto con `consent_ref`, `CTRL-CARD` quando serve | +2 referto/follow-up | specialista |
