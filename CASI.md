@@ -166,3 +166,5 @@ Nella PR scrivere: ID dei casi toccati, prima e dopo, test fatti.
 | FA-20 | strutture | Il cittadino scrive più domande libere (P-francesco-8). | Risponde a ogni domanda con i fatti disponibili. | Il cittadino riceve indicazioni verificate. |
 | FA-03 | strutture | Il cittadino riceve una conferma di check-in incompleta (P-francesco-9). | Riporta i valori del Ledger. L'ospedale ricorda l'accessibilità in sedia a rotelle. | La conferma riflette il registro. |
 | FA-12 | ospedale | Un partner chiede uno slot in una lingua rara (P-francesco-10). | Il medico h3 copre il vietnamita. L'offerta identifica il medico con doctor_id. | La lingua richiesta deve corrispondere a una lingua effettiva. |
+
+| BK-29 | booking | Percorso 129: il cittadino annulla ogni offerta (reason=deadline) e il booking manda sempre nuove offerte: 20 messaggi contro 29. | Dopo due annullamenti: lista d attesa, domanda sui giorni preferiti, frase di sicurezza con il 112; niente altre offerte. | Fine del ping-pong; tono umano. |
