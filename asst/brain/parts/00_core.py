@@ -135,7 +135,10 @@ def _own_street(city: City) -> str:
     try:
         return path.read_text(encoding="utf-8").strip()
     except OSError:
-        return ""
+        pass
+    # P-magesh-4: no door.txt ships with the image; never answer an empty address.
+    door = _DOOR_FALLBACK.get(getattr(city, "agent_id", ""))
+    return door[2] if door else ""
 
 
 async def handle(role: str, city: City, message: Message, chat: list[Message]) -> None:

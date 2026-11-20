@@ -21,7 +21,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 - Test a parole: "dato 'serve la ricetta per il consultorio?', mi aspetto una risposta sì/no con una frase, non una lista di offerte"
 - Priorità secondo te: P1
 
-### [ ] P-magesh-4: indirizzo del consultorio forse mancante
+### [~] P-magesh-4 (porta di riserva, in deploy): indirizzo del consultorio forse mancante
 - Journey: nessuno (lettura del codice) — ruolo: family_counseling
 - Cosa fa il cittadino / agente: manda `data.request fields=address`
 - Cosa risponde oggi il nostro agente: da verificare. `_own_street` legge `city.address`, poi `CITY_ADDRESS`, poi `door.txt`, ma in `family_counseling/agent/` non c'è `door.txt`. Se la piattaforma non fornisce l'indirizzo, la risposta è vuota
@@ -30,7 +30,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 - Test a parole: "dato `data.request fields=address`, mi aspetto `address=Via Giolli Raffaello 23`"
 - Priorità secondo te: P1 (P0 se la verifica conferma che è vuoto)
 
-### [ ] P-magesh-3: `checkin` senza `booking_id` → silenzio
+### [x] P-magesh-3 (FA-03: la struttura chiede il numero di prenotazione): `checkin` senza `booking_id` → silenzio
 - Journey: nessuno (lettura del codice) — ruolo: family_counseling (anche booking_centre)
 - Cosa fa il cittadino: scrive `checkin` senza `booking_id`
 - Cosa risponde oggi il nostro agente: niente (`_on_checkin` esce se manca `booking_id`)
