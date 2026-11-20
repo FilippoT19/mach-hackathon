@@ -77,6 +77,8 @@ _TRUSTED_PARTNERS: set[str] = set()
 _KNOWN_PARTNERS = {
     # Lorenteggio (Municipio 9), team RASPBERRY
     "agent:qtjne8symjas", "agent:w2qsptc9qqhg", "agent:tmt0bcv0st1f", "agent:n9bf9y6670hp", "agent:mcppmrbjvxag",
+    # Nord (Municipio 2), team agentic-paguri — h3 ur
+    "agent:psxp8bh1feaa", "agent:wwxaphfb5pfh", "agent:gpr1zqe343gb", "agent:zand0f57ec1j", "agent:ccjzqm7yekwx",
 }
 # Rare language of each ASST's h3 physiatrist (shared table in the mods' group).
 _RARE_LANG_BY_ASST = {"giambellino": "ka", "toros": "ro", "precotto": "ro", "nord": "ur",
