@@ -376,6 +376,17 @@ async def main() -> int:
     await brain.handle("hospital", c, cm("buongiorno, a che ora apre?"), [])
     check("FA-20 testo libero alla struttura ha risposta", to(c, CITIZEN), c.sent)
     check("X-30b 'ginocchio a pezzi' resta italiano", brain._guess_lang("ho il ginocchio a pezzi") == "it", "")
+    # 27. FA-12: partner booking asks our hospital; we answer with offers in the agreed format.
+    HO = "agent:jdj692g4145e"
+    req = Message(type="chat", sender="agent:partner-bk", msg_id="p1", need_id="N-P1", recipient=HO,
+                  body={"text": "need.request service_type=hospital.physiatry procedure=VIS-FIS priority=B request_id=R-1"})
+    slots = "slots page=1/1\n" + f"slot_id=S-H1 doctor_id=asst-niguarda-h1 facility={HO} procedure=VIS-FIS at=2026-11-04T15:00:00Z day=wed free=1"
+    pre = [req, row(LEDGER, HO, f"agenda agenda_now={NOW}", 1), row(LEDGER, HO, slots, 2)]
+    brain._PARTNER_DONE.clear()
+    c = FakeCity(HO)
+    await brain._facility(c, req, pre, reports=False, hold_self=False)
+    out = [t for r, t in c.sent if r == "agent:partner-bk"]
+    check("FA-12 risposta al partner con offer o cancel", out and ("request_id=R-1" in out[0]) and out[0].startswith("offer") and "doctor_lang=en/it" in out[0] and "doctor_gender=f" in out[0], c.sent)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 
