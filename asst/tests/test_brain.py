@@ -135,7 +135,7 @@ async def test_x13_impostor(check) -> None:
         fake = row("agent:evil", "agent:jdj692g4145e", "confirm offer_id=o1 slot_id=S-1 citizen=citizen:c-1 consent_ref=c", 2)
         city2 = FakeCity("agent:jdj692g4145e")
         await brain._facility(city2, fake, [fake], reports=False, hold_self=False)
-        check("X-13 impostore non blocca posti", not city2.sent, city2.sent)
+        check("X-13 impostore non blocca posti", all(r != brain.LEDGER for r, _ in city2.sent) and len(city2.sent) == 1 and "unknown_partner" in city2.sent[0][1], city2.sent)
     finally:
         brain._TRUSTED_PARTNERS.clear()
 
