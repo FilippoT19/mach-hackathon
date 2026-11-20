@@ -137,6 +137,8 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
                     "where it hurts and since when",
                     "Mi descrive meglio il disturbo: dove sente il problema e da quanto tempo? "
                     "Così le preparo subito la ricetta giusta.",
+                    en="Could you tell me a bit more: where exactly do you feel it, and since "
+                    "when? Then I can prepare the right prescription for you straight away.",
                 ),
             )
         return
@@ -157,7 +159,7 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
             return
     if _we(chat, agent, token, to=message.sender, word="prescription"):
         return
-    line = _rx_line(chat, procedure, priority, code)
+    line = _rx_line([*chat, message], procedure, priority, code)
     await _say(
         city,
         message.sender,

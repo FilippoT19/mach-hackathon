@@ -257,6 +257,8 @@ async def _on_checked_in(
             "Check-in registrato, benvenuto e grazie di essere arrivato puntuale. Il medico la "
             "riceve a breve; se ha bisogno di assistenza o di un accompagnamento, lo dica pure "
             "al nostro personale.",
+            en="You are checked in, welcome and thank you for being on time. The doctor will see "
+            "you shortly; if you need assistance or someone to accompany you, just ask our staff.",
         )
         await _say(city, citizen, f"checkin booking_id={booking_id} {line}")
     if not reports:
@@ -284,5 +286,7 @@ async def _on_reported(city: City, message: Message, chat: list[Message]) -> Non
         "the specialist visit is done and the report is filed; the citizen's GP can read it",
         "La visita è conclusa e il referto è archiviato. Il suo medico di base può consultarlo; "
         "se serve un controllo, sarà lui a indicarglielo. Grazie di essersi affidato a noi.",
+        en="Your visit is complete and the report is filed. Your GP can read it and will tell "
+        "you if a follow-up is needed. Thank you for trusting us.",
     )
     await _say(city, citizen, f"report booking_id={booking_id} outcome_code=VISIT {line}")

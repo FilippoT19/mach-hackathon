@@ -137,6 +137,7 @@ async def handle(role: str, city: City, message: Message, chat: list[Message]) -
     if street and _asks_address(message):
         await city.say(message.sender, f"address={street}")
         return
+    _note_lang(message)  # X-30
     if role != "gp" and all(row.msg_id != message.msg_id for row in chat):
         chat = [*chat, message]  # BK-15: the case history can miss the inbound message
     if role == "gp":
@@ -225,6 +226,11 @@ _FACILITY_WHERE = {
     "agent:jdj692g4145e": "al nostro ospedale in Via Arganini Gerolamo 38 (accessibile in sedia a rotelle)",
     "agent:jmjfst55vgjz": "dal nostro specialista in Viale Ca' Granda 28",
     "agent:mm18nddkfc5w": "al nostro consultorio in Via Giolli Raffaello 23",
+}
+_FACILITY_WHERE_EN = {
+    "agent:jdj692g4145e": "to our hospital at Via Arganini Gerolamo 38 (wheelchair accessible)",
+    "agent:jmjfst55vgjz": "to our specialist at Viale Ca' Granda 28",
+    "agent:mm18nddkfc5w": "to our family counselling centre at Via Giolli Raffaello 23",
 }
 
 
@@ -547,8 +553,14 @@ async def _llm_symptom(city: City, text: str) -> str | None:
 _VOICE_MODEL = False
 
 
-async def _human(city: City, chat: list[Message], what: str, fallback: str) -> str:
+async def _human(
+    city: City, chat: list[Message], what: str, fallback: str, en: str | None = None
+) -> str:
     """One warm sentence in the citizen's language about ``what``, or ``fallback``."""
+
+    # X-30: a citizen who does not write Italian gets the English sentence.
+    if en and _lang(chat) != "it":
+        return en
 
     # X-29: no model on the reply path. A slow model lost the GP sentence (GP-13) and every
     # second of wait risks the reply window and the 10 s clock. Fixed sentences are instant.
@@ -715,6 +727,8 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
                     "where it hurts and since when",
                     "Mi descrive meglio il disturbo: dove sente il problema e da quanto tempo? "
                     "Così le preparo subito la ricetta giusta.",
+                    en="Could you tell me a bit more: where exactly do you feel it, and since "
+                    "when? Then I can prepare the right prescription for you straight away.",
                 ),
             )
         return
@@ -735,7 +749,7 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
             return
     if _we(chat, agent, token, to=message.sender, word="prescription"):
         return
-    line = _rx_line(chat, procedure, priority, code)
+    line = _rx_line([*chat, message], procedure, priority, code)
     await _say(
         city,
         message.sender,
@@ -856,10 +870,45 @@ def _number(chat: list[Message]) -> str | None:
     return None
 
 
+# X-30: the citizen writes to the GP without lang=, so the language comes from the words.
+_IT_WORDS = frozenset("il lo la le gli un una di da che non per con sono ho mi ma è al del della dolore male vorrei grazie buongiorno salve gentile dottore visita sento".split())
+_EN_WORDS = frozenset("the a an i i'm im my is are have has of to and with for it this that pain hurts would please thank thanks hello hi dear doctor feel been since".split())
+_LANG_OF: OrderedDict[str, str] = OrderedDict()
+
+
+def _guess_lang(text: str) -> str | None:
+    tokens = [t.strip(".,;:!?()\"'").lower() for t in text.split() if "=" not in t]
+    it = sum(t in _IT_WORDS for t in tokens)
+    en = sum(t in _EN_WORDS for t in tokens)
+    if it == en == 0:
+        return None
+    return "en" if en > it else "it"
+
+
+def _note_lang(message: Message) -> None:
+    """Remember the citizen's language for the need, for later turns whose history misses it."""
+    if not message.sender.startswith("citizen:") or not message.need_id:
+        return
+    lang = fields_of(message.text).get("lang") or _guess_lang(message.text)
+    if lang:
+        _LANG_OF[message.need_id] = lang
+        _LANG_OF.move_to_end(message.need_id)
+        while len(_LANG_OF) > _SENT_NEEDS:
+            _LANG_OF.popitem(last=False)
+
+
 def _lang(chat: list[Message]) -> str:
     for row in chat:
         if row.sender.startswith("citizen:"):
             lang = fields_of(row.text).get("lang", "")
+            if lang:
+                return lang
+    for row in chat:
+        if row.need_id and row.need_id in _LANG_OF:
+            return _LANG_OF[row.need_id]
+    for row in chat:
+        if row.sender.startswith("citizen:"):
+            lang = _guess_lang(row.text)
             if lang:
                 return lang
     return "it"
@@ -1132,6 +1181,10 @@ async def _advance_alone(
             "Ecco i posti liberi adatti a lei, tutti nei tempi della sua ricetta e con un medico che "
             "parla la sua lingua. Mi risponda con quello che preferisce e lo blocco subito; se "
             "nessuno le va bene, me lo dica e cerco altri giorni o la metto in lista d'attesa.",
+            en="Here are the free appointments that suit you, all within the time of your "
+            "prescription and with a doctor who speaks your language. Reply with the one you "
+            "prefer and I will lock it straight away; if none suits you, tell me and I will look "
+            "for other days or put you on the waiting list.",
         )
         text = "\n".join([_offer_line(slot, number, priority) for slot in picks] + [line])
         if await _say(city, citizen, text):
@@ -1174,6 +1227,9 @@ async def _relaxed(
         "Mi dispiace, al momento non c'è un posto adatto a lei nei tempi previsti. La metto "
         "subito in lista d'attesa: appena si libera un posto adatto glielo proponiamo. Se nel "
         "frattempo il disturbo cambia, ricontatti il suo medico di base.",
+        en="I am sorry, right now there is no suitable appointment within the time allowed. I "
+        "am putting you on the waiting list now: as soon as a suitable slot opens we will offer "
+        "it to you. If your symptoms change in the meantime, contact your GP again.",
     )
     parts = ["offer", f"offer_id={offer_id}", "waiting_list=true", f"procedure={procedure}"]
     if priority:
@@ -1249,6 +1305,10 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
         + _FACILITY_WHERE.get(message.sender, "in struttura")
         + " con questa ricevuta e la tessera sanitaria per il check-in. Se non può venire, "
         "ci scriva prima: le spostiamo l'appuntamento e liberiamo il posto per un altro cittadino.",
+        en="Your visit is booked and confirmed. On the day, please come "
+        + _FACILITY_WHERE_EN.get(message.sender, "to the facility")
+        + " with this receipt and your health card for check-in. If you cannot come, write to "
+        "us first: we will move the appointment and free the slot for another citizen.",
     )
     await _say(
         city, citizen, f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref} {line}"
@@ -1527,6 +1587,8 @@ async def _on_checked_in(
             "Check-in registrato, benvenuto e grazie di essere arrivato puntuale. Il medico la "
             "riceve a breve; se ha bisogno di assistenza o di un accompagnamento, lo dica pure "
             "al nostro personale.",
+            en="You are checked in, welcome and thank you for being on time. The doctor will see "
+            "you shortly; if you need assistance or someone to accompany you, just ask our staff.",
         )
         await _say(city, citizen, f"checkin booking_id={booking_id} {line}")
     if not reports:
@@ -1554,5 +1616,7 @@ async def _on_reported(city: City, message: Message, chat: list[Message]) -> Non
         "the specialist visit is done and the report is filed; the citizen's GP can read it",
         "La visita è conclusa e il referto è archiviato. Il suo medico di base può consultarlo; "
         "se serve un controllo, sarà lui a indicarglielo. Grazie di essersi affidato a noi.",
+        en="Your visit is complete and the report is filed. Your GP can read it and will tell "
+        "you if a follow-up is needed. Thank you for trusting us.",
     )
     await _say(city, citizen, f"report booking_id={booking_id} outcome_code=VISIT {line}")

@@ -284,6 +284,19 @@ async def main() -> int:
         check("BK-15 booking non resta muto senza il messaggio in history", True, "")
     except AssertionError as e:
         check("BK-15 booking non resta muto senza il messaggio in history", False, e)
+    # 21. X-30: language from the words; English citizen gets English, Italian stays Italian.
+    check("X-30 guess en", brain._guess_lang("Hello, I'm quite worried about this back pain") == "en", "")
+    check("X-30 guess it", brain._guess_lang("Buongiorno, ho male al ginocchio quando cammino") == "it", "")
+    c = await run_gp("I am experiencing back pain and would be grateful for a doctor who speaks English")
+    cit = to(c, CITIZEN)
+    check("X-30 GP risponde in inglese", cit and "Thank you" in cit[0] and "Grazie" not in cit[0], cit)
+    c = await run_gp("ho mal di schiena da tre giorni")
+    cit = to(c, CITIZEN)
+    check("X-30 GP resta in italiano", cit and "Grazie" in cit[0], cit)
+    brain._LANG_OF["N-EN"] = "en"
+    rowx = Message(type="chat", sender=LEDGER, msg_id="lx", need_id="N-EN", recipient="agent:bk", body={"text": "agenda"})
+    line = await brain._human(FakeCity("agent:bk"), [rowx], "x", "Frase.", en="Sentence.")
+    check("X-30 lingua ricordata per need", line == "Sentence.", line)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 
