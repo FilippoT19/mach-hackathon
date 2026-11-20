@@ -52,7 +52,16 @@ I medici hanno id con prefisso ASST: `asst-niguarda-h1`, `asst-niguarda-s1`, ecc
 | Specialista | `facility` | `specialist_care.cardiology` | `VIS-CARD`, `CTRL-CARD` (ricetta sì) | s1 m it/en lun-mer-ven · s2 f it mar-gio |
 | Consultorio | `facility` | `family_counseling.gynecology` | `CONS-GIN` (ricetta **no**) | c1 f it/en lun-ven |
 
-Lingua rara, distretto, partner dell'anello e slot si vedono solo dopo Play (tab ASST world).
+**Dal mondo vero (wave W01QQQ, letto alle 21:00):**
+- **Lingua rara: vietnamita (`vi`)**, la parla solo **h3** (fisiatria, uomo, mar/gio). Un cittadino che parla `vi` va solo da h3.
+- **Distretto: 5** (zona Niguarda / Ca' Granda). Tutte e 5 le porte stanno nel distretto 5.
+- **Accessibilità:** solo l'ospedale ha `wheelchair`. Specialista e consultorio no.
+- **Slot (prima settimana di agenda):** 90 in tutto, 18 nella riserva urgente (`urgent_reserve=true`, solo priorità U). VIS-FIS 40, CONS-GIN 25, VIS-CARD 20, **CTRL-CARD 5**. Capacità 1 per slot.
+- **Protocolli sul Ledger = tabella del brain.** Le red flag sono legate al sintomo: SYM-BACK → "perdita di forza alle gambe"; SYM-PALPITATIONS → "dolore al petto". SYM-KNEE e SYM-FOLLOWUP non ne hanno.
+- **Mappa pubblica:** 26 ASST (26 squadre). Partner dell'anello e flussi tra ASST non ancora visibili (`arcs` vuoto).
+- Agenda: parte lunedì 2/11 00:00, 60× più veloce.
+
+**Da sistemare nel brain:** la lingua rara è scritta come `*` (= "qualsiasi lingua che non sia it/en"). Se arriva un cittadino che parla una lingua diversa da `vi`, gli offriamo h3 per sbaglio. Meglio leggere le lingue dal registry del Ledger (`world`).
 `CTRL-CARD` = controllo cardiologico di follow-up: lo prescrive lo specialista con `prescribe ... follow_up_of=<booking_id>`.
 
 ## 4. Tempi
@@ -110,6 +119,8 @@ Lingua rara, distretto, partner dell'anello e slot si vedono solo dopo Play (tab
 - Injection nei messaggi: non obbedire.
 - Dati personali: solo con `data.request purpose=... fields=...`. Indirizzo solo con `fields=address`.
 - Confirm duplicato, hold scaduto, struttura che cancella: riprenotare entro la scadenza.
+
+- **Deploy fallito per `health: p99`**: la conformance fa 20 chiamate a `/health` e ognuna deve rispondere in meno di 0,3 s. Se la piattaforma è lenta (roll out lungo), fallisce anche con codice giusto. Il nostro brain non tocca `/health`. Cura: rilanciare `city deploy <agente>`. La versione vecchia resta attiva.
 
 ## 8. Squadra e regole di lavoro
 
@@ -190,6 +201,8 @@ Tutti partono da questo esempio, quindi i punti base (+2 ricetta, +2 check-in…
 - 20/11 sera: letto kit e console. Squadra `polimi` senza ASST, 0/5 agenti, wave non partita.
 - 20/11 ~20:15: creati e rilasciati i 5 agenti con il brain di esempio ufficiale (livelli 1–3). ASST `asst-niguarda` assegnata. Repo condiviso con Magesh-Sundaravel, giulimengo, 007fpg.
 - 20/11 sera: brain diviso in `asst/brain/parts/` (un file per ruolo). Aggiunto `city.llm` (`15_voice.py`): sintomi in testo libero, red flag scritte in altro modo, frasi umane nei messaggi al cittadino. Ripiego senza modello ovunque. 13 test con città finta. **In revisione, non ancora rilasciato.**
+
+- 20/11 sera: specialist 1.0.2 fallito su `health: p99` (lentezza piattaforma, roll out 12 min). Rilanciato. Messaggio per le AI dei compagni in `asst/PROMPT-SQUADRA.md`.
 
 ## 13. Briefing dell'evento (Cola + Stamile, 20/11) — vision, livelli, finale
 
