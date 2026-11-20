@@ -1,5 +1,7 @@
 # CASI — registro dei casi e dei punti ciechi
 
+> Se un fix ha funzionato davvero lo dice [REGISTRO.md](REGISTRO.md) (gruppi di causa, percorso di prova).
+
 Secondo pilastro tecnico, accanto a [PILLAR.md](PILLAR.md).
 Qui c'è **ogni caso** che i 5 agenti devono gestire: cosa fa il cittadino, cosa rischiamo, come lo risolviamo e perché.
 
