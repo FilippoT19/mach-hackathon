@@ -1,7 +1,7 @@
 agent_id: agent:jmjfst55vgjz
 team: team:polimi
 name: specialist
-version: 1.0.3
+version: 1.0.4
 cap_versions:
   - "1.0"
 profiles:
