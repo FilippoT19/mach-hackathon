@@ -451,7 +451,7 @@ async def _cross_asst(
     sent_any = False
     for peer in peers or []:
         target = _peer_id(peer)
-        if not target or target == city.agent_id or target in sent.cross_peers:
+        if not target or target == city.agent_id or _ours(target) or target in sent.cross_peers:
             continue
         role = _peer_value(peer, "role")
         capabilities = _peer_value(peer, "capabilities")
@@ -572,8 +572,12 @@ async def _desk(
     if "consent" in kind and message.sender.startswith("citizen:"):
         await _on_confirm(city, message, chat, hold_self=hold_self)
         return
+    agent_first = first_word(message.text) if message.sender.startswith("agent:") else ""
+    if agent_first == "offer":  # P-francesco-25: an agent's offer may say "confirm" in its sentence
+        await _partner_offer(city, message, chat)
+        return
     if "confirm" in kind and (
-        message.sender.startswith("citizen:") or message.sender.startswith("agent:")
+        message.sender.startswith("citizen:") or agent_first == "confirm"
     ):
         await _on_confirm(city, message, chat, hold_self=hold_self)
         return
@@ -1049,7 +1053,10 @@ async def _partner_cancel(
         and citizen
         and not _we(chat, city.agent_id, f"offer_id={offer_id}", to=citizen, word="cancel")
     ):
-        await _say(city, citizen, f"cancel offer_id={offer_id} reason=facility_cancelled")
+        reason = fields.get("reason") or "facility_cancelled"
+        await _say(city, citizen, f"cancel offer_id={offer_id} reason={reason}")
+    if not offer_id:
+        return  # P-francesco-26: a partner with no places changes nothing; no new burst of offers
     await _advance(city, message, chat, fixed=fixed, replacing=True)
 
 

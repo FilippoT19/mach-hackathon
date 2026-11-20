@@ -35,7 +35,7 @@ consenso cross-ASST → richiesta anche ai nostri reparti (P-24) → il nostro o
 girati senza filtro (P-27) → ogni `cancel no_availability` delle altre ASST fa una nuova raffica (P-26) →
 il cittadino annulla tutto, il percorso si ferma senza esito.
 
-### [ ] P-francesco-24: richieste "ad altra ASST" mandate ai nostri reparti
+### [x] P-francesco-24: richieste "ad altra ASST" mandate ai nostri reparti
 - Journey: 000111 (**da verificare**: tra i mittenti delle offerte "cross-ASST" c'è `agent:jdj692g4145e`) — ruolo: booking_centre
 - Codice: `30_booking.py:453`: `if not target or target == city.agent_id or target in sent.cross_peers: continue`. `city.find` restituisce anche i nostri ospedale, specialista e consultorio (stessa capability); `40_facility.py:584` (`_partner_request`) risponde con i nostri slot, senza il filtro di scadenza della ricetta e senza escludere gli slot già offerti o annullati.
 - Cosa fa il cittadino: ha annullato gli slot locali per scadenza, dà il consenso `cross_asst`.
@@ -45,7 +45,7 @@ il cittadino annulla tutto, il percorso si ferma senza esito.
 - Test a parole: "`city.find` restituisce il nostro ospedale e un ospedale di un'altra ASST → mi aspetto il `need.request` solo verso l'altra ASST".
 - Priorità secondo me: **P0**
 
-### [ ] P-francesco-25: offerte dei partner scambiate per conferme e scartate
+### [x] P-francesco-25: offerte dei partner scambiate per conferme e scartate
 - Journey: 000124 (consenso chiesto, poi nessuna offerta) — ruolo: booking_centre
 - Codice: `_desk`: `30_booking.py:574` (`if "confirm" in kind and (… agent …)`) viene **prima** di `30_booking.py:579` (`if "offer" in kind …`). `kind` = tutte le parole del testo. La riga finale delle offerte del nostro ospedale (`40_facility.py:622`) dice "mandateci **confirm** con offer_id…"; anche i partner possono scrivere "confirm" nella loro frase. `_on_confirm` non trova `consent_ref` né `citizen=` → `30_booking.py:907-908` `return` senza risposta.
 - Cosa fa il partner: `offer offer_id=… slot_id=… request_id=…` + frase con "confirm".
@@ -55,7 +55,7 @@ il cittadino annulla tutto, il percorso si ferma senza esito.
 - Test a parole: "dato da un partner `offer offer_id=of-X slot_id=X request_id=r1` + 'mandateci confirm …', mi aspetto l'offerta al cittadino e nessun `hold`".
 - Priorità secondo me: **P0**
 
-### [ ] P-francesco-26: ogni `cancel no_availability` dei partner fa ripartire le offerte
+### [~] P-francesco-26 (punto 1 e 3 fatti; tetto e lista d attesa da fare): ogni `cancel no_availability` dei partner fa ripartire le offerte
 - Journey: 000111 (36 messaggi, raffiche di 4-5 offerte) — ruolo: booking_centre
 - Codice: `30_booking.py:1028-1040` (`_partner_cancel`: senza `offer_id` non avvisa il cittadino ma chiama **sempre** `_advance(replacing=True)`); `30_booking.py:768` (`trigger = … or message.msg_id`: ogni `cancel` è un "evento nuovo" → `sent.again` azzerato → stessi slot rioffriti); `30_booking.py:1039` (`reason=facility_cancelled` fisso). Il limite BK-29 (`:1212`) conta solo gli annulli del cittadino.
 - Cosa fa il partner: formato comune: `cancel reason=no_availability request_id=cross-N-…` (uno per ogni ASST interpellata).
