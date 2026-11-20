@@ -34,7 +34,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 - Test a parole: "dato il nostro `checkin booking_id=B1` e la riga del Ledger `Registrazione non possibile: fuori fascia oraria.`, mi aspetto che sia trattata come rifiuto".
 - Priorità secondo me: **P1**
 
-### [ ] P-francesco-3: check-in senza risposta (rifiuto, Ledger muto, `booking_id` mancante) (FA-03)
+### [~] P-francesco-3 (FA-03, in deploy): check-in senza risposta (rifiuto, Ledger muto, `booking_id` mancante) (FA-03)
 - Journey: — — ruolo: hospital (e tutte le strutture)
 - Codice: `40_facility.py:265-266` (`booking_id` mancante → `return`), `40_facility.py:271-277` (rifiuto o timeout → solo log).
 - Cosa fa il cittadino: `checkin ledger_ref=L1` senza `booking_id`; oppure check-in rifiutato; oppure il Ledger non risponde in ~6 s.
@@ -59,7 +59,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 - Test a parole: "dato 'Quando posso fare il check in?', mi aspetto una risposta con la fascia e nessun `checkin` al Ledger"; "dato 'Sono arrivato, booking_id=B1', mi aspetto `checkin booking_id=B1` al Ledger".
 - Priorità secondo me: **P1**
 
-### [ ] P-francesco-5: `confirm` senza `consent_ref` o senza `slot_id` blocca la prenotazione all'ospedale (FA-01)
+### [~] P-francesco-5 (FA-01, in deploy): `confirm` senza `consent_ref` o senza `slot_id` blocca la prenotazione all'ospedale (FA-01)
 - Journey: — (**da verificare**: quanti `confirm` del booking arrivano senza `consent_ref`) — ruolo: hospital (e specialist; codice in `30_booking.py` usato dalle strutture)
 - Codice: `30_booking.py:855-856` (niente `slot_id` → `return`); `30_booking.py:864-887` (niente `consent_ref` → la **struttura** manda `consent consent_required=true … consent_ref_required=cons-<need>-booking` al cittadino; senza `citizen` → `return`); `40_facility.py:62-65`: la risposta `consent` del cittadino all'ospedale non contiene `confirm`, va in `_facility_free_text` e riceve `facility.note`.
 - Cosa fa il booking/cittadino: il booking (nostro o di un'altra ASST, FA-12) manda `confirm offer_id=… slot_id=… citizen=…` senza `consent_ref`; il cittadino risponde all'ospedale con `consent … consent_ref=…`.
