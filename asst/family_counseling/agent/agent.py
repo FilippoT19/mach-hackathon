@@ -654,7 +654,15 @@ def _emergency(message: Message) -> bool:
     if (message.need_id or message.msg_id) in _EMERGENCY_NEEDS:
         return True
     lowered = message.text.lower()
-    return any(flag in lowered for flag in _RED_FLAGS + _RED_FLAGS_MORE)
+    if any(flag in lowered for flag in _RED_FLAGS + _RED_FLAGS_MORE):
+        return True
+    # CO-10 (P-magesh-6): pregnancy + bleeding, strong pain, contractions or waters -> 112.
+    pregnant = any(w in lowered for w in ("incinta", "gravidanza", "pregnant", "pregnancy"))
+    danger = any(w in lowered for w in (
+        "sangue", "sanguin", "perdite", "dolore forte", "dolore intenso", "forte dolore", "contrazion",
+        "perso le acque", "rottura delle acque", "liquido", "bleed", "blood", "strong pain",
+        "severe pain", "contraction", "waters broke", "water broke"))
+    return pregnant and danger
 
 
 def _red_flag(message: Message) -> bool:

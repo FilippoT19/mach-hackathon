@@ -140,6 +140,19 @@ async def test_x13_impostor(check) -> None:
         brain._TRUSTED_PARTNERS.clear()
 
 
+async def test_co10_pregnancy(check) -> None:
+    for text, flag in (("sono incinta di 7 mesi e ho perdite di sangue", True),
+                       ("I'm pregnant and have strong contractions", True),
+                       ("vorrei una visita ginecologica di controllo in gravidanza", False)):
+        msg = Message(type="chat", sender=CITIZEN, msg_id="m-co", need_id="N-co", recipient="agent:mm18nddkfc5w", body={"text": text})
+        city = FakeCity("agent:mm18nddkfc5w")
+        await brain.handle("family_counseling", city, msg, [])
+        out = to(city, CITIZEN)
+        hit = any(o.startswith("escalate.emergency") for o in out)
+        offers = any(o.startswith("offer") for o in out)
+        check(f"CO-10 {'112' if flag else 'nessun allarme'}: {text[:30]}", hit == flag and not (flag and offers), out)
+
+
 async def main() -> int:
     failures = 0
 
@@ -360,6 +373,7 @@ async def main() -> int:
     try:
         await test_bk15_history_without_inbound()
         await test_x13_impostor(check)
+        await test_co10_pregnancy(check)
         check("BK-15 booking non resta muto senza il messaggio in history", True, "")
     except AssertionError as e:
         check("BK-15 booking non resta muto senza il messaggio in history", False, e)
