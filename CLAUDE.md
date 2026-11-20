@@ -5,8 +5,11 @@ family_counseling) deployed to the city platform with `city deploy`. Read `asst/
 first. Official rules: https://github.com/projectnandaitaly/mach-hackathon-kit
 (`docs/kit/e19-rules.md`: rubric, message formats, rule changes, levels).
 
-- One shared brain: edit `asst/brain/agent.py`, then `python seats.py --brain` (from `asst/`)
-  copies it into the five `asst/<agent>/agent/agent.py`. It reads its role from `card.yaml`.
+- One shared brain, split by role in `asst/brain/parts/` (00_core, 10_shared, 15_voice, 20_gp,
+  30_booking, 40_facility). Edit ONLY the parts. `python seats.py --brain` (from `asst/`) joins
+  them into `asst/brain/agent.py` and the five `asst/<agent>/agent/agent.py` (generated files).
+  `python seats.py --check` + `tests/test_brain.py` must pass. It reads its role from `card.yaml`.
+- Only Filippo (captain) reviews PRs and runs `city deploy`. Teammates: branch → PR, never deploy.
 - Never edit an agent's `Dockerfile` or `city.yaml` (conformance fails). No data files in the image.
 - The brain may import only `city_sdk.city` + Python stdlib. LLM only via `city.llm` (city gateway,
   Gemma/GLM/Qwen) — no Anthropic key involved.

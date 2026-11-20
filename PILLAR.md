@@ -111,18 +111,24 @@ Lingua rara, distretto, partner dell'anello e slot si vedono solo dopo Play (tab
 - Dati personali: solo con `data.request purpose=... fields=...`. Indirizzo solo con `fields=address`.
 - Confirm duplicato, hold scaduto, struttura che cancella: riprenotare entro la scadenza.
 
-## 8. Comandi
+## 8. Squadra e regole di lavoro
+
+| Chi | Ruolo | Cosa fa |
+|---|---|---|
+| **Filippo** (captain) | Regia, revisione, rilascio | Legge e unisce ogni PR. **Unico** che fa `city deploy`. Strutture (`40_facility.py`), parti comuni, voce (`15_voice.py`) con Claude |
+| **Magesh** (tecnico) | Centro prenotazioni | `30_booking.py`: giorni preferiti, alternativa invece del silenzio, altre ASST con consenso, rinnovo, regola P3 |
+| **Giulia** (un po' tecnica) | Medico di base + testi | `20_gp.py`: rinnovo ricetta (P1), sintomi e red flag. Revisione delle frasi gentili in `15_voice.py` (ripieghi in italiano) |
+| **Francesco** | Scout e collaudo | Legge Token della Sera, Discord, classifica. Raccoglie in sezione 11 i casi strani visti nei Journeys. Scrive frasi di cittadini in tanti toni per provare il medico di base |
+
+Flusso: branch → modifica in `asst/brain/parts/` → `python seats.py --brain` → `python seats.py --check` → `tests/test_brain.py` → PR → **Filippo** controlla e unisce → **Filippo** rilascia. Dettagli in `asst/README.md`.
+
+### Comandi di rilascio (solo Filippo)
 
 ```bash
-city login
 cd ~/mach-hackathon/asst
-city init agent booking_centre   # e hospital, gp, specialist, family_counseling
-python seats.py
-city deploy specialist           # specialist PRIMA di hospital
-city deploy hospital
-city deploy booking_centre
-city deploy gp
-city deploy family_counseling
+git checkout main && git pull
+python seats.py --check
+city deploy gp                    # solo il ruolo cambiato; specialist PRIMA di hospital
 city status agent:gp
 city rollback agent:gp --to 1.0.1
 ```
@@ -181,3 +187,4 @@ Tutti partono da questo esempio, quindi i punti base (+2 ricetta, +2 check-in…
 
 - 20/11 sera: letto kit e console. Squadra `polimi` senza ASST, 0/5 agenti, wave non partita.
 - 20/11 ~20:15: creati e rilasciati i 5 agenti con il brain di esempio ufficiale (livelli 1–3). ASST `asst-niguarda` assegnata. Repo condiviso con Magesh-Sundaravel, giulimengo, 007fpg.
+- 20/11 sera: brain diviso in `asst/brain/parts/` (un file per ruolo). Aggiunto `city.llm` (`15_voice.py`): sintomi in testo libero, red flag scritte in altro modo, frasi umane nei messaggi al cittadino. Ripiego senza modello ovunque. 13 test con città finta. **In revisione, non ancora rilasciato.**
