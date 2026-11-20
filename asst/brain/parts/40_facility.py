@@ -45,8 +45,15 @@ async def _facility(
             )
         return
     if head == "need.request" and message.sender.startswith("agent:"):
+        if not _trusted(message.sender):  # X-13: unknown agent, no slots and no data
+            if not _we(chat, city.agent_id, "", to=message.sender, word="cancel"):
+                rid = fields_of(message.text).get("request_id", "")
+                await _say(city, message.sender, f"cancel reason=unknown_partner request_id={rid}")
+            return
         await _partner_request(city, message, chat)  # FA-12
         return
+    if message.sender.startswith("agent:") and not _ours(message.sender):
+        return  # X-13: only our booking may confirm or cancel at our facility
     if message.sender == LEDGER and head == "held":
         await _on_held(city, message, chat)
     elif message.sender == LEDGER and head == "committed":

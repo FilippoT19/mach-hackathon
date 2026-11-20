@@ -5,7 +5,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 
 <!-- aggiungi qui sotto -->
 
-] P-giulia-2: profilo del cittadino nel booking centre
+[x] P-giulia-2: profilo del cittadino nel booking centre — già fatto con X-31: dopo la ricevuta il booking chiede solo i campi nominati (address,disability,car,car_euro_class), con scopo dichiarato, e il profilo non cambia l'offerta.
 Il booking centre può chiedere al cittadino i dati del profilo: età (age), disabilità (disability: none, motor, visual, hearing, cognitive), lavoro (occupation), auto (car: true o false), classe dell’auto (car*euro_class: da EURO-0 a EURO-6 oppure none) e codice fiscale sintetico (tax_code).
 Il cittadino comunica questi dati solo quando il campo è nominato esplicitamente in fields, per esempio: data.request purpose=booking fields=age,car_euro_class. Una domanda generica non deve farli uscire.
 La risposta deve essere data.response, con un token chiave=valore per ogni campo richiesto; gli spazi diventano * e gli elementi di una lista sono separati da /.
