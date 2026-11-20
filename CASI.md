@@ -143,3 +143,5 @@ Vince chi copre più **punti ciechi**: servizi che non esistono, lingue rare, ac
 Nella PR scrivere: ID dei casi toccati, prima e dopo, test fatti.
 
 | P-02 | booking | Dopo la ricevuta il cittadino non sa cosa portare né quando arrivare. | La ricevuta aggiunge un promemoria: 15 minuti prima, tessera, numero ricetta, referti adatti alla visita (VIS-CARD: ECG e farmaci; VIS-FIS: radiografie, abiti comodi). | Proattività: un aiuto non richiesto, nello stesso messaggio (nessun messaggio in più). |
+
+| BK-28 | booking | Dalle 22:14 il booking non risponde (12+ percorsi open). Se il Ledger non risponde sulla ricetta, dopo 3 giri il codice usciva in silenzio. | Procedura e priorità prese dal referral del GP (stesso numero di ricetta); se mancano, frase "sto verificando la ricetta". Un data.response ripetuto non rilancia il percorso. | Mai muto (P0). Rollback a 1.0.5 alle 22:30, ma anche la 1.0.5 restava muta. |

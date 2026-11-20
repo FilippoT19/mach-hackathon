@@ -959,7 +959,17 @@ def _ledger(chat: list[Message], head: str) -> dict[str, str] | None:
 def _prescription_reply(chat: list[Message], number: str | None) -> dict[str, str] | None:
     reply = _ledger(chat, "prescription")
     if number and reply is not None and reply.get("prescription_number") not in (None, number):
-        return None
+        reply = None
+    if reply is None and number:
+        # BK-28: the Ledger may not answer in time. The GP's referral (or the prescription the GP
+        # sent) carries procedure and priority for the same number: use it, never stay silent.
+        for row in reversed(chat):
+            if row.sender == LEDGER or not row.sender.startswith("agent:"):
+                continue
+            f = fields_of(row.text)
+            if f.get("prescription_number") == number and f.get("procedure") and f.get("priority"):
+                return {"prescription_number": number, "procedure": f["procedure"],
+                        "priority": f["priority"], "state": "issued"}
     return reply
 
 
@@ -1507,6 +1517,8 @@ async def _desk(
     if message.sender.startswith("citizen:") and _asked_where(chat, city.agent_id, message):
         await _on_where(city, message, chat)
         return
+    if first_word(message.text) == "data.response" and (message.need_id or message.msg_id) in _ANSWERED_WHERE:
+        return  # BK-28: a repeated address reply is already answered
     if "cancel" in kind and message.sender.startswith("agent:"):
         await _partner_cancel(city, message, chat, fixed=fixed)
         return
@@ -1617,6 +1629,15 @@ async def _advance_alone(
         number = _number(chat)
         if fixed is None and number and not procedure:
             if _pass == 2:
+                # BK-28: never mute. Tell the citizen we are checking and will write again.
+                if not _we(chat, agent, "", to=citizen, word="prescription.wait"):
+                    en = _lang(chat) != "it"
+                    await _say(city, citizen, "prescription.wait " + (
+                        "I have your request and I am checking your prescription with the regional "
+                        "register right now. I will send you the free appointments in a moment."
+                        if en else
+                        "Ho la sua richiesta e sto verificando la ricetta nel registro regionale. "
+                        "Tra un momento le mando i posti liberi adatti a lei."))
                 return
             if not any(
                 row.sender == agent and f"prescription_number={number}" in row.text.split()
