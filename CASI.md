@@ -180,3 +180,5 @@ Nella PR scrivere: ID dei casi toccati, prima e dopo, test fatti.
 
 | P-F13 | strutture | Regressione di P-francesco-6 (Codex): held senza fence= annullava ogni prenotazione. | commit senza fence quando manca (e19); annullo solo senza consent_ref. Il simulatore ora manda held senza fence. | P0: nessuna prenotazione persa. |
 | P-F12 | strutture | Regressione di P-francesco-4: checkin con booking_id e una domanda non veniva registrato. | Atto checkin + booking_id si registra sempre; il controllo sulla domanda vale solo per testo libero. | P0: +2 check-in onorato. |
+
+| X-45 | booking, gp | Mappa: senza coordinate niente km; i consigli dopo la ricevuta non contano nella review. | Zona del cittadino dal district della need.request: media delle porte dell Index in quel district. La ricevuta (che la review legge) dice già distanza stimata dalla zona e come arrivare (M5, accessibilità). Il 112 del gp nomina l ospedale più vicino alla zona, se la conosce. Nessuna API esterna. | Proattività sulla mappa nel messaggio che conta. |

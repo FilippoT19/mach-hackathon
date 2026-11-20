@@ -28,10 +28,13 @@ async def _escalate(city: City, message: Message, chat: list[Message]) -> None:
     """X-41: 112 + notice to our hospital, from any role."""
     agent = city.agent_id
     if not _we(chat, agent, "escalate.emergency", to=message.sender, word="escalate.emergency"):
+        # X-45: nearest hospital to the citizen's zone (Index doors), inside the 112 message.
+        zone = await _zone_point(city, [*chat, message])
+        near = await _nearest_line(city, zone, False, "") if zone else ""
         await _say(
             city,
             message.sender,
-            "escalate.emergency reason=red_flag Capisco, quello che mi descrive va preso sul "
+            near.strip() + (" " if near else "") + "escalate.emergency reason=red_flag Capisco, quello che mi descrive va preso sul "
             "serio subito. Chiami subito il 112 o vada al pronto soccorso più vicino. Non si "
             "metta alla guida: se può, si faccia accompagnare e non resti da solo. Il pronto "
             "soccorso più vicino nella nostra zona è il nostro ospedale in Via Arganini Gerolamo 38 "

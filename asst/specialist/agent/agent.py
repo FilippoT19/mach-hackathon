@@ -682,10 +682,13 @@ async def _escalate(city: City, message: Message, chat: list[Message]) -> None:
     """X-41: 112 + notice to our hospital, from any role."""
     agent = city.agent_id
     if not _we(chat, agent, "escalate.emergency", to=message.sender, word="escalate.emergency"):
+        # X-45: nearest hospital to the citizen's zone (Index doors), inside the 112 message.
+        zone = await _zone_point(city, [*chat, message])
+        near = await _nearest_line(city, zone, False, "") if zone else ""
         await _say(
             city,
             message.sender,
-            "escalate.emergency reason=red_flag Capisco, quello che mi descrive va preso sul "
+            near.strip() + (" " if near else "") + "escalate.emergency reason=red_flag Capisco, quello che mi descrive va preso sul "
             "serio subito. Chiami subito il 112 o vada al pronto soccorso più vicino. Non si "
             "metta alla guida: se può, si faccia accompagnare e non resti da solo. Il pronto "
             "soccorso più vicino nella nostra zona è il nostro ospedale in Via Arganini Gerolamo 38 "
@@ -2010,6 +2013,7 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
         city,
         citizen,
         f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref} {line} "
+        + await _zone_route(city, chat, message.sender)
         + _prep_line((_prescription_reply(chat, _number(chat)) or {}).get("procedure", ""), _lang(chat) != "it"),  # P-02
     ):
         return
@@ -2176,7 +2180,7 @@ async def _on_where(city: City, message: Message, chat: list[Message]) -> None:
         "agent:jdj692g4145e",
     )
     door = await _door(city, facility)
-    point = _citizen_point(message.text)
+    point = _citizen_point(message.text) or await _zone_point(city, chat)  # X-45
     km = _km(point, door[:2]) if point and door else None
     en = _lang(chat) != "it"
     head = "Thank you." if en else "Grazie."
@@ -2266,6 +2270,58 @@ def _prep_line(procedure: str, en: bool) -> str:
                 f"prescription number, {en_extra}. I will tell you how to get there right away.")
     return ("Per arrivare pronto alla visita: venga 15 minuti prima e porti la tessera sanitaria, il "
             f"numero della ricetta, {it_extra}. Subito dopo le dico come arrivare.")
+
+
+# --- X-45: the citizen's zone from the Index (no external map API) ---------------------------
+_DISTRICT_RE = re.compile(r"district[^0-9]{0,6}(\d{1,2})")
+_ZONES: dict[int, tuple[float, float]] = {}
+
+
+def _citizen_district(chat: list[Message]) -> int | None:
+    for row in reversed(chat):
+        if row.sender.startswith("citizen:"):
+            m = _DISTRICT_RE.search(row.text)
+            if m:
+                return int(m.group(1))
+    return None
+
+
+async def _zone_point(city: City, chat: list[Message]) -> tuple[float, float] | None:
+    """Centre of the citizen's district: the mean of the Index doors in that district."""
+
+    district = _citizen_district(chat)
+    if district is None:
+        return None
+    if district in _ZONES:
+        return _ZONES[district]
+    try:
+        peers = await asyncio.wait_for(city.find("ospedale medico centro prenotazioni consultorio Milano"), timeout=4.0)
+    except Exception:
+        peers = []
+    pts = []
+    for peer in peers or []:
+        addr = getattr(peer, "address", None)
+        if getattr(peer, "district", None) == district and addr is not None and getattr(addr, "lat", None) is not None:
+            pts.append((float(addr.lat), float(addr.lon)))
+    if not pts and district == 5:  # our ASST: our own doors
+        pts = [(d[0], d[1]) for d in _DOOR_FALLBACK.values()]
+    if not pts:
+        return None
+    _ZONES[district] = (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+    return _ZONES[district]
+
+
+async def _zone_route(city: City, chat: list[Message], facility: str) -> str:
+    """X-45: how to get there, inside the receipt (the review reads it), from the citizen's zone."""
+
+    zone = await _zone_point(city, chat)
+    door = await _door(city, facility)
+    if not door:
+        return ""
+    km = _km(zone, door[:2]) if zone else None
+    line = _route_line(_lang(chat) != "it", km, door, {})
+    line = line.replace("da lei", "dalla sua zona").replace("from you", "from your area")
+    return (line + " ") if line else ""
 # --- facility ----------------------------------------------------------------------------------
 
 
