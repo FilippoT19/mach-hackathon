@@ -72,6 +72,15 @@ _PEERS: dict[str, str] = {}
 # X-13: impostors. Other teams' agent ids, copied from the shared list in the mods' group. While
 # it is empty every partner is accepted (cross-ASST keeps working); once filled, only these.
 _TRUSTED_PARTNERS: set[str] = set()
+# Ids posted by other ASSTs in the mods' group. Copied into _TRUSTED_PARTNERS when the impostors
+# arrive (switching it on now would reject the teams that have not posted yet).
+_KNOWN_PARTNERS = {
+    # Lorenteggio (Municipio 9), team RASPBERRY
+    "agent:qtjne8symjas", "agent:w2qsptc9qqhg", "agent:tmt0bcv0st1f", "agent:n9bf9y6670hp", "agent:mcppmrbjvxag",
+}
+# Rare language of each ASST's h3 physiatrist (shared table in the mods' group).
+_RARE_LANG_BY_ASST = {"giambellino": "ka", "toros": "ro", "precotto": "ro", "nord": "ur",
+                      "corvetto": "fr", "brera": "fa", "niguarda": "vi"}
 
 
 def _ours(sender: str) -> bool:
