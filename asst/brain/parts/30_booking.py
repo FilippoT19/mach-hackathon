@@ -252,6 +252,9 @@ async def _desk(
     if "cancel" in kind and message.sender.startswith("agent:"):
         await _partner_cancel(city, message, chat, fixed=fixed)
         return
+    if "cancel" in kind and message.sender.startswith("citizen:"):
+        await _citizen_cancel(city, message, chat, fixed=fixed)
+        return
     if message.sender == LEDGER or message.sender.startswith("citizen:"):
         await _advance(city, message, chat, fixed=fixed, replacing=False)
 
@@ -425,7 +428,8 @@ async def _advance_alone(
                 if replacing:
                     sent.again.add(slot["slot_id"])
         return
-    if taken and not replacing:
+    dropped = message.sender.startswith("citizen:") and "cancel" in words(message.text)
+    if taken and not replacing and not dropped:  # X-34: after a citizen cancel, go on to the waiting list
         return
     page, pages = _page(world)
     if page < pages and page < _MAX_PAGE:
@@ -733,3 +737,30 @@ async def _nearest_line(city: City, point: tuple[float, float], en: bool, booked
     if en:
         return f" For any urgent need, the nearest hospital to you is at {best[1]}, about {best[0]:.1f} km away; in an emergency always call 112."
     return f" Per qualsiasi urgenza, l'ospedale più vicino a lei è in {best[1]}, a circa {best[0]:.1f} km; in emergenza chiami sempre il 112."
+
+
+async def _citizen_cancel(
+    city: City, message: Message, chat: list[Message], *, fixed: str | None
+) -> None:
+    """X-34: the citizen drops an offer (often reason=deadline). Never stay silent: acknowledge,
+    then offer the next free slots that fit, or the waiting list."""
+    offer_id = fields_of(message.text).get("offer_id", "")
+    key = f"cancel:{message.need_id or message.msg_id}:{offer_id}"
+    sent = _sent(key)
+    if "ack" in sent.offers:
+        return
+    sent.offers.add("ack")
+    en = _lang(chat) != "it"
+    await _say(
+        city,
+        message.sender,
+        (f"cancel.ack offer_id={offer_id} " if offer_id else "")
+        + (
+            "Understood, no problem: I have released that slot. I am checking right now for "
+            "other free appointments within your prescription time and will send them to you."
+            if en
+            else "Capito, nessun problema: ho liberato quel posto. Cerco subito altri appuntamenti "
+            "liberi nei tempi della sua ricetta e glieli mando."
+        ),
+    )
+    await _advance(city, message, chat, fixed=fixed, replacing=False)

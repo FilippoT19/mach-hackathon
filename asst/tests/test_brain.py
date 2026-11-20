@@ -342,6 +342,24 @@ async def main() -> int:
     await brain._desk(FakeCity("agent:bk"), ref, [ref], hold_self=False, fixed=None)
     later = [row(CITIZEN, "agent:bk", "need.request prescription_number=RX-33 lang=it", 1)]
     check("X-33 booking usa la preferenza del GP", brain._gender(later) == "f", brain._PREF_BY_RX)
+    # 25. X-34: a citizen cancel is answered and new slots (or the waiting list) follow.
+    city = await run_desk(slots_three())
+    first = to(city, CITIZEN)
+    oid = brain.fields_of(first[0]).get("offer_id")
+    already = [("agent:bk", CITIZEN, first[0]), (CITIZEN, "agent:bk", f"Sarà per la prossima volta cancel offer_id={oid} reason=deadline")]
+    texts = [
+        (CITIZEN, "agent:bk", "vorrei prenotare prescription_number=prescription_number-RX-1"),
+        (LEDGER, "agent:bk", "prescription prescription_number=prescription_number-RX-1 procedure=VIS-CARD priority=B state=issued"),
+        (LEDGER, "agent:bk", f"agenda agenda_now={NOW}"),
+        (LEDGER, "agent:bk", slots_three()),
+    ] + already
+    chat = [row(s2, r2, t2, i) for i, (s2, r2, t2) in enumerate(texts)]
+    c2 = FakeCity("agent:bk")
+    await brain._desk(c2, chat[-1], chat, hold_self=False, fixed=None)
+    out = to(c2, CITIZEN)
+    check("X-34 cancel del cittadino ha risposta", out and out[0].startswith("cancel.ack"), out)
+    nxt = [t for r2, t in c2.sent if r2 == LEDGER] + out[1:]
+    check("X-34 poi cerca altri posti o lista d attesa", nxt, c2.sent)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 
