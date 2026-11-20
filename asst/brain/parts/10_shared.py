@@ -59,6 +59,35 @@ def fields_of(text: str) -> dict[str, str]:
     return found
 
 
+# X-27: our five agents. We write only to a peer that city.find returns AND that is one of ours,
+# so a message never goes to another team's agent.
+_OUR_AGENTS = {
+    "booking_centre": "agent:fn64xfq2jft4",
+    "gp": "agent:fddgaqmp6kb0",
+    "hospital": "agent:jdj692g4145e",
+    "specialist": "agent:jmjfst55vgjz",
+    "family_counseling": "agent:mm18nddkfc5w",
+}
+_PEERS: dict[str, str] = {}
+
+
+async def _peer(city: City, family: str, query: str) -> str | None:
+    """Our agent of that family, as the Index returns it. None if the Index does not show it."""
+
+    if family in _PEERS:
+        return _PEERS[family]
+    wanted = _OUR_AGENTS.get(family)
+    try:
+        peers = await asyncio.wait_for(city.find(query), timeout=5.0)
+    except Exception:  # Index down or slow: no collaboration message, the journey goes on
+        return None
+    for peer in peers:
+        if peer.agent_id == wanted:
+            _PEERS[family] = peer.agent_id
+            return peer.agent_id
+    return None
+
+
 def _line_fields(text: str, token: str) -> dict[str, str]:
     """Fields of the one line that carries ``token``. BK-14: one message holds several offers."""
 

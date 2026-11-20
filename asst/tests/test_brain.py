@@ -9,7 +9,7 @@ import importlib.util
 import sys
 from pathlib import Path
 
-from city_sdk.city import LEDGER, CapError, Message
+from city_sdk.city import LEDGER, CapError, Message, Peer
 
 HERE = Path(__file__).resolve().parent.parent
 spec = importlib.util.spec_from_file_location("brain", HERE / "brain" / "agent.py")
@@ -20,8 +20,9 @@ CITIZEN = "citizen:c-1"
 
 
 class FakeCity:
-    def __init__(self, agent_id: str, llm=None):
+    def __init__(self, agent_id: str, llm=None, peers=None):
         self.agent_id = agent_id
+        self._peers = peers or []
         self.sent: list[tuple[str, str]] = []
         self._llm = llm
         self.inbound = None
@@ -30,6 +31,9 @@ class FakeCity:
     async def say(self, to, text, *, status=None):
         self.sent.append((to, text))
         return f"m-{len(self.sent)}"
+
+    async def find(self, query):
+        return list(self._peers)
 
     async def history(self, peer=None, *, need_id=None):
         return []
@@ -191,6 +195,35 @@ async def main() -> int:
     check("BK-14 _offered legge tutte le righe", brain._offered(chat, "agent:bk") == {"S-1", "S-2", "S-3"}, brain._offered(chat, "agent:bk"))
     chat.append(row("agent:bk", CITIZEN, "cancel offer_id=of-S-2 reason=facility_cancelled", 3))
     check("BK-14 _withdrawn trova la riga giusta", brain._withdrawn(chat, "agent:bk") == {"S-2"}, brain._withdrawn(chat, "agent:bk"))
+
+    # 15. X-27: after the prescription the gp tells OUR booking centre (found with city.find).
+    BK = "agent:fn64xfq2jft4"
+    peers = [Peer(agent_id="agent:other-team-bk", role="booking_centre"), Peer(agent_id=BK, role="booking_centre")]
+    brain._PEERS.clear()
+    city = FakeCity("agent:gp", peers=peers)
+    await brain._gp(city, citizen_msg("ho mal di schiena da tre giorni"), [])
+    ref = to(city, BK)
+    check("X-27 gp avvisa il nostro booking", len(ref) == 1 and ref[0].startswith("referral ") and "prescription_number=" in ref[0], city.sent)
+    check("X-27 niente messaggi al booking di un'altra squadra", not to(city, "agent:other-team-bk"), city.sent)
+    check("X-27 nel referral nessun id del cittadino", ref and "citizen:" not in ref[0] and "patient=" not in ref[0], ref)
+    check("X-27 la ricetta al cittadino parte prima del referral", city.sent and [r for r, _ in city.sent].index(CITIZEN) < [r for r, _ in city.sent].index(BK), city.sent)
+    brain._PEERS.clear()
+    city = FakeCity("agent:gp", peers=[Peer(agent_id="agent:other-team-bk", role="booking_centre")])
+    await brain._gp(city, citizen_msg("ho mal di schiena da tre giorni"), [])
+    check("X-27 booking nostro non trovato -> nessun referral, ricetta ok", to(city, CITIZEN) and all(r in (CITIZEN, LEDGER) for r, _ in city.sent), city.sent)
+
+    # 16. X-27: our booking answers the gp at once (clock +1), only once per need.
+    GP = "agent:fddgaqmp6kb0"
+    msg = Message(type="chat", sender=GP, msg_id="r1", need_id="N-1", body={"text": "referral prescription_number=prescription_number-RX-1 procedure=VIS-FIS priority=B"}, recipient=BK)
+    city = FakeCity(BK)
+    await brain._desk(city, msg, [msg], hold_self=False, fixed=None)
+    ack = to(city, GP)
+    check("X-27 booking risponde al gp", len(ack) == 1 and ack[0].startswith("referral.ack ") and "prescription_number=prescription_number-RX-1" in ack[0], city.sent)
+    check("X-27 booking non scrive al cittadino né al Ledger", all(r == GP for r, _ in city.sent), city.sent)
+    done = [msg, Message(type="chat", sender=BK, msg_id="r2", need_id="N-1", body={"text": ack[0] if ack else ""}, recipient=GP)]
+    city = FakeCity(BK)
+    await brain._desk(city, msg, done, hold_self=False, fixed=None)
+    check("X-27 una sola risposta per need", not city.sent, city.sent)
 
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0

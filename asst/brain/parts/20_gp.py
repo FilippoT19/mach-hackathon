@@ -98,6 +98,16 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
         message.sender,
         f"prescription {token} procedure={procedure} priority={priority} {line}",
     )
+    # X-27: after the citizen has the prescription, tell our booking centre it is coming.
+    # Review +1 collaboration; the booking answers within seconds (+1 clock). No citizen id.
+    booking = await _peer(city, "booking_centre", "centro prenotazioni booking_centre asst-niguarda")
+    if booking and not _we(chat, agent, token, to=booking, word="referral"):
+        await _say(
+            city,
+            booking,
+            f"referral {token} procedure={procedure} priority={priority} "
+            "Ricetta emessa: il cittadino vi contatterà a breve con questo numero.",
+        )
 
 
 async def _announce(city: City, message: Message, chat: list[Message], agent: str) -> None:
