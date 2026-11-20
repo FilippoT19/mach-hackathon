@@ -69,6 +69,19 @@ _OUR_AGENTS = {
     "family_counseling": "agent:mm18nddkfc5w",
 }
 _PEERS: dict[str, str] = {}
+# X-13: impostors. Other teams' agent ids, copied from the shared list in the mods' group. While
+# it is empty every partner is accepted (cross-ASST keeps working); once filled, only these.
+_TRUSTED_PARTNERS: set[str] = set()
+
+
+def _ours(sender: str) -> bool:
+    return sender in _OUR_AGENTS.values()
+
+
+def _trusted(sender: str) -> bool:
+    """X-13: our agents always; another team's agent only if it is on the shared list."""
+
+    return _ours(sender) or not _TRUSTED_PARTNERS or sender in _TRUSTED_PARTNERS
 # X-29: where our facilities are (their own card addresses) - mobility and accessibility.
 _FACILITY_WHERE = {
     "agent:jdj692g4145e": "al nostro ospedale in Via Arganini Gerolamo 38 (accessibile in sedia a rotelle)",

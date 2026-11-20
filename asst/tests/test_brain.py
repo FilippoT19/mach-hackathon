@@ -125,6 +125,21 @@ async def test_bk15_history_without_inbound() -> None:
     assert kept and kept[0].msg_id == "m-in"
 
 
+async def test_x13_impostor(check) -> None:
+    brain._TRUSTED_PARTNERS.clear(); brain._TRUSTED_PARTNERS.add("agent:friend")
+    try:
+        msg = row("agent:evil", "agent:jdj692g4145e", "need.request service_type=x procedure=VIS-FIS priority=B request_id=R1", 1)
+        city = FakeCity("agent:jdj692g4145e")
+        await brain._facility(city, msg, [msg], reports=False, hold_self=False)
+        check("X-13 impostore: cancel unknown_partner", len(city.sent) == 1 and "reason=unknown_partner" in city.sent[0][1], city.sent)
+        fake = row("agent:evil", "agent:jdj692g4145e", "confirm offer_id=o1 slot_id=S-1 citizen=citizen:c-1 consent_ref=c", 2)
+        city2 = FakeCity("agent:jdj692g4145e")
+        await brain._facility(city2, fake, [fake], reports=False, hold_self=False)
+        check("X-13 impostore non blocca posti", not city2.sent, city2.sent)
+    finally:
+        brain._TRUSTED_PARTNERS.clear()
+
+
 async def main() -> int:
     failures = 0
 
@@ -337,6 +352,7 @@ async def main() -> int:
     # 20. BK-15: history misses the inbound citizen message; the desk still works.
     try:
         await test_bk15_history_without_inbound()
+        await test_x13_impostor(check)
         check("BK-15 booking non resta muto senza il messaggio in history", True, "")
     except AssertionError as e:
         check("BK-15 booking non resta muto senza il messaggio in history", False, e)

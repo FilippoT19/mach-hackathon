@@ -514,6 +514,9 @@ async def _index_facility(
 async def _partner_offer(city: City, message: Message, chat: list[Message]) -> None:
     """Forward a remote facility's criteria-only offer to the citizen."""
 
+    if not _trusted(message.sender):
+        return  # X-13: an offer from an unknown agent never reaches the citizen
+
     fields = fields_of(message.text)
     offer_id = fields.get("offer_id", "")
     slot = fields.get("slot_id", "")

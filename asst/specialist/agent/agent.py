@@ -244,6 +244,19 @@ _OUR_AGENTS = {
     "family_counseling": "agent:mm18nddkfc5w",
 }
 _PEERS: dict[str, str] = {}
+# X-13: impostors. Other teams' agent ids, copied from the shared list in the mods' group. While
+# it is empty every partner is accepted (cross-ASST keeps working); once filled, only these.
+_TRUSTED_PARTNERS: set[str] = set()
+
+
+def _ours(sender: str) -> bool:
+    return sender in _OUR_AGENTS.values()
+
+
+def _trusted(sender: str) -> bool:
+    """X-13: our agents always; another team's agent only if it is on the shared list."""
+
+    return _ours(sender) or not _TRUSTED_PARTNERS or sender in _TRUSTED_PARTNERS
 # X-29: where our facilities are (their own card addresses) - mobility and accessibility.
 _FACILITY_WHERE = {
     "agent:jdj692g4145e": "al nostro ospedale in Via Arganini Gerolamo 38 (accessibile in sedia a rotelle)",
@@ -1459,6 +1472,9 @@ async def _index_facility(
 async def _partner_offer(city: City, message: Message, chat: list[Message]) -> None:
     """Forward a remote facility's criteria-only offer to the citizen."""
 
+    if not _trusted(message.sender):
+        return  # X-13: an offer from an unknown agent never reaches the citizen
+
     fields = fields_of(message.text)
     offer_id = fields.get("offer_id", "")
     slot = fields.get("slot_id", "")
@@ -2195,8 +2211,15 @@ async def _facility(
             )
         return
     if head == "need.request" and message.sender.startswith("agent:"):
+        if not _trusted(message.sender):  # X-13: unknown agent, no slots and no data
+            if not _we(chat, city.agent_id, "", to=message.sender, word="cancel"):
+                rid = fields_of(message.text).get("request_id", "")
+                await _say(city, message.sender, f"cancel reason=unknown_partner request_id={rid}")
+            return
         await _partner_request(city, message, chat)  # FA-12
         return
+    if message.sender.startswith("agent:") and not _ours(message.sender):
+        return  # X-13: only our booking may confirm or cancel at our facility
     if message.sender == LEDGER and head == "held":
         await _on_held(city, message, chat)
     elif message.sender == LEDGER and head == "committed":
