@@ -204,6 +204,8 @@ Registro completo (casi coperti, punti ciechi, logica, test): **[CASI.md](CASI.m
 
 - 20/11 sera: specialist 1.0.2 fallito su `health: p99` (lentezza piattaforma, roll out 12 min). Rilanciato. Messaggio per le AI dei compagni in `asst/PROMPT-SQUADRA.md`.
 
+- 20/11 20:36 UTC: 18 cittadini letti. Red flag 014/015 gestite (escalation ok). 009–013 senza risposta: buco del deploy gp (OPS-05). **Regola: deploy solo tra un livello e l'altro.** Deploy automatico del consultorio fermato.
+
 ## 13. Briefing dell'evento (Cola + Stamile, 20/11) — vision, livelli, finale
 
 Fonte: PDF "Hackathon Milano Agentic City 2027 — briefing per i team". Riassunto.
