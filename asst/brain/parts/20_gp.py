@@ -6,8 +6,38 @@
 def _emergency(message: Message) -> bool:
     if understood(message).body.get("is_emergency") is True:
         return True
+    if (message.need_id or message.msg_id) in _EMERGENCY_NEEDS:
+        return True
     lowered = message.text.lower()
-    return any(flag in lowered for flag in _RED_FLAGS)
+    return any(flag in lowered for flag in _RED_FLAGS + _RED_FLAGS_MORE)
+
+
+def _red_flag(message: Message) -> bool:
+    return _emergency(message)
+
+
+async def _escalate(city: City, message: Message, chat: list[Message]) -> None:
+    """X-41: 112 + notice to our hospital, from any role."""
+    agent = city.agent_id
+    if not _we(chat, agent, "escalate.emergency", to=message.sender, word="escalate.emergency"):
+        await _say(
+            city,
+            message.sender,
+            "escalate.emergency reason=red_flag Capisco, quello che mi descrive va preso sul "
+            "serio subito. Chiami subito il 112 o vada al pronto soccorso più vicino. Non si "
+            "metta alla guida: se può, si faccia accompagnare e non resti da solo. Avviso "
+            "anche il nostro ospedale. / I understand, this needs attention right now. Call "
+            "112 or go to the nearest emergency room. Do not drive: if you can, ask someone "
+            "to go with you. I am also telling our hospital.",
+        )
+    hospital = await _peer(city, "hospital", "ospedale hospital asst-niguarda")
+    if hospital and hospital != agent and not _we(chat, agent, "emergency.notice", to=hospital, word="emergency.notice"):
+        await _say(
+            city,
+            hospital,
+            "emergency.notice reason=red_flag Un cittadino con red flag è stato indirizzato "
+            "al 112 o al pronto soccorso. Vi avviso in caso arrivi da voi.",
+        )
 
 
 def _symptom(message: Message) -> str | None:

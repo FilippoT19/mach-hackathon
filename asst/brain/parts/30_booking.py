@@ -80,7 +80,7 @@ def _number(chat: list[Message]) -> str | None:
 
 # X-30: the citizen writes to the GP without lang=, so the language comes from the words.
 _IT_WORDS = frozenset("il lo la le gli un una di da che non per con sono ho mi ma è al del della dolore male vorrei grazie buongiorno salve gentile dottore visita sento".split())
-_EN_WORDS = frozenset("the a an i i'm im my is are have has of to and with for it this that pain hurts would please thank thanks hello hi dear doctor feel been since".split())
+_EN_WORDS = frozenset("knee back heart racing chest need want appointment book can you help the an i'm im my is are have has of to and with for it this that pain hurts would please thank thanks hello hi dear doctor feel been since".split())
 _LANG_OF: OrderedDict[str, str] = OrderedDict()
 
 
@@ -333,7 +333,20 @@ async def _advance_alone(
             if offer_id in sent.offers:
                 return
             if not _we(chat, agent, token, to=citizen, word="offer"):
-                if await _say(city, citizen, f"offer offer_id={offer_id} waiting_list=true"):
+                en = _lang(chat) != "it"
+                line = (
+                    "Your prescription can be scheduled, so the right place for you is the waiting "
+                    "list: I have already added you. As soon as a suitable slot opens I will offer it, "
+                    "you do not need to call again."
+                    if en
+                    else "La sua ricetta è programmabile, quindi il posto giusto per lei è la lista "
+                    "d'attesa: l'ho già inserita. Appena si libera un posto adatto glielo propongo io, "
+                    "non deve richiamare."
+                )
+                extra = "".join(
+                    f" {k}={v}" for k, v in (("procedure", procedure), ("priority", "P"), ("prescription_number", number)) if v
+                )
+                if await _say(city, citizen, f"offer offer_id={offer_id} waiting_list=true{extra} {line}"):
                     sent.offers.add(offer_id)
             return
         procedure = fixed or (None if reply is None else reply.get("procedure"))
@@ -409,7 +422,18 @@ async def _advance_alone(
         # BK-14: every slot in ONE message, one offer per line. The citizen chooses in the turn of
         # the first message that names a place; a later message does not enter that choice.
         picks = chosen[:3]
-        line = await _human(
+        line = None
+        if fixed == "CONS-GIN":  # CO-20: the consultorio needs no prescription
+            line = (
+                "The family counselling centre needs no prescription. Here are the first free slots "
+                "with our gynaecologist; choose the one you prefer and I will lock it. Your data "
+                "stay confidential at the centre."
+                if _lang(chat) != "it"
+                else "Al consultorio si accede direttamente, senza ricetta. Ecco i primi posti liberi "
+                "con la nostra ginecologa: scelga quello che preferisce e lo blocco subito. I suoi "
+                "dati restano riservati al consultorio."
+            )
+        line = line or await _human(
             city,
             chat,
             "here are the free appointments that fit; the citizen picks one and confirms it",
@@ -430,6 +454,12 @@ async def _advance_alone(
         return
     dropped = message.sender.startswith("citizen:") and "cancel" in words(message.text)
     if taken and not replacing and not dropped:  # X-34: after a citizen cancel, go on to the waiting list
+        if message.sender.startswith("citizen:") and "again" not in sent.offers:
+            # BK-22: the citizen writes again after our offers: never silence, repeat them once.
+            last = next((r.text for r in reversed(chat) if r.sender == agent and r.recipient == citizen and "offer" in words(r.text)), None)
+            if last:
+                sent.offers.add("again")
+                await _say(city, citizen, last)
         return
     page, pages = _page(world)
     if page < pages and page < _MAX_PAGE:

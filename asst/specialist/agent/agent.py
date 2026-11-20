@@ -54,6 +54,8 @@ _RED_FLAGS = (
     "chest pain",
 )
 _DEADLINE_DAYS = {"B": 2, "D": 5}
+_EMERGENCY_NEEDS: set[str] = set()
+_RED_FLAGS_MORE = ("sanguinamento abbondante", "heavy bleeding", "non riesco a respirare", "can't breathe", "cannot breathe", "svenut", "fainted")
 _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
 _LOG = logging.getLogger("care")
 # The Relay accepts a ledger reply and then the agent rejects the push, so the reply sits in
@@ -84,9 +86,10 @@ async def main(need: Need, city: City) -> None:
     message = city.inbound
     if message is None:
         return
-    text = message.text or need.summary
-    if clinical(text):
-        raise OutOfScope()
+    # X-40: a clinical question (dose, diagnosis) is never a silent refusal: handle() answers
+    # it in words and goes on with the journey (red flag first).
+    if getattr(need, "is_emergency", False) is True and message.sender.startswith("citizen:"):
+        _EMERGENCY_NEEDS.add(message.need_id or message.msg_id)
     case = await city.history(need_id=message.need_id)
     await handle(role_of(), city, message, case)
 
@@ -139,6 +142,25 @@ async def handle(role: str, city: City, message: Message, chat: list[Message]) -
         await city.say(message.sender, f"address={street}")
         return
     _note_lang(message)  # X-30
+    if message.sender.startswith("citizen:"):
+        # X-41: a red flag is sent to 112 by EVERY role, not only the GP.
+        if role != "gp" and _red_flag(message):
+            await _escalate(city, message, chat)
+            return
+        # X-40: clinical question -> a polite line, then the normal path.
+        if clinical(message.text) and not _we(chat, city.agent_id, "", to=message.sender, word="scope.note"):
+            en = _lang([*chat, message]) != "it"
+            await city.say(
+                message.sender,
+                "scope.note "
+                + (
+                    "I understand your question. On that I cannot answer myself: the doctor will "
+                    "explain it at the visit. Meanwhile I am taking care of your next step now."
+                    if en
+                    else "Capisco la sua domanda. Su questo non posso risponderle io: glielo "
+                    "spiegherà il medico durante la visita. Intanto mi occupo subito del suo percorso."
+                ),
+            )
     if all(row.msg_id != message.msg_id for row in chat):
         chat = [*chat, message]  # BK-15: the case history can miss the inbound message (all roles)
     if role == "gp":
@@ -598,8 +620,38 @@ async def _human(
 def _emergency(message: Message) -> bool:
     if understood(message).body.get("is_emergency") is True:
         return True
+    if (message.need_id or message.msg_id) in _EMERGENCY_NEEDS:
+        return True
     lowered = message.text.lower()
-    return any(flag in lowered for flag in _RED_FLAGS)
+    return any(flag in lowered for flag in _RED_FLAGS + _RED_FLAGS_MORE)
+
+
+def _red_flag(message: Message) -> bool:
+    return _emergency(message)
+
+
+async def _escalate(city: City, message: Message, chat: list[Message]) -> None:
+    """X-41: 112 + notice to our hospital, from any role."""
+    agent = city.agent_id
+    if not _we(chat, agent, "escalate.emergency", to=message.sender, word="escalate.emergency"):
+        await _say(
+            city,
+            message.sender,
+            "escalate.emergency reason=red_flag Capisco, quello che mi descrive va preso sul "
+            "serio subito. Chiami subito il 112 o vada al pronto soccorso più vicino. Non si "
+            "metta alla guida: se può, si faccia accompagnare e non resti da solo. Avviso "
+            "anche il nostro ospedale. / I understand, this needs attention right now. Call "
+            "112 or go to the nearest emergency room. Do not drive: if you can, ask someone "
+            "to go with you. I am also telling our hospital.",
+        )
+    hospital = await _peer(city, "hospital", "ospedale hospital asst-niguarda")
+    if hospital and hospital != agent and not _we(chat, agent, "emergency.notice", to=hospital, word="emergency.notice"):
+        await _say(
+            city,
+            hospital,
+            "emergency.notice reason=red_flag Un cittadino con red flag è stato indirizzato "
+            "al 112 o al pronto soccorso. Vi avviso in caso arrivi da voi.",
+        )
 
 
 def _symptom(message: Message) -> str | None:
@@ -913,7 +965,7 @@ def _number(chat: list[Message]) -> str | None:
 
 # X-30: the citizen writes to the GP without lang=, so the language comes from the words.
 _IT_WORDS = frozenset("il lo la le gli un una di da che non per con sono ho mi ma è al del della dolore male vorrei grazie buongiorno salve gentile dottore visita sento".split())
-_EN_WORDS = frozenset("the a an i i'm im my is are have has of to and with for it this that pain hurts would please thank thanks hello hi dear doctor feel been since".split())
+_EN_WORDS = frozenset("knee back heart racing chest need want appointment book can you help the an i'm im my is are have has of to and with for it this that pain hurts would please thank thanks hello hi dear doctor feel been since".split())
 _LANG_OF: OrderedDict[str, str] = OrderedDict()
 
 
@@ -1166,7 +1218,20 @@ async def _advance_alone(
             if offer_id in sent.offers:
                 return
             if not _we(chat, agent, token, to=citizen, word="offer"):
-                if await _say(city, citizen, f"offer offer_id={offer_id} waiting_list=true"):
+                en = _lang(chat) != "it"
+                line = (
+                    "Your prescription can be scheduled, so the right place for you is the waiting "
+                    "list: I have already added you. As soon as a suitable slot opens I will offer it, "
+                    "you do not need to call again."
+                    if en
+                    else "La sua ricetta è programmabile, quindi il posto giusto per lei è la lista "
+                    "d'attesa: l'ho già inserita. Appena si libera un posto adatto glielo propongo io, "
+                    "non deve richiamare."
+                )
+                extra = "".join(
+                    f" {k}={v}" for k, v in (("procedure", procedure), ("priority", "P"), ("prescription_number", number)) if v
+                )
+                if await _say(city, citizen, f"offer offer_id={offer_id} waiting_list=true{extra} {line}"):
                     sent.offers.add(offer_id)
             return
         procedure = fixed or (None if reply is None else reply.get("procedure"))
@@ -1242,7 +1307,18 @@ async def _advance_alone(
         # BK-14: every slot in ONE message, one offer per line. The citizen chooses in the turn of
         # the first message that names a place; a later message does not enter that choice.
         picks = chosen[:3]
-        line = await _human(
+        line = None
+        if fixed == "CONS-GIN":  # CO-20: the consultorio needs no prescription
+            line = (
+                "The family counselling centre needs no prescription. Here are the first free slots "
+                "with our gynaecologist; choose the one you prefer and I will lock it. Your data "
+                "stay confidential at the centre."
+                if _lang(chat) != "it"
+                else "Al consultorio si accede direttamente, senza ricetta. Ecco i primi posti liberi "
+                "con la nostra ginecologa: scelga quello che preferisce e lo blocco subito. I suoi "
+                "dati restano riservati al consultorio."
+            )
+        line = line or await _human(
             city,
             chat,
             "here are the free appointments that fit; the citizen picks one and confirms it",
@@ -1263,6 +1339,12 @@ async def _advance_alone(
         return
     dropped = message.sender.startswith("citizen:") and "cancel" in words(message.text)
     if taken and not replacing and not dropped:  # X-34: after a citizen cancel, go on to the waiting list
+        if message.sender.startswith("citizen:") and "again" not in sent.offers:
+            # BK-22: the citizen writes again after our offers: never silence, repeat them once.
+            last = next((r.text for r in reversed(chat) if r.sender == agent and r.recipient == citizen and "offer" in words(r.text)), None)
+            if last:
+                sent.offers.add("again")
+                await _say(city, citizen, last)
         return
     page, pages = _page(world)
     if page < pages and page < _MAX_PAGE:
@@ -1655,6 +1737,41 @@ async def _facility(
         await _on_checkin(city, message, chat, reports=reports)
     elif "confirm" in kind:
         await _on_confirm(city, message, chat, hold_self=hold_self)
+    elif message.sender.startswith("citizen:"):
+        await _facility_free_text(city, message, chat, reports=reports)
+
+
+_ARRIVED = ("check-in", "check in", "sono arrivat", "sono qui", "i am here", "i'm here", "i have arrived", "arrived")
+
+
+async def _facility_free_text(city: City, message: Message, chat: list[Message], *, reports: bool) -> None:
+    """FA-20: a citizen text that is not a checkin/confirm never gets silence."""
+    low = message.text.lower()
+    if "booking_id=" in message.text or any(w in low for w in _ARRIVED):
+        number = fields_of(message.text).get("booking_id") or next(
+            (fields_of(r.text).get("booking_id") for r in reversed(chat) if fields_of(r.text).get("booking_id")), None
+        )
+        if number:
+            fake = Message(type=message.type, sender=message.sender, recipient=message.recipient,
+                           msg_id=message.msg_id, need_id=message.need_id,
+                           body={"text": f"checkin booking_id={number} {message.text}"})
+            await _on_checkin(city, fake, chat, reports=reports)
+            return
+    if _we(chat, city.agent_id, "", to=message.sender, word="facility.note"):
+        return
+    en = _lang([*chat, message]) != "it"
+    await _say(
+        city,
+        message.sender,
+        "facility.note "
+        + (
+            "Hello, this is the facility. To book or move a visit please write to our booking "
+            "centre; if you are already here, give me the number on your receipt and I will register your arrival."
+            if en
+            else "Buongiorno, sono la struttura. Per prenotare o spostare una visita scriva al nostro "
+            "centro prenotazioni; se è già qui, mi dia il numero della ricevuta e registro subito il suo arrivo."
+        ),
+    )
 
 
 def _booking_of(chat: list[Message], agent: str, slot_id: str) -> tuple[str, str, str | None]:
