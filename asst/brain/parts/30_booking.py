@@ -178,6 +178,9 @@ async def _desk(
     if message.sender == city.agent_id:
         return
     kind = words(message.text)
+    if first_word(message.text) == "referral" and message.sender.startswith("agent:"):
+        await _on_referral(city, message, chat)
+        return
     if "confirm" in kind and (
         message.sender.startswith("citizen:") or message.sender.startswith("agent:")
     ):
@@ -191,6 +194,24 @@ async def _desk(
         return
     if message.sender == LEDGER or message.sender.startswith("citizen:"):
         await _advance(city, message, chat, fixed=fixed, replacing=False)
+
+
+async def _on_referral(city: City, message: Message, chat: list[Message]) -> None:
+    """X-27: the gp tells us a prescription is coming. Answer at once (clock +1), once per need."""
+
+    number = fields_of(message.text).get("prescription_number", "")
+    if not number:
+        return
+    token = f"prescription_number={number}"
+    if _we(chat, city.agent_id, token, to=message.sender, word="referral.ack"):
+        return
+    procedure = fields_of(message.text).get("procedure", "")
+    parts = ["referral.ack", token] + ([f"procedure={procedure}"] if procedure else [])
+    await _say(
+        city,
+        message.sender,
+        " ".join(parts) + " Ricevuto: quando il cittadino ci contatta gli proponiamo subito i posti liberi.",
+    )
 
 
 async def _advance(
