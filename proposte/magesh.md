@@ -5,7 +5,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 
 <!-- aggiungi qui sotto -->
 
-### [ ] P-magesh-6 (CO-10): red flag in gravidanza al consultorio → offerte invece del 112
+### [~] P-magesh-6 (CO-10, in deploy): red flag in gravidanza al consultorio → offerte invece del 112
 - Journey: nessuno (lettura del codice su `main` 98d473f) — ruolo: family_counseling
 - Cosa fa il cittadino: una cittadina incinta scrive al consultorio, es. "sono incinta e ho perdite di sangue", "ho un dolore forte alla pancia", "ho le contrazioni", "I'm pregnant and bleeding"
 - Cosa risponde oggi il nostro agente: X-41 manda al 112 da ogni ruolo, ma il consultorio riconosce la red flag solo per parole fisse (`_RED_FLAGS` + `_RED_FLAGS_MORE`). Coperti: "sanguinamento abbondante", "heavy bleeding", "svenuta", "non riesco a respirare". NON coperti: "perdite di sangue", "sanguino", "bleeding" senza "heavy", "dolore forte", "contrazioni". Il medico di base ha anche il controllo con `city.llm` (`_llm_symptom` → `RED_FLAG`), il consultorio no: il messaggio finisce in `_desk` e la cittadina riceve offerte di slot con la ginecologa
