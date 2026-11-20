@@ -141,3 +141,5 @@ Vince chi copre più **punti ciechi**: servizi che non esistono, lingue rare, ac
 ```
 
 Nella PR scrivere: ID dei casi toccati, prima e dopo, test fatti.
+
+| P-02 | booking | Dopo la ricevuta il cittadino non sa cosa portare né quando arrivare. | La ricevuta aggiunge un promemoria: 15 minuti prima, tessera, numero ricetta, referti adatti alla visita (VIS-CARD: ECG e farmaci; VIS-FIS: radiografie, abiti comodi). | Proattività: un aiuto non richiesto, nello stesso messaggio (nessun messaggio in più). |
