@@ -232,8 +232,10 @@ def _has_agenda(chat: list[Message]) -> bool:
     return _when("" if agenda is None else agenda.get("agenda_now", "")) is not None
 
 
-def _has_procedure(chat: list[Message]) -> bool:
+def _has_procedure(chat: list[Message], number: str | None = None) -> bool:
     reply = _ledger(chat, "prescription")
+    if number and reply is not None and reply.get("prescription_number") not in (None, number):
+        return False
     return reply is not None and bool(reply.get("procedure"))
 
 
@@ -263,10 +265,11 @@ def fitting(
     priority: str | None,
     lang: str,
     gender: str | None = None,
+    days: frozenset[str] | None = None,
     facility: str | None = None,
     procedure: str | None = None,
 ) -> list[dict[str, str]]:
-    """Slots a citizen can accept: future, free, in the priority window, spoken language."""
+    """Slots a citizen can accept, preferring the citizen's requested agenda days."""
 
     if priority == "U":
         horizon: datetime | None = now.replace(hour=23, minute=59, second=59, microsecond=0)
@@ -275,7 +278,7 @@ def fitting(
     else:
         horizon = now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14))
     earliest = now + _LEAD
-    chosen: list[tuple[datetime, dict[str, str]]] = []
+    chosen: list[tuple[int, datetime, dict[str, str]]] = []
     for line in lines:
         slot = fields_of(line)
         slot_id = slot.get("slot_id")
@@ -305,8 +308,9 @@ def fitting(
             continue
         if gender and spec[1] != gender:
             continue
-        chosen.append((at, slot))
-    chosen.sort(key=lambda item: (item[0], item[1].get("slot_id", "")))
-    return [slot for _, slot in chosen]
+        preferred = 0 if days and day in days else 1
+        chosen.append((preferred, at, slot))
+    chosen.sort(key=lambda item: (item[0], item[1], item[2].get("slot_id", "")))
+    return [slot for _, _, slot in chosen]
 
 

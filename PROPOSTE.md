@@ -33,3 +33,6 @@ Si scrive con una PR o direttamente nell'editor di GitHub su questo file (solo q
 ## Proposte
 
 <!-- aggiungi sotto, la più nuova in alto -->
+
+### [x] P-giulia-1: booking completo (rinnovo, giorni preferiti, fuori ASST) — risolta (GP-10/BK-11/BK-12, in deploy 20/11 sera)
+- Passi 1, 2, 3, 5, 6, 7, 8 già coperti; mancavano rinnovo, `days` e ricerca cross-ASST: portati dal suo branch.
