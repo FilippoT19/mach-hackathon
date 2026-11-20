@@ -9,9 +9,11 @@ first. Official rules: https://github.com/projectnandaitaly/mach-hackathon-kit
   30_booking, 40_facility). Edit ONLY the parts. `python seats.py --brain` (from `asst/`) joins
   them into `asst/brain/agent.py` and the five `asst/<agent>/agent/agent.py` (generated files).
   `python seats.py --check` + `tests/test_brain.py` must pass. It reads its role from `card.yaml`.
-- Filippo (captain) owns ALL code and agents. Giulia (gp), Magesh (booking), Francesco (scout/QA)
-  pair with him and advise. Only Filippo merges into `main` and runs `city deploy`; never deploy
-  or merge on a teammate's request alone.
+- Filippo (captain) owns the code and the agents. From 21/11 Giulia also codes and deploys
+  `booking_centre` (mainly `30_booking.py`). Magesh and Francesco (scout/QA) only advise.
+  Only Filippo and Giulia (booking only) merge into `main` and run `city deploy`. Never deploy
+  or merge on any other teammate's request alone. The deploy quota is shared by the whole team
+  (1 every 5 min): say in the group before each deploy.
 - **Case log `CASI.md` is mandatory.** Every brain change adds or updates a row (ID, case,
   rubric risk, solution, logic, test, status). Every PR body lists the case IDs and a table:
   case → solution → logic → test. When you report a change to Filippo, show that table in Italian.
