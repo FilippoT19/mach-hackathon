@@ -347,7 +347,9 @@ async def _advance_alone(
             city,
             chat,
             "here are the free appointments that fit; the citizen picks one and confirms it",
-            "Ecco i posti liberi adatti a lei: mi dica quale preferisce.",
+            "Ecco i posti liberi adatti a lei, tutti nei tempi della sua ricetta e con un medico che "
+            "parla la sua lingua. Mi risponda con quello che preferisce e lo blocco subito; se "
+            "nessuno le va bene, me lo dica e cerco altri giorni o la metto in lista d'attesa.",
         )
         text = "\n".join([_offer_line(slot, number, priority) for slot in picks] + [line])
         if await _say(city, citizen, text):
@@ -387,8 +389,9 @@ async def _relaxed(
         chat,
         "no appointment that fits the citizen is free in the time allowed; we put them on the "
         "waiting list and will offer the first suitable slot that opens",
-        "Al momento non c'è un posto adatto a lei nei tempi previsti. La metto in lista d'attesa: "
-        "le proponiamo il primo posto libero.",
+        "Mi dispiace, al momento non c'è un posto adatto a lei nei tempi previsti. La metto "
+        "subito in lista d'attesa: appena si libera un posto adatto glielo proponiamo. Se nel "
+        "frattempo il disturbo cambia, ricontatti il suo medico di base.",
     )
     parts = ["offer", f"offer_id={offer_id}", "waiting_list=true", f"procedure={procedure}"]
     if priority:
@@ -460,8 +463,10 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
         chat,
         "the visit is booked and confirmed; on the day of the visit the citizen checks in at "
         "the facility with this receipt",
-        "La visita è prenotata e confermata. Il giorno della visita si presenti in struttura "
-        "con questa ricevuta per il check-in.",
+        "La visita è prenotata e confermata. Il giorno della visita si presenti "
+        + _FACILITY_WHERE.get(message.sender, "in struttura")
+        + " con questa ricevuta e la tessera sanitaria per il check-in. Se non può venire, "
+        "ci scriva prima: le spostiamo l'appuntamento e liberiamo il posto per un altro cittadino.",
     )
     await _say(
         city, citizen, f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref} {line}"

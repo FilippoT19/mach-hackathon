@@ -257,6 +257,15 @@ async def main() -> int:
     for line in (brain._rx_line([], p, q, s) for p, q, s in (("VIS-FIS", "B", "SYM-BACK"), ("VIS-CARD", "P", "SYM-FOLLOWUP"))):
         check("X-28 frase senza testo clinico e sotto 600 caratteri", not brain.clinical(line) and len(line) < 600, line)
 
+    # 19. X-29: reply sentences never wait for the model (instant, even with a slow model).
+    import time
+    city = FakeCity("agent:bk", llm=model("lenta", delay=3.0))
+    started = time.perf_counter()
+    line = await brain._human(city, [], "x", "Frase fissa.")
+    check("X-29 _human non aspetta il modello", line == "Frase fissa." and time.perf_counter() - started < 0.5, line)
+    for text in (brain._FACILITY_WHERE.values()):
+        check("X-29 indirizzo struttura senza testo clinico", not brain.clinical(text), text)
+
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 

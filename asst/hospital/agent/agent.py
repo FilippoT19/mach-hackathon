@@ -218,6 +218,12 @@ _OUR_AGENTS = {
     "family_counseling": "agent:mm18nddkfc5w",
 }
 _PEERS: dict[str, str] = {}
+# X-29: where our facilities are (their own card addresses) - mobility and accessibility.
+_FACILITY_WHERE = {
+    "agent:jdj692g4145e": "al nostro ospedale in Via Arganini Gerolamo 38 (accessibile in sedia a rotelle)",
+    "agent:jmjfst55vgjz": "dal nostro specialista in Viale Ca' Granda 28",
+    "agent:mm18nddkfc5w": "al nostro consultorio in Via Giolli Raffaello 23",
+}
 
 
 async def _peer(city: City, family: str, query: str) -> str | None:
@@ -445,7 +451,7 @@ def fitting(
 # The model never decides a token. It only (1) maps free text to a code we already know and
 # (2) writes one sentence that we clean before it goes next to our key=value tokens.
 
-_LLM_TIMEOUT = 8.0
+_LLM_TIMEOUT = 4.0  # only the symptom mapping still waits for the model
 _ACT_WORDS = frozenset(
     {
         "need.request", "offer", "confirm", "cancel", "prescription", "consent", "data.request",
@@ -528,9 +534,16 @@ async def _llm_symptom(city: City, text: str) -> str | None:
     return None
 
 
+_VOICE_MODEL = False
+
+
 async def _human(city: City, chat: list[Message], what: str, fallback: str) -> str:
     """One warm sentence in the citizen's language about ``what``, or ``fallback``."""
 
+    # X-29: no model on the reply path. A slow model lost the GP sentence (GP-13) and every
+    # second of wait risks the reply window and the 10 s clock. Fixed sentences are instant.
+    if not _VOICE_MODEL:
+        return fallback
     lang = _lang(chat)
     language = _LANG_NAMES.get(lang, f"the language with code '{lang}'")
     line = await _ask_llm(
@@ -1102,7 +1115,9 @@ async def _advance_alone(
             city,
             chat,
             "here are the free appointments that fit; the citizen picks one and confirms it",
-            "Ecco i posti liberi adatti a lei: mi dica quale preferisce.",
+            "Ecco i posti liberi adatti a lei, tutti nei tempi della sua ricetta e con un medico che "
+            "parla la sua lingua. Mi risponda con quello che preferisce e lo blocco subito; se "
+            "nessuno le va bene, me lo dica e cerco altri giorni o la metto in lista d'attesa.",
         )
         text = "\n".join([_offer_line(slot, number, priority) for slot in picks] + [line])
         if await _say(city, citizen, text):
@@ -1142,8 +1157,9 @@ async def _relaxed(
         chat,
         "no appointment that fits the citizen is free in the time allowed; we put them on the "
         "waiting list and will offer the first suitable slot that opens",
-        "Al momento non c'è un posto adatto a lei nei tempi previsti. La metto in lista d'attesa: "
-        "le proponiamo il primo posto libero.",
+        "Mi dispiace, al momento non c'è un posto adatto a lei nei tempi previsti. La metto "
+        "subito in lista d'attesa: appena si libera un posto adatto glielo proponiamo. Se nel "
+        "frattempo il disturbo cambia, ricontatti il suo medico di base.",
     )
     parts = ["offer", f"offer_id={offer_id}", "waiting_list=true", f"procedure={procedure}"]
     if priority:
@@ -1215,8 +1231,10 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
         chat,
         "the visit is booked and confirmed; on the day of the visit the citizen checks in at "
         "the facility with this receipt",
-        "La visita è prenotata e confermata. Il giorno della visita si presenti in struttura "
-        "con questa ricevuta per il check-in.",
+        "La visita è prenotata e confermata. Il giorno della visita si presenti "
+        + _FACILITY_WHERE.get(message.sender, "in struttura")
+        + " con questa ricevuta e la tessera sanitaria per il check-in. Se non può venire, "
+        "ci scriva prima: le spostiamo l'appuntamento e liberiamo il posto per un altro cittadino.",
     )
     await _say(
         city, citizen, f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref} {line}"
@@ -1492,7 +1510,9 @@ async def _on_checked_in(
             city,
             chat,
             "the citizen has checked in at the facility; the doctor will see them shortly",
-            "Check-in registrato, benvenuto. Il medico la riceve a breve.",
+            "Check-in registrato, benvenuto e grazie di essere arrivato puntuale. Il medico la "
+            "riceve a breve; se ha bisogno di assistenza o di un accompagnamento, lo dica pure "
+            "al nostro personale.",
         )
         await _say(city, citizen, f"checkin booking_id={booking_id} {line}")
     if not reports:
@@ -1518,6 +1538,7 @@ async def _on_reported(city: City, message: Message, chat: list[Message]) -> Non
         city,
         chat,
         "the specialist visit is done and the report is filed; the citizen's GP can read it",
-        "La visita è conclusa e il referto è archiviato. Il suo medico di base può consultarlo.",
+        "La visita è conclusa e il referto è archiviato. Il suo medico di base può consultarlo; "
+        "se serve un controllo, sarà lui a indicarglielo. Grazie di essersi affidato a noi.",
     )
     await _say(city, citizen, f"report booking_id={booking_id} outcome_code=VISIT {line}")
