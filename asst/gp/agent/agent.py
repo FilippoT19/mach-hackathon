@@ -1182,6 +1182,32 @@ def _days(chat: list[Message]) -> frozenset[str] | None:
     return frozenset(found) or None
 
 
+_RX_DATE_KEYS = ("issued_at", "issued", "issue_date", "prescribed_at", "created_at", "date")
+_RX_LIMIT_KEYS = ("valid_until", "expires_at", "expiry", "deadline", "due", "due_by")
+
+
+def _before_rx_deadline(slot: dict[str, str], reply: dict[str, str] | None, priority: str | None) -> bool:
+    """BK-27: the priority window counts from the prescription, not from today. A slot after the
+    citizen's deadline is refused (no_booking -1), so it is never offered."""
+    if not reply:
+        return True
+    at = _when(slot.get("at", ""))
+    if at is None:
+        return True
+    for key in _RX_LIMIT_KEYS:
+        limit = _when(reply.get(key, ""))
+        if limit is not None:
+            return at <= limit
+    days = _DEADLINE_DAYS.get(priority or "")
+    if days is None:
+        return True
+    for key in _RX_DATE_KEYS:
+        issued = _when(reply.get(key, ""))
+        if issued is not None:
+            return at <= issued + timedelta(days=days)
+    return True
+
+
 _FACILITY_ROLES = {"facility", "hospital", "specialist_care", "specialist", "family_counseling"}
 _CROSS_SERVICE_TYPES = {
     "VIS-FIS": "hospital.physiatry",
@@ -1669,7 +1695,7 @@ async def _advance_alone(
             facility=agent if fixed == "CONS-GIN" else None,
             procedure=procedure,
         )
-        if slot.get("slot_id") not in taken
+        if slot.get("slot_id") not in taken and _before_rx_deadline(slot, reply, priority)
     ]
     if chosen:
         # BK-14: every slot in ONE message, one offer per line. The citizen chooses in the turn of

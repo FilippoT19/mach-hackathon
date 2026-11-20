@@ -443,6 +443,11 @@ async def main() -> int:
     await brain._facility(c, req, pre, reports=False, hold_self=False)
     out = [t for r, t in c.sent if r == "agent:partner-bk"]
     check("FA-12 risposta al partner con offer o cancel", out and ("request_id=R-1" in out[0]) and out[0].startswith("offer") and "doctor_lang=en/it" in out[0] and "doctor_gender=f" in out[0], c.sent)
+    # 28. BK-27: deadline from the prescription date.
+    rep = {"issued_at": "2026-11-03T09:00:00Z"}
+    check("BK-27 slot oltre la scadenza della ricetta escluso", not brain._before_rx_deadline({"at": "2026-11-06T10:00:00Z"}, rep, "B"), "")
+    check("BK-27 slot dentro la scadenza tenuto", brain._before_rx_deadline({"at": "2026-11-04T15:00:00Z"}, rep, "B"), "")
+    check("BK-27 senza data nessun filtro", brain._before_rx_deadline({"at": "2026-11-30T10:00:00Z"}, {}, "B"), "")
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 
