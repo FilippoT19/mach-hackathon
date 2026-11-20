@@ -1,0 +1,14 @@
+agent_id: agent:jmjfst55vgjz
+team: team:polimi
+name: specialist
+version: 1.0.2
+cap_versions:
+  - "1.0"
+profiles:
+  - mhm/1.0
+role: facility
+capabilities:
+  - specialist_care.cardiology
+no_clinical_advice: true
+endpoints:
+  mailbox: agent:jmjfst55vgjz

@@ -3,6 +3,8 @@
 Questa cartella è quella che conta per la classifica. Gli agenti girano sulla piattaforma
 della città (`city deploy`), non sul nostro backend FastAPI.
 
+**Leggete prima [PILLAR.md](../PILLAR.md):** stato della gara, link, rubrica, regole, imprevisti.
+
 - `brain/agent.py`: **un solo brain per tutti e 5 i ruoli** (legge il ruolo dalla card).
   Parte dall'esempio ufficiale `templates/examples/agent.py` del kit, che copre i livelli 1–3.
   Si modifica solo qui, poi si ricopia nelle 5 cartelle con `python seats.py --brain`.

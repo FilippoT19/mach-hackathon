@@ -1,0 +1,14 @@
+agent_id: agent:fddgaqmp6kb0
+team: team:polimi
+name: gp
+version: 1.0.1
+cap_versions:
+  - "1.0"
+profiles:
+  - mhm/1.0
+role: gp
+capabilities:
+  - gp
+no_clinical_advice: true
+endpoints:
+  mailbox: agent:fddgaqmp6kb0
