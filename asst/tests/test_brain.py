@@ -151,6 +151,128 @@ async def test_co10_pregnancy(check) -> None:
         hit = any(o.startswith("escalate.emergency") for o in out)
         offers = any(o.startswith("offer") for o in out)
         check(f"CO-10 {'112' if flag else 'nessun allarme'}: {text[:30]}", hit == flag and not (flag and offers), out)
+async def test_facility_proposals(check) -> None:
+    hospital = brain._OUR_AGENTS["hospital"]
+    booking = brain._OUR_AGENTS["booking_centre"]
+
+    class FacilityCity(FakeCity):
+        def __init__(self, replies=None):
+            super().__init__(hospital)
+            self.rows = []
+            self.replies = replies or {}
+
+        def post(self, sender, recipient, text):
+            message = row(sender, recipient, text, len(self.rows))
+            self.rows.append(message)
+            return message
+
+        async def say(self, to, text, *, status=None):
+            await asyncio.sleep(0)
+            await super().say(to, text, status=status)
+            message = self.post(self.agent_id, to, text)
+            if to == LEDGER:
+                for reply in self.replies.get(brain.first_word(text), []):
+                    self.post(LEDGER, self.agent_id, reply)
+            return message.msg_id
+
+        async def history(self, peer=None, *, need_id=None):
+            return list(self.rows)
+
+        async def turn(self, text, sender=CITIZEN):
+            message = self.post(sender, self.agent_id, text)
+            await brain.handle("hospital", self, message, await self.history())
+            return message
+
+    brain._CHECKIN_REQUESTS.clear()
+    city = FacilityCity({"checkin": ["Registrazione non possibile: fuori fascia oraria."]})
+    first = await city.turn("checkin booking_id=B1")
+    check("P-francesco-2 rifiuto in testo libero riconosciuto",
+          any(t.startswith("checkin.refused ") and "08-13 / 13-18" in t for t in to(city, CITIZEN)), city.sent)
+    await brain.handle("hospital", city, first, await city.history())
+    check("P-francesco-1 stesso msg_id non riscrive al Ledger", len(to(city, LEDGER)) == 1, city.sent)
+    await city.turn("checkin booking_id=B1")
+    check("P-francesco-1 nuovo messaggio ritenta", len(to(city, LEDGER)) == 2, city.sent)
+    await city.turn("checkin booking_id=B1")
+    await city.turn("checkin booking_id=B1")
+    check("P-francesco-1 limite tre e risposta al quarto",
+          len(to(city, LEDGER)) == 3 and len(to(city, CITIZEN)) == 4
+          and "centro prenotazioni" in to(city, CITIZEN)[-1], city.sent)
+
+    brain._CHECKIN_REQUESTS.clear()
+    city = FacilityCity()
+    await asyncio.gather(*(city.turn("checkin booking_id=B1") for _ in range(4)))
+    check("P-francesco-1 quattro turni concorrenti non superano il limite",
+          len(to(city, LEDGER)) == 3 and len(to(city, CITIZEN)) == 4, city.sent)
+
+    brain._CHECKIN_REQUESTS.clear()
+    city = FacilityCity({"checkin": ["agenda agenda_now=2026-11-04T09:00:00Z"]})
+    city.post(LEDGER, hospital, "Vecchio rifiuto.")
+    await city.turn("checkin booking_id=B2")
+    check("P-francesco-2 ignora risposte note e rifiuti precedenti",
+          to(city, CITIZEN)[-1].startswith("checkin.wait "), city.sent)
+    late = await city.turn("Registrazione non possibile: fuori fascia.", sender=LEDGER)
+    await brain.handle("hospital", city, late, await city.history())
+    check("P-francesco-2 un solo avviso per il rifiuto tardivo",
+          len(to(city, CITIZEN)) == 2 and to(city, CITIZEN)[-1].startswith("checkin.refused "), city.sent)
+
+    brain._CHECKIN_REQUESTS.clear()
+    at = "2026-11-04T11:00:00Z"
+    city = FacilityCity({"checkin": [f"checked_in slot_id=S9 booking_id=B1 at={at}"]})
+    city.address = "Via di Prova 42"
+    city.post(booking, CITIZEN, "booking.receipt booking_id=B1 ledger_ref=L1")
+    await city.turn("Quando posso fare il check in?")
+    await city.turn("Posso spostare la visita booking_id=B1?")
+    await city.turn("Vorrei annullare booking_id=B1")
+    check("P-francesco-4 domande e modifiche senza scritture al Ledger",
+          not to(city, LEDGER) and "08-13 / 13-18" in to(city, CITIZEN)[0]
+          and all("centro prenotazioni" in t for t in to(city, CITIZEN)[1:]), city.sent)
+    before = len(to(city, CITIZEN))
+    await city.turn("Dove posso parcheggiare?")
+    await city.turn("C'è un ascensore?")
+    out = to(city, CITIZEN)[before:]
+    check("P-francesco-8 due risposte con i fatti dell'ospedale",
+          len(out) == 2 and all("Via di Prova 42" in t and "sedia a rotelle" in t for t in out), city.sent)
+    await city.turn("Sono arrivato, booking_id=B1")
+    check("P-francesco-4 arrivo esplicito avvia il check-in",
+          to(city, LEDGER) == [f"checkin booking_id=B1 citizen={CITIZEN}"], city.sent)
+    check("P-francesco-9 conferma con tutti i valori del registro",
+          to(city, CITIZEN)[-1].startswith(f"checkin booking_id=B1 slot_id=S9 at={at} ")
+          and "sedia a rotelle" in to(city, CITIZEN)[-1], city.sent)
+    await city.turn("checkin booking_id=B1")
+    check("P-francesco-1 check-in già registrato: ripete conferma senza Ledger",
+          len(to(city, LEDGER)) == 1 and to(city, CITIZEN)[-1] == to(city, CITIZEN)[-2], city.sent)
+
+    city = FacilityCity()
+    city.post(booking, hospital, f"confirm offer_id=O1 slot_id=S1 citizen={CITIZEN}")
+    city.post(hospital, LEDGER, "hold slot_id=S2 consent_ref=cons-other")
+    await city.turn("held hold_id=H1 slot_id=S1 need_id=N-1 fence=1", sender=LEDGER)
+    check("P-francesco-6 annulla hold senza consenso invece di inventarlo",
+          to(city, LEDGER) == ["cancel hold_id=H1"]
+          and to(city, booking) == ["cancel offer_id=O1 reason=missing_consent_ref"], city.sent)
+    city = FacilityCity()
+    city.post(hospital, LEDGER, "hold slot_id=S1 consent_ref=C1")
+    held = city.post(LEDGER, hospital, "held hold_id=H1 slot_id=S1 fence=2")
+    await brain.handle("hospital", city, held, [held])
+    check("P-francesco-6 recupera il consenso dall'hold nella storia del Ledger",
+          to(city, LEDGER) == ["commit hold_id=H1 consent_ref=C1 fence=2"], city.sent)
+
+    city = FacilityCity({
+        "hold": ["held hold_id=H1 slot_id=S1 fence=9"],
+        "commit": ["refused commit hold_id=H2 NO_CAPACITY", "refused commit hold_id=H1 PRESCRIPTION_EXPIRED"],
+    })
+    await city.turn(f"confirm offer_id=O1 slot_id=S1 citizen={CITIZEN} consent_ref=C1", sender=booking)
+    check("P-francesco-7 commit rifiutato: motivo e rilascio dell'hold corretto",
+          "commit hold_id=H1 consent_ref=C1 fence=9" in to(city, LEDGER)
+          and to(city, LEDGER)[-1] == "cancel hold_id=H1"
+          and to(city, booking) == ["cancel offer_id=O1 reason=prescription_expired"], city.sent)
+    city = FacilityCity()
+    for i in (1, 2):
+        city.post(booking, hospital, f"confirm offer_id=O{i} slot_id=S{i} citizen={CITIZEN}")
+        city.post(hospital, LEDGER, f"hold slot_id=S{i}")
+    await city.turn("refused hold slot_id=S1 reason=NO_CAPACITY", sender=LEDGER)
+    check("P-francesco-7 hold rifiutato: usa lo slot del rifiuto",
+          to(city, booking) == ["cancel offer_id=O1 reason=no_capacity"] and not to(city, LEDGER), city.sent)
+    brain._CHECKIN_REQUESTS.clear()
 
 
 async def main() -> int:
@@ -473,18 +595,30 @@ async def main() -> int:
     HO = "agent:jdj692g4145e"
     req = Message(type="chat", sender="agent:partner-bk", msg_id="p1", need_id="N-P1", recipient=HO,
                   body={"text": "need.request service_type=hospital.physiatry procedure=VIS-FIS priority=B request_id=R-1"})
-    slots = "slots page=1/1\n" + f"slot_id=S-H1 doctor_id=asst-niguarda-h1 facility={HO} procedure=VIS-FIS at=2026-11-04T15:00:00Z day=wed free=1"
+    slots = ("slots page=1/1\n"
+             f"slot_id=S-H1 doctor_id=asst-niguarda-h1 facility={HO} procedure=VIS-FIS at=2026-11-04T15:00:00Z day=wed free=1\n"
+             f"slot_id=S-H3 doctor_id=asst-niguarda-h3 facility={HO} procedure=VIS-FIS at=2026-11-05T15:00:00Z day=thu free=1")
     pre = [req, row(LEDGER, HO, f"agenda agenda_now={NOW}", 1), row(LEDGER, HO, slots, 2)]
     brain._PARTNER_DONE.clear()
     c = FakeCity(HO)
     await brain._facility(c, req, pre, reports=False, hold_self=False)
     out = [t for r, t in c.sent if r == "agent:partner-bk"]
-    check("FA-12 risposta al partner con offer o cancel", out and ("request_id=R-1" in out[0]) and out[0].startswith("offer") and "doctor_lang=en/it" in out[0] and "doctor_gender=f" in out[0], c.sent)
+    check("FA-12 risposta al partner con offer e doctor_id",
+          out and out[0].startswith("offer") and "request_id=R-1" in out[0] and "doctor_id=" in out[0]
+          and "doctor_lang=" not in out[0] and "doctor_gender=" not in out[0], c.sent)
+    for lang, expected in (("fr", "cancel reason=no_availability"), ("vi", "offer offer_id=of-S-H3")):
+        c = FakeCity(HO)
+        req = row("agent:partner-bk", HO, f"need.request procedure=VIS-FIS priority=B lang={lang} request_id=R-{lang}", 3)
+        await brain._facility(c, req, [*pre[1:], req], reports=False, hold_self=False)
+        out = to(c, req.sender)
+        check(f"P-francesco-10 lingua {lang}: disponibilità corretta",
+              len(out) == 1 and out[0].startswith(expected) and "slot_id=S-H1" not in out[0], c.sent)
     # 28. BK-27: deadline from the prescription date.
     rep = {"issued_at": "2026-11-03T09:00:00Z"}
     check("BK-27 slot oltre la scadenza della ricetta escluso", not brain._before_rx_deadline({"at": "2026-11-06T10:00:00Z"}, rep, "B"), "")
     check("BK-27 slot dentro la scadenza tenuto", brain._before_rx_deadline({"at": "2026-11-04T15:00:00Z"}, rep, "B"), "")
     check("BK-27 senza data nessun filtro", brain._before_rx_deadline({"at": "2026-11-30T10:00:00Z"}, {}, "B"), "")
+    await test_facility_proposals(check)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 

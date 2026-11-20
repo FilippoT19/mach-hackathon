@@ -225,6 +225,7 @@ async def _await_line(
     token: str,
     *,
     op: str,
+    refusal_matches: Callable[[Message], bool] | None = None,
 ) -> tuple[Message, list[Message]] | None:
     """The ledger line for ``token``, or a refusal of ``op`` that was not already in ``chat``."""
 
@@ -242,7 +243,9 @@ async def _await_line(
         for row in fresh:
             if row.msg_id in known or row.sender != LEDGER:
                 continue
-            if first_word(row.text) == "refused" and op in words(row.text):
+            if first_word(row.text) == "refused" and op in words(row.text) and (
+                refusal_matches is None or refusal_matches(row)
+            ):
                 return row, fresh
         if attempt + 1 < _PULL_TRIES:
             await asyncio.sleep(_PULL_PAUSE)
@@ -270,14 +273,18 @@ def _rx(need_id: str | None, msg_id: str) -> str:
     return number if _RX.fullmatch(number) else "prescription_number-CASE"
 
 
+_RARE_LANG = {"h3": _RARE_LANG_BY_ASST["niguarda"]}
+
+
 def _speaks(doctor_id: str, lang: str) -> bool:
-    spec = _DOCTORS.get(doctor_id.rsplit("-", 1)[-1])
+    short = doctor_id.rsplit("-", 1)[-1]
+    spec = _DOCTORS.get(short)
     if spec is None:
         return False
     langs = spec[0]
     if lang in langs:
         return True
-    return "*" in langs and lang not in {"it", "en"}
+    return "*" in langs and _RARE_LANG.get(short) == lang
 
 
 def fitting(

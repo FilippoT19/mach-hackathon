@@ -8,17 +8,29 @@ def _facility_turn(message: Message) -> bool:
     kind = words(message.text)
     if message.sender == LEDGER and head in {"held", "committed", "checked_in", "reported"}:
         return True
-    if message.sender == LEDGER and head == "refused" and "hold" in kind:
+    if message.sender == LEDGER and head == "refused" and kind & {"hold", "commit"}:
         return True
-    if "checkin" in kind and message.sender.startswith("citizen:"):
+    if message.sender.startswith("citizen:") and (
+        head == "checkin" or _explicit_arrival(message.text) or "check in" in message.text.lower()
+        or "check-in" in message.text.lower()
+    ):
         return True
-    return "confirm" in kind and (
-        message.sender.startswith("agent:") or message.sender.startswith("citizen:")
+    return (head == "confirm" and message.sender.startswith("citizen:")) or (
+        "confirm" in kind and message.sender.startswith("agent:")
     )
 
 
 async def _family(city: City, message: Message, chat: list[Message]) -> None:
-    if _facility_turn(message):
+    if _facility_turn(message) or (
+        message.sender == LEDGER and _checkin_refused(city.agent_id, message, chat) is not None
+    ) or (
+        message.sender.startswith("citizen:")
+        and first_word(message.text) not in {"need.request", "data.response", "consent", "cancel"}
+        and any(
+            row.recipient == message.sender and first_word(row.text) in {"booking.receipt", "facility.note"}
+            for row in chat
+        )
+    ):
         await _facility(city, message, chat, reports=False, hold_self=True)
         return
     await _desk(city, message, chat, hold_self=True, fixed="CONS-GIN")
@@ -62,56 +74,84 @@ async def _facility(
         await _on_held(city, message, chat)
     elif message.sender == LEDGER and head == "committed":
         await _on_committed(city, message, chat)
-    elif message.sender == LEDGER and head == "refused" and "hold" in kind:
+    elif message.sender == LEDGER and head == "refused" and kind & {"hold", "commit"}:
         await _on_refused(city, message, chat, hold_self=hold_self)
     elif message.sender == LEDGER and head == "checked_in":
         await _on_checked_in(city, message, chat, reports=reports)
     elif message.sender == LEDGER and head == "reported":
         await _on_reported(city, message, chat)
-    elif "checkin" in kind and message.sender.startswith("citizen:"):
+    elif message.sender == LEDGER:
+        attempt = _checkin_refused(city.agent_id, message, chat)
+        if attempt is not None:
+            await _answer_checkin_refusal(city, attempt, chat, reason=message.text)
+    elif head == "checkin" and message.sender.startswith("citizen:") and not _checkin_question(message.text):
         await _on_checkin(city, message, chat, reports=reports)
-    elif "confirm" in kind:
+    elif head == "confirm" or ("confirm" in kind and message.sender.startswith("agent:")):
         await _on_confirm(city, message, chat, hold_self=hold_self)
     elif message.sender.startswith("citizen:"):
         await _facility_free_text(city, message, chat, reports=reports)
 
 
-_ARRIVED = ("check-in", "check in", "sono arrivat", "sono qui", "i am here", "i'm here", "i have arrived", "arrived")
+_ARRIVED = ("sono arrivat", "sono qui", "sono in struttura", "i am here", "i'm here", "i have arrived")
+_RESCHEDULE = ("spost", "annull", "cancel", "cambia", "move", "reschedul")
+_CHECKIN_HOURS = "08-13 / 13-18"
+
+
+def _checkin_question(text: str) -> bool:
+    low = text.lower()
+    return "?" in low or any(word in low for word in (*_RESCHEDULE, "quando", "when"))
+
+
+def _explicit_arrival(text: str) -> bool:
+    low = text.lower().replace("’", "'")
+    return not _checkin_question(low) and any(phrase in low for phrase in _ARRIVED) and not any(
+        f"non {phrase}" in low for phrase in _ARRIVED
+    )
 
 
 async def _facility_free_text(city: City, message: Message, chat: list[Message], *, reports: bool) -> None:
     """FA-20: a citizen text that is not a checkin/confirm never gets silence."""
     low = message.text.lower()
-    if "booking_id=" in message.text or any(w in low for w in _ARRIVED):
+    if _explicit_arrival(low):
         number = fields_of(message.text).get("booking_id") or next(
-            (fields_of(r.text).get("booking_id") for r in reversed(chat) if fields_of(r.text).get("booking_id")), None
+            (booking for r in reversed(chat)
+             if first_word(r.text) == "booking.receipt"
+             and (r.recipient == message.sender or r.sender == message.sender)
+             and (booking := fields_of(r.text).get("booking_id"))),
+            "",
         )
-        if number:
-            fake = Message(type=message.type, sender=message.sender, recipient=message.recipient,
-                           msg_id=message.msg_id, need_id=message.need_id,
-                           body={"text": f"checkin booking_id={number} {message.text}"})
-            await _on_checkin(city, fake, chat, reports=reports)
-            return
-    if _we(chat, city.agent_id, "", to=message.sender, word="facility.note"):
+        await _on_checkin(city, message, chat, reports=reports, booking_id=number)
         return
-    en = _lang([*chat, message]) != "it"
-    await _say(
+    booking_it = "Per prenotare, spostare o annullare una visita, scriva al centro prenotazioni."
+    booking_en = "To book, move or cancel a visit, please write to the booking centre."
+    hours_it = f"Il check-in si fa nella mezza giornata della visita ({_CHECKIN_HOURS}) con il numero sulla ricevuta."
+    hours_en = f"Check-in is during the half-day of your visit ({_CHECKIN_HOURS}) with the number on your receipt."
+    facts_it, facts_en = hours_it, hours_en
+    if city.agent_id == _OUR_AGENTS["hospital"]:
+        street = _own_street(city)
+        facts_it = f"L'ospedale è in {street} ed è accessibile in sedia a rotelle. {hours_it}"
+        facts_en = f"The hospital is at {street} and is wheelchair accessible. {hours_en}"
+    if any(word in low for word in _RESCHEDULE):
+        fallback, en = booking_it, booking_en
+    elif any(word in low for word in ("check in", "check-in", "checkin")):
+        fallback, en = hours_it, hours_en
+    else:
+        fallback, en = f"{facts_it} {booking_it}", f"{facts_en} {booking_en}"
+    line = await _human(
         city,
-        message.sender,
-        "facility.note "
-        + (
-            "Hello, this is the facility. To book or move a visit please write to our booking "
-            "centre; if you are already here, give me the number on your receipt and I will register your arrival."
-            if en
-            else "Buongiorno, sono la struttura. Per prenotare o spostare una visita scriva al nostro "
-            "centro prenotazioni; se è già qui, mi dia il numero della ricevuta e registro subito il suo arrivo."
-        ),
+        [*chat, message],
+        f"Answer the citizen's facility question using only these facts: {en}",
+        fallback,
+        en=en,
     )
+    await _say(city, message.sender, f"facility.note {line}")
 
 
 def _booking_of(chat: list[Message], agent: str, slot_id: str) -> tuple[str, str, str | None]:
     """Who asked us to book this slot, the consent, and the prescription, if we have them."""
 
+    if not slot_id:
+        return "", "", None
     token = f"slot_id={slot_id}"
     sender = ""
     consent = ""
@@ -120,11 +160,11 @@ def _booking_of(chat: list[Message], agent: str, slot_id: str) -> tuple[str, str
         if token not in row.text.split():
             continue
         fields = _line_fields(row.text, token)
-        if "confirm" in words(row.text) and row.sender not in (LEDGER, agent):
+        if "confirm" in words(row.text) and row.recipient == agent and row.sender not in (LEDGER, agent):
             sender = row.sender
-            consent = fields.get("consent_ref", consent)
-            number = fields.get("prescription_number") or number
-        if row.sender == agent and "hold" in words(row.text):
+            consent = fields.get("consent_ref", "")
+            number = fields.get("prescription_number")
+        if row.sender == agent and row.recipient == LEDGER and first_word(row.text) == "hold":
             consent = fields.get("consent_ref", consent)
             number = fields.get("prescription_number") or number
             sender = sender or fields.get("citizen", "")
@@ -132,6 +172,8 @@ def _booking_of(chat: list[Message], agent: str, slot_id: str) -> tuple[str, str
 
 
 def _hold_slot(chat: list[Message], agent: str, hold_id: str) -> str:
+    if not hold_id:
+        return ""
     token = f"hold_id={hold_id}"
     for row in chat:
         if token in row.text.split() and (row.sender == agent or row.sender == LEDGER):
@@ -153,37 +195,31 @@ def _our_commit(chat: list[Message], agent: str, hold_id: str) -> bool:
     return False
 
 
-def _latest_hold(chat: list[Message], agent: str) -> tuple[str, str | None]:
-    consent = ""
-    number: str | None = None
-    for row in chat:
-        if row.sender != agent or not row.text.strip().startswith("hold "):
-            continue
-        fields = fields_of(row.text)
-        consent = fields.get("consent_ref", consent)
-        number = fields.get("prescription_number") or number
-    return consent, number
-
-
 async def _finish_booking(
     city: City, message: Message, chat: list[Message], slot: str, *, hold_self: bool
 ) -> None:
     """Hold is in the mailbox. Read the held line and commit before this turn ends."""
 
-    found = await _await_line(city, message.need_id, chat, "held", f"slot_id={slot}", op="hold")
+    found = await _await_line(
+        city, message.need_id, chat, "held", f"slot_id={slot}", op="hold",
+        refusal_matches=lambda row: row.recipient == city.agent_id
+        and fields_of(row.text).get("slot_id", slot) == slot,
+    )
     if found is None:
         _LOG.info("care.held.missing", extra={"need_id": (message.need_id or "")[:48]})
         return
     reply, fresh = found
     if first_word(reply.text) == "refused":
-        await _on_refused(city, reply, fresh, hold_self=hold_self)
+        await _on_refused(city, reply, fresh, hold_self=hold_self, slot=slot)
         return
-    await _on_held(city, reply, fresh)
-    hold_id = fields_of(reply.text).get("hold_id", "")
-    if not hold_id:
+    if not await _on_held(city, reply, fresh):
         return
+    hold_id = fields_of(reply.text)["hold_id"]
     done = await _await_line(
-        city, message.need_id, fresh, "committed", f"booking_id={hold_id}", op="commit"
+        city, message.need_id, fresh, "committed", f"booking_id={hold_id}", op="commit",
+        refusal_matches=lambda row: row.recipient == city.agent_id
+        and fields_of(row.text).get("slot_id", slot) == slot
+        and fields_of(row.text).get("hold_id", hold_id) == hold_id,
     )
     if done is None:
         _LOG.info("care.commit.missing", extra={"need_id": (message.need_id or "")[:48]})
@@ -193,39 +229,41 @@ async def _finish_booking(
         await _on_committed(city, reply, fresh)
         return
     if first_word(reply.text) == "refused":
-        await _on_refused(city, reply, fresh, hold_self=hold_self)
+        await _on_refused(city, reply, fresh, hold_self=hold_self, slot=slot, hold_id=hold_id)
 
 
-async def _on_held(city: City, message: Message, chat: list[Message]) -> None:
+async def _on_held(city: City, message: Message, chat: list[Message]) -> bool:
     fields = fields_of(message.text)
+    agent = city.agent_id
     hold_id = fields.get("hold_id", "")
-    slot = fields.get("slot_id", "")
-    if not hold_id or not slot:
+    if not hold_id:
         _LOG.info("care.held.skip", extra={"head": first_word(message.text)[:40]})
-        return
-    if _our_commit(chat, city.agent_id, hold_id):
-        return
-    _, consent, number = _booking_of(chat, city.agent_id, slot)
-    if not consent:
-        consent, held_number = _latest_hold(chat, city.agent_id)
-        number = number or held_number
-    need = fields.get("need_id", "")
-    if not consent and need.startswith("N-"):
-        # The citizen's booking consent is cons-<need_id>-booking. The held line does not
-        # echo the real ref, and the hold that carried it may not be in this page of history.
-        consent = f"cons-{need}-booking"
-    if not consent:
-        _LOG.info("care.held.noconsent", extra={"need_id": need[:48]})
-        return
-    parts = [
-        "commit",
-        f"hold_id={hold_id}",
-        f"consent_ref={consent}",
-        f"fence={fields.get('fence', '1')}",
-    ]
+        return False
+    if _we(chat, agent, f"hold_id={hold_id}", to=LEDGER, word="cancel"):
+        return False
+    if _our_commit(chat, agent, hold_id):
+        return True
+
+    slot = fields.get("slot_id") or _hold_slot(chat, agent, hold_id)
+    _, consent, number = _booking_of(chat, agent, slot)
+    if not consent and slot:
+        # A peer-scoped read can find the hold even when the general case history omitted it.
+        try:
+            ledger_chat = await city.history(LEDGER, need_id=message.need_id)
+        except CapError:
+            ledger_chat = []
+        if ledger_chat:
+            _, consent, number = _booking_of(ledger_chat, agent, slot)
+    fence = fields.get("fence", "")
+    if not consent or not fence:
+        reason = "missing_consent_ref" if not consent else "missing_fence"
+        await _cancel_booking(city, chat, slot, reason=reason, hold_id=hold_id)
+        return False
+
+    parts = ["commit", f"hold_id={hold_id}", f"consent_ref={consent}", f"fence={fence}"]
     if number:
         parts.append(f"prescription_number={number}")
-    await _say(city, LEDGER, " ".join(parts))
+    return await _say(city, LEDGER, " ".join(parts))
 
 
 async def _on_committed(city: City, message: Message, chat: list[Message]) -> None:
@@ -245,103 +283,263 @@ async def _on_committed(city: City, message: Message, chat: list[Message]) -> No
     await _say(city, target, f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref}")
 
 
-async def _on_refused(
-    city: City, message: Message, chat: list[Message], *, hold_self: bool
+async def _cancel_booking(
+    city: City, chat: list[Message], slot: str, *, reason: str, hold_id: str = "",
 ) -> None:
     agent = city.agent_id
-    slot = ""
-    for row in chat:
-        if row.sender == agent and row.recipient == LEDGER and "hold" in words(row.text):
-            slot = fields_of(row.text).get("slot_id", slot)
-    if not slot:
-        return
+    if hold_id and not _we(chat, agent, f"hold_id={hold_id}", to=LEDGER, word="cancel"):
+        await _say(city, LEDGER, f"cancel hold_id={hold_id}")
     target, _, _ = _booking_of(chat, agent, slot)
+    if not target:
+        return
     offer_id = ""
-    for row in chat:
-        if f"slot_id={slot}" in row.text.split():
-            offer_id = _line_fields(row.text, f"slot_id={slot}").get("offer_id", offer_id)
-    if (
-        target
-        and offer_id
-        and not _we(chat, agent, f"offer_id={offer_id}", to=target, word="cancel")
-    ):
-        await _say(city, target, f"cancel offer_id={offer_id} reason=facility_cancelled")
-    if hold_self:
+    for row in reversed(chat):
+        if (row.sender == target and row.recipient == agent and "confirm" in words(row.text)) or (
+            row.sender == agent and first_word(row.text) == "offer"
+        ):
+            offer_id = next(
+                (fields["offer_id"] for fields in _offer_rows(row.text)
+                 if fields.get("slot_id") == slot and fields.get("offer_id")),
+                "",
+            )
+            if offer_id:
+                break
+    identity = f"offer_id={offer_id}" if offer_id else f"slot_id={slot}"
+    if not _we(chat, agent, identity, to=target, word="cancel"):
+        await _say(city, target, f"cancel {identity} reason={reason}")
+
+
+_BOOKING_REFUSALS = {"prescription_expired", "consent_missing", "no_capacity"}
+
+
+async def _on_refused(
+    city: City, message: Message, chat: list[Message], *, hold_self: bool,
+    slot: str = "", hold_id: str = "",
+) -> None:
+    agent = city.agent_id
+    fields = fields_of(message.text)
+    commit_refused = "commit" in words(message.text)
+    hold_id = fields.get("hold_id") or hold_id
+    if commit_refused and not hold_id:
+        # For a delayed refusal use the preceding commit, never a later request.
+        previous = chat[:chat.index(message)] if message in chat else chat
+        hold_id = next(
+            (fields_of(row.text).get("hold_id", "") for row in reversed(previous)
+             if row.sender == agent and row.recipient == LEDGER and first_word(row.text) == "commit"),
+            "",
+        )
+    slot = fields.get("slot_id") or _hold_slot(chat, agent, hold_id) or slot
+    if not slot and not commit_refused:
+        previous = chat[:chat.index(message)] if message in chat else chat
+        slot = next(
+            (fields_of(row.text).get("slot_id", "") for row in reversed(previous)
+             if row.sender == agent and row.recipient == LEDGER and first_word(row.text) == "hold"),
+            "",
+        )
+    reason = (fields.get("reason") or fields.get("code") or "").lower()
+    if not re.fullmatch(r"[a-z]+(?:_[a-z0-9]+)*", reason):
+        reason = next(iter(words(message.text) & _BOOKING_REFUSALS), "facility_cancelled")
+    await _cancel_booking(city, chat, slot, reason=reason, hold_id=hold_id if commit_refused else "")
+    if slot and hold_self:
         await _advance(city, message, chat, fixed="CONS-GIN", replacing=True)
 
 
-async def _on_checkin(city: City, message: Message, chat: list[Message], *, reports: bool) -> None:
-    booking_id = fields_of(message.text).get("booking_id", "")
-    citizen = message.sender if message.sender.startswith("citizen:") else _citizen(chat)
-    if not citizen:
-        return
-    en = _lang([*chat, message]) != "it"
-    if not booking_id:
-        # FA-03 (P-francesco-3): an id we do not have is asked, never guessed; never silent.
-        if not _we(chat, city.agent_id, "", to=citizen, word="checkin.help"):
-            await _say(city, citizen, "checkin.help " + (
-                "Welcome! To register your arrival I need the booking number (booking_id) written "
-                "on your receipt: could you write it to me?" if en else
-                "Benvenuto! Per registrare il suo arrivo mi serve il numero di prenotazione "
-                "(booking_id) scritto sulla ricevuta: me lo può scrivere?"))
+_CHECKIN_LIMIT = 3
+_LEDGER_REPLIES = {
+    "checked_in", "held", "committed", "reported", "prescribed", "prescription",
+    "slots", "agenda", "world", "rules", "catalogue", "history",
+}
+_CHECKIN_REQUESTS: OrderedDict[tuple[str, str | None, str], None] = OrderedDict()
+_CHECKIN_GATES: dict[tuple[str, str | None, str], _Gate] = {}
+
+
+def _checked_in(chat: list[Message], agent: str, token: str) -> Message | None:
+    return _latest([row for row in chat if row.recipient == agent], "checked_in", token)
+
+
+def _checkin_attempts(chat: list[Message], agent: str, booking_id: str) -> list[Message]:
+    return [
+        row for row in chat
+        if row.sender == agent and row.recipient == LEDGER and row.text.startswith("checkin ")
+        and fields_of(row.text).get("booking_id") == booking_id
+    ]
+
+
+def _checkin_refused(agent: str, message: Message, chat: list[Message]) -> Message | None:
+    """Match a refusal to the preceding Ledger request addressed from this facility."""
+    head = first_word(message.text)
+    if message.sender != LEDGER or message.recipient != agent or head in _LEDGER_REPLIES:
+        return None
+    if head == "refused" and words(message.text) & {"hold", "commit", "prescribe", "prescription", "report"}:
+        return None
+    fields = fields_of(message.text)
+    booking_id = fields.get("booking_id")
+    previous = []
+    for row in chat:
+        if row.msg_id == message.msg_id:
+            break
+        previous.append(row)
+    if booking_id:
+        attempts = _checkin_attempts(previous, agent, booking_id)
+        return attempts[-1] if attempts else None
+    for row in reversed(previous):
+        if row.sender == agent and row.recipient == LEDGER:
+            return row if row.text.startswith("checkin ") else None
+    return None
+
+
+async def _answer_checkin_refusal(
+    city: City, attempt: Message, chat: list[Message], *, reason: str,
+) -> None:
+    fields = fields_of(attempt.text)
+    booking_id, citizen = fields.get("booking_id", ""), fields.get("citizen", "")
+    if not booking_id or not citizen:
         return
     token = f"booking_id={booking_id}"
-    if not _we(chat, city.agent_id, token, to=LEDGER, word="checkin"):
-        if not await _say(city, LEDGER, f"checkin booking_id={booking_id} citizen={citizen}"):
-            return
-    found = await _await_line(city, message.need_id, chat, "checked_in", token, op="checkin")
-    if found is None:
-        _LOG.info("care.checkin.missing", extra={"need_id": (message.need_id or "")[:48]})
-        if not _we(chat, city.agent_id, token, to=citizen, word="checkin.wait"):
-            await _say(city, citizen, f"checkin.wait {token} " + (
-                "I have sent your check-in to the register: I will confirm as soon as the answer "
-                "arrives." if en else
-                "Ho inviato il suo check-in al registro: le confermo appena arriva la risposta."))
+    later = chat[chat.index(attempt) + 1:]
+    if _checked_in(chat, city.agent_id, token) or _we(
+        later, city.agent_id, token, to=citizen, word="checkin.refused"
+    ):
         return
-    reply, fresh = found
-    if first_word(reply.text) == "checked_in":
-        await _on_checked_in(city, reply, fresh, reports=reports)
-        return
-    # FA-03: refused. Explain once per attempt, with the half-day window; after 3 send to booking.
-    tries = sum(1 for r in chat if r.sender == city.agent_id and r.recipient == citizen
-                and first_word(r.text) == "checkin.refused")
-    if tries >= 3:
-        return
-    if tries < 2:
-        line = ("I could not register your arrival: check-in opens in the half-day of the visit "
-                "(08-13 or 13-18). If you are early, write to me again from that time." if en else
-                "Non sono riuscito a registrare il suo arrivo: il check-in si fa nella mezza giornata "
-                "della visita (08-13 o 13-18). Se è in anticipo, mi riscriva da quell'ora.")
+    tries = len(_checkin_attempts(chat, city.agent_id, booking_id))
+    await _checkin_failure(city, citizen, booking_id, chat, exhausted=tries >= _CHECKIN_LIMIT, reason=reason)
+
+
+async def _checkin_failure(
+    city: City, citizen: str, booking_id: str, chat: list[Message], *, exhausted: bool, reason: str = "",
+) -> None:
+    if exhausted:
+        fallback = ("Non riesco a registrare il suo arrivo con questa prenotazione. Controlli il numero "
+                    "sulla ricevuta o chieda al centro prenotazioni di verificarlo.")
+        en = ("I could not register your arrival with this booking. Please check the number on the "
+              "receipt or ask the booking centre to verify it.")
     else:
-        line = ("I am sorry, I cannot register the check-in with this booking. Please check the "
-                "number on the receipt, or ask the booking centre, which can verify it." if en else
-                "Mi dispiace, non riesco a registrare il check-in con questa prenotazione. Controlli "
-                "il numero sulla ricevuta, oppure si rivolga al centro prenotazioni che può verificarla.")
-    await _say(city, citizen, f"checkin.refused {token} {line}")
+        fallback = (f"Non sono riuscito a registrare il suo arrivo. Il check-in si fa nella mezza "
+                    f"giornata della visita ({_CHECKIN_HOURS}). Se è in anticipo, mi riscriva in quella fascia.")
+        en = (f"I could not register your arrival. Check-in opens in the half-day of the visit "
+              f"({_CHECKIN_HOURS}). If you are early, please write again during that window.")
+    line = await _human(city, chat, f"Check-in could not be completed. Ledger response: {reason}", fallback, en=en)
+    await _say(city, citizen, f"checkin.refused booking_id={booking_id} {line}")
+
+
+async def _on_checkin(
+    city: City, message: Message, chat: list[Message], *, reports: bool, booking_id: str | None = None,
+) -> None:
+    if booking_id is None:
+        booking_id = fields_of(message.text).get("booking_id", "")
+    citizen = message.sender
+    context = [*chat, message]
+    en = _lang(context) != "it"
+    if not booking_id:
+        await _say(city, citizen, "checkin.help " + (
+            "Welcome! To register your arrival I need the booking number (booking_id) written "
+            "on your receipt. Could you write it to me?" if en else
+            "Benvenuto! Per registrare il suo arrivo mi serve il numero di prenotazione "
+            "(booking_id) scritto sulla ricevuta. Me lo può scrivere?"))
+        return
+    agent = city.agent_id
+    token = f"booking_id={booking_id}"
+    key = (agent, message.need_id, booking_id)
+    gate = _CHECKIN_GATES.setdefault(key, _Gate())
+    gate.turns += 1
+    refresh = gate.turns > 1
+    try:
+        async with gate.lock:
+            if refresh:
+                # Count the preceding turn's write before reserving another attempt.
+                try:
+                    context = _keep(await city.history(need_id=message.need_id), context)
+                except CapError:
+                    await _checkin_failure(city, citizen, booking_id, context, exhausted=False)
+                    return
+            success = _checked_in(context, agent, token)
+            if success is not None:
+                await _confirm_checkin(city, success, context, citizen)
+                return
+            request = (agent, message.need_id, message.msg_id)
+            if request in _CHECKIN_REQUESTS:
+                return
+            attempts = _checkin_attempts(context, agent, booking_id)
+            if len(attempts) >= _CHECKIN_LIMIT:
+                await _checkin_failure(city, citizen, booking_id, context, exhausted=True)
+                return
+            _CHECKIN_REQUESTS[request] = None
+            if len(_CHECKIN_REQUESTS) > _SENT_NEEDS:
+                _CHECKIN_REQUESTS.popitem(last=False)
+            try:
+                attempt_id = await city.say(LEDGER, f"checkin {token} citizen={citizen}")
+            except CapError:
+                await _checkin_failure(city, citizen, booking_id, context, exhausted=False)
+                return
+    finally:
+        gate.turns -= 1
+        if not gate.turns:
+            del _CHECKIN_GATES[key]
+
+    reply = None
+
+    def ready(rows: list[Message]) -> bool:
+        nonlocal reply
+        for row in reversed(rows):
+            if row.msg_id == attempt_id:
+                break
+            if row.sender != LEDGER or row.recipient != agent:
+                continue
+            if first_word(row.text) == "checked_in" and fields_of(row.text).get("booking_id") == booking_id:
+                reply = row
+                return True
+            attempt = _checkin_refused(agent, row, rows)
+            if attempt is not None and attempt.msg_id == attempt_id:
+                reply = row
+                return True
+        return False
+
+    fresh = await _until(city, message.need_id, context, ready)
+    if reply is not None:
+        if first_word(reply.text) == "checked_in":
+            await _on_checked_in(city, reply, fresh, reports=reports, citizen=citizen)
+        else:
+            await _checkin_failure(
+                city, citizen, booking_id, context,
+                exhausted=len(attempts) + 1 >= _CHECKIN_LIMIT, reason=reply.text,
+            )
+        return
+    await _say(city, citizen, f"checkin.wait {token} " + (
+        "I have sent your check-in to the register. I will confirm as soon as the answer arrives." if en else
+        "Ho inviato il suo check-in al registro. Le confermo appena arriva la risposta."))
+
+
+async def _confirm_checkin(city: City, message: Message, chat: list[Message], citizen: str) -> None:
+    fallback = "Check-in registrato, benvenuto. Se ha bisogno di assistenza, lo dica pure al nostro personale."
+    en = "You are checked in, welcome. If you need assistance, please ask our staff."
+    if city.agent_id == _OUR_AGENTS["hospital"]:
+        fallback += " L'ospedale è accessibile anche in sedia a rotelle."
+        en += " The hospital is wheelchair accessible."
+    line = await _human(city, chat, f"The register confirmed the citizen's arrival. {en}", fallback, en=en)
+    booking_id = fields_of(message.text)["booking_id"]
+    tokens = [
+        token for token in message.text.split()[1:] if "=" in token and not token.startswith("booking_id=")
+    ]
+    await _say(city, citizen, " ".join(["checkin", f"booking_id={booking_id}", *tokens, line]))
 
 
 async def _on_checked_in(
-    city: City, message: Message, chat: list[Message], *, reports: bool
+    city: City, message: Message, chat: list[Message], *, reports: bool, citizen: str | None = None,
 ) -> None:
-    booking_id = fields_of(message.text).get("booking_id", "")
-    citizen = _citizen(chat)
+    fields = fields_of(message.text)
+    booking_id = fields.get("booking_id", "")
     if not booking_id:
         return
     token = f"booking_id={booking_id}"
+    if not citizen:
+        attempts = _checkin_attempts(chat, city.agent_id, booking_id)
+        citizen = fields.get("citizen") or (
+            fields_of(attempts[-1].text).get("citizen") if attempts else _citizen(chat)
+        )
+    if citizen and not _we(chat, city.agent_id, token, to=citizen, word="checkin"):
+        await _confirm_checkin(city, message, chat, citizen)
     if reports and not _we(chat, city.agent_id, token, to=LEDGER, word="report"):
         await _say(city, LEDGER, f"report booking_id={booking_id} outcome_code=VISIT")
-    if citizen and not _we(chat, city.agent_id, token, to=citizen, word="checkin"):
-        line = await _human(
-            city,
-            chat,
-            "the citizen has checked in at the facility; the doctor will see them shortly",
-            "Check-in registrato, benvenuto e grazie di essere arrivato puntuale. Il medico la "
-            "riceve a breve; se ha bisogno di assistenza o di un accompagnamento, lo dica pure "
-            "al nostro personale.",
-            en="You are checked in, welcome and thank you for being on time. The doctor will see "
-            "you shortly; if you need assistance or someone to accompany you, just ask our staff.",
-        )
-        await _say(city, citizen, f"checkin booking_id={booking_id} {line}")
     if not reports:
         return
     found = await _await_line(city, message.need_id, chat, "reported", token, op="report")
@@ -374,19 +572,7 @@ async def _on_reported(city: City, message: Message, chat: list[Message]) -> Non
 
 
 # --- FA-12: cross-ASST request from another booking centre (format agreed in the group) ------
-_RARE_LANG = {"h3": "vi"}  # our h3 physiatrist speaks Vietnamese (registry)
 _PARTNER_DONE: set[str] = set()
-
-
-def _doctor_tokens(doctor_id: str) -> str:
-    short = doctor_id.rsplit("-", 1)[-1]
-    spec = _DOCTORS.get(short)
-    if spec is None:
-        return ""
-    langs = sorted(l for l in spec[0] if l != "*")
-    if short in _RARE_LANG:
-        langs.append(_RARE_LANG[short])
-    return f"doctor_lang={'/'.join(langs)} doctor_gender={spec[1]}"
 
 
 async def _partner_request(city: City, message: Message, chat: list[Message]) -> None:
@@ -422,7 +608,7 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
         return
     lines = [
         f"offer offer_id=of-{s['slot_id']} slot_id={s['slot_id']} doctor_id={s['doctor_id']} facility={agent} "
-        f"procedure={s['procedure']} agenda_date={s['at']} {_doctor_tokens(s['doctor_id'])} request_id={request_id}"
+        f"procedure={s['procedure']} agenda_date={s['at']} request_id={request_id}"
         + (" wheelchair=true" if agent == "agent:jdj692g4145e" else "")  # common format: accessible hospital
         for s in picks
     ]
