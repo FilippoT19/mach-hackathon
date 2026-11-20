@@ -1,4 +1,6 @@
-# MACH Hackathon: multi-agent citizen assistant (starter)
+# MACH (Milano Agentic City Hackathon): multi-agent citizen assistant
+
+Event: Fri 20 Nov 2026 (challenge reveal 16:40, coding starts 20:00, overnight online) → Sat 21 Nov (10:00–16:00 final coding and submission, pitches 16:00).
 
 Pre-built foundation so we can start coding the minute the challenge is announced.
 A **router agent** reads each message and hands it to a **specialist agent** (health,

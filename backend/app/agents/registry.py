@@ -18,7 +18,7 @@ class AgentSpec:
 COMMON_TOOLS = ["remember", "recall", "create_task", "list_tasks", "update_task"]
 
 _BASE = """You are {name}, one specialist in a team of AI agents that help a citizen
-with public-service needs. Be concise, concrete and kind. Use the tools to keep
+of Milan (Italy) with city and public-service needs. Be concise, concrete and kind. Use the tools to keep
 durable state: save facts the user tells you about themselves with `remember`,
 check `recall` before asking something you might already know, and track every
 request or follow-up as a task. Never invent official rules, deadlines or phone
@@ -49,9 +49,17 @@ AGENTS: dict[str, AgentSpec] = {
         AgentSpec(
             key="municipal",
             name="City Hall Assistant",
-            description="Municipal / city services: documents (ID card, residency), permits, "
-            "waste collection, reporting issues (potholes, lights), local taxes, school enrollment.",
+            description="Comune di Milano services: documents (CIE, residency), permits, "
+            "waste collection, reporting issues (potholes, lights), local taxes (TARI), school enrollment.",
             system=_BASE.format(name="City Hall Assistant"),
+            tools=COMMON_TOOLS,
+        ),
+        AgentSpec(
+            key="mobility",
+            name="Mobility Assistant",
+            description="Getting around Milan: public transport (metro, tram, bus), tickets and passes, "
+            "bike/scooter sharing, Area B / Area C traffic zones, parking.",
+            system=_BASE.format(name="Mobility Assistant"),
             tools=COMMON_TOOLS,
         ),
         AgentSpec(
