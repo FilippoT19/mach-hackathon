@@ -332,8 +332,10 @@ def _has_agenda(chat: list[Message]) -> bool:
     return _when("" if agenda is None else agenda.get("agenda_now", "")) is not None
 
 
-def _has_procedure(chat: list[Message]) -> bool:
+def _has_procedure(chat: list[Message], number: str | None = None) -> bool:
     reply = _ledger(chat, "prescription")
+    if number and reply is not None and reply.get("prescription_number") not in (None, number):
+        return False
     return reply is not None and bool(reply.get("procedure"))
 
 
@@ -363,10 +365,11 @@ def fitting(
     priority: str | None,
     lang: str,
     gender: str | None = None,
+    days: frozenset[str] | None = None,
     facility: str | None = None,
     procedure: str | None = None,
 ) -> list[dict[str, str]]:
-    """Slots a citizen can accept: future, free, in the priority window, spoken language."""
+    """Slots a citizen can accept, preferring the citizen's requested agenda days."""
 
     if priority == "U":
         horizon: datetime | None = now.replace(hour=23, minute=59, second=59, microsecond=0)
@@ -375,7 +378,7 @@ def fitting(
     else:
         horizon = now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14))
     earliest = now + _LEAD
-    chosen: list[tuple[datetime, dict[str, str]]] = []
+    chosen: list[tuple[int, datetime, dict[str, str]]] = []
     for line in lines:
         slot = fields_of(line)
         slot_id = slot.get("slot_id")
@@ -405,9 +408,10 @@ def fitting(
             continue
         if gender and spec[1] != gender:
             continue
-        chosen.append((at, slot))
-    chosen.sort(key=lambda item: (item[0], item[1].get("slot_id", "")))
-    return [slot for _, slot in chosen]
+        preferred = 0 if days and day in days else 1
+        chosen.append((preferred, at, slot))
+    chosen.sort(key=lambda item: (item[0], item[1], item[2].get("slot_id", "")))
+    return [slot for _, _, slot in chosen]
 
 
 # --- voce: the team model (city.llm) ------------------------------------------------------------
@@ -555,12 +559,69 @@ def _our_rx(chat: list[Message], agent: str) -> dict[str, str]:
     return found
 
 
+def _renewal_source(chat: list[Message], number: str) -> dict[str, str] | None:
+    for row in reversed(chat):
+        if row.sender != LEDGER or first_word(row.text) != "prescription":
+            continue
+        fields = fields_of(row.text)
+        if fields.get("prescription_number") == number and fields.get("procedure"):
+            return fields
+    return None
+
+
+async def _renew_prescription(
+    city: City, message: Message, chat: list[Message], old_number: str
+) -> None:
+    agent = city.agent_id
+    source = _renewal_source(chat, old_number)
+    if source is None:
+        if not _we(chat, agent, f"prescription_number={old_number}", to=LEDGER, word="prescription"):
+            await _say(city, LEDGER, f"prescription prescription_number={old_number}")
+        chat = await _until(
+            city,
+            message.need_id,
+            chat,
+            lambda rows: _renewal_source(rows, old_number) is not None,
+        )
+        source = _renewal_source(chat, old_number)
+    if source is None:
+        await _say(
+            city,
+            message.sender,
+            "Mi dispiace, non riesco a recuperare la ricetta da rinnovare. Descriva il problema al medico di base.",
+        )
+        return
+    procedure = source.get("procedure", "")
+    priority = source.get("priority", "D")
+    new_number = _rx(message.need_id, message.msg_id)
+    if not _we(chat, agent, f"prescription_number={new_number}", to=LEDGER, word="prescribe"):
+        if not await _say(
+            city,
+            LEDGER,
+            f"prescribe patient={message.sender} procedure={procedure} priority={priority} "
+            f"prescription_number={new_number} renewal_of={old_number}",
+        ):
+            return
+    if _we(chat, agent, f"prescription_number={new_number}", to=message.sender, word="prescription"):
+        return
+    await _say(
+        city,
+        message.sender,
+        f"prescription prescription_number={new_number} procedure={procedure} priority={priority} "
+        "La ricetta è stata rinnovata. Ora può contattare il centro prenotazioni.",
+    )
+
+
 async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     agent = city.agent_id
     if message.sender == LEDGER:
         await _announce(city, message, chat, agent)
         return
     if not message.sender.startswith("citizen:"):
+        return
+    fields = fields_of(message.text)
+    if not _emergency(message) and "prescription_number" in fields and _symptom(message) is None:
+        await _renew_prescription(city, message, chat, fields["prescription_number"])
         return
     code = None if _emergency(message) else _symptom(message)
     if code is None and not _emergency(message):
@@ -578,7 +639,6 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
         return
     if code is None:
         # Never leave the citizen without an answer (review: -1 for a message left unanswered).
-        # A renewal carries only prescription_number: that path is still to do (rule P1).
         asked = any(row.sender == agent and row.recipient == message.sender for row in chat)
         if not asked and "prescription_number" not in fields_of(message.text):
             await _say(
@@ -659,6 +719,56 @@ def _ledger(chat: list[Message], head: str) -> dict[str, str] | None:
         if row.sender == LEDGER and first_word(row.text) == head:
             found = fields_of(row.text)
     return found
+
+
+def _prescription_reply(chat: list[Message], number: str | None) -> dict[str, str] | None:
+    reply = _ledger(chat, "prescription")
+    if number and reply is not None and reply.get("prescription_number") not in (None, number):
+        return None
+    return reply
+
+
+def _expired_prescription(chat: list[Message], number: str | None) -> bool:
+    expired: bool | None = None
+    for row in chat:
+        if row.sender != LEDGER:
+            continue
+        head = first_word(row.text)
+        fields = fields_of(row.text)
+        row_number = fields.get("prescription_number")
+        if number and row_number and row_number != number:
+            continue
+        upper = row.text.upper()
+        if head == "refused" and "PRESCRIPTION_EXPIRED" in upper:
+            expired = True
+        elif head == "prescription":
+            state = fields.get("state", "").lower()
+            expired = state == "expired" or "PRESCRIPTION_EXPIRED" in upper
+    return expired is True
+
+
+async def _ask_renewal(
+    city: City, message: Message, chat: list[Message], citizen: str, number: str | None
+) -> None:
+    if not number or _we(
+        chat,
+        city.agent_id,
+        "purpose=prescription_renewal",
+        to=citizen,
+        word="data.request",
+    ):
+        return
+    line = await _human(
+        city,
+        chat,
+        "the prescription has expired and the citizen must ask their GP for a renewal",
+        "La ricetta è scaduta. Chieda al medico di base di rinnovarla usando questo numero.",
+    )
+    await _say(
+        city,
+        citizen,
+        f"data.request purpose=prescription_renewal fields=prescription_number prescription_number={number} {line}",
+    )
 
 
 def _latest_slots(chat: list[Message]) -> str | None:
@@ -745,6 +855,43 @@ def _gender(chat: list[Message]) -> str | None:
         if raw in {"m", "f"}:
             return raw
     return None
+
+
+_DAY_ALIASES = {
+    "mon": "mon",
+    "monday": "mon",
+    "lun": "mon",
+    "lunedì": "mon",
+    "tue": "tue",
+    "tuesday": "tue",
+    "mar": "tue",
+    "martedì": "tue",
+    "wed": "wed",
+    "wednesday": "wed",
+    "mer": "wed",
+    "mercoledì": "wed",
+    "thu": "thu",
+    "thursday": "thu",
+    "gio": "thu",
+    "giovedì": "thu",
+    "fri": "fri",
+    "friday": "fri",
+    "ven": "fri",
+    "venerdì": "fri",
+}
+
+
+def _days(chat: list[Message]) -> frozenset[str] | None:
+    found: set[str] = set()
+    for row in chat:
+        if not row.sender.startswith("citizen:"):
+            continue
+        raw = fields_of(row.text).get("days", "")
+        for value in raw.lower().replace(",", "/").split("/"):
+            day = _DAY_ALIASES.get(value.strip())
+            if day:
+                found.add(day)
+    return frozenset(found) or None
 
 
 _CROSS_SERVICE_TYPES = {
@@ -1077,17 +1224,23 @@ async def _advance_alone(
     citizen = _citizen(chat)
     if citizen is None:
         return
-    reply = _ledger(chat, "prescription")
+    number = _number(chat)
+    reply = _prescription_reply(chat, number)
     priority = None if reply is None else reply.get("priority")
     procedure = fixed or (None if reply is None else reply.get("procedure"))
-    number = _number(chat)
     agenda = _ledger(chat, "agenda")
     now = _when("" if agenda is None else agenda.get("agenda_now", ""))
     world = _latest_slots(chat)
+    if fixed is None and _expired_prescription(chat, number):
+        await _ask_renewal(city, message, chat, citizen, number)
+        return
     # Ask, then read the reply from history: the push of a ledger message does not open a turn.
     for _pass in range(3):
-        reply = _ledger(chat, "prescription")
+        reply = _prescription_reply(chat, number)
         priority = None if reply is None else reply.get("priority")
+        if fixed is None and _expired_prescription(chat, number):
+            await _ask_renewal(city, message, chat, citizen, number)
+            return
         if priority == "P":
             offer_id = f"wl-{message.need_id or message.msg_id}"
             token = f"offer_id={offer_id}"
@@ -1114,7 +1267,10 @@ async def _advance_alone(
                 city,
                 message.need_id,
                 chat,
-                lambda rows: _has_procedure(rows) and _has_agenda(rows),
+                lambda rows: (
+                    _expired_prescription(rows, number)
+                    or (_has_procedure(rows, number) and _has_agenda(rows))
+                ),
             )
             continue
         if not procedure:
@@ -1162,6 +1318,7 @@ async def _advance_alone(
             priority=priority,
             lang=_lang(chat),
             gender=_gender(chat),
+            days=_days(chat),
             facility=agent if fixed == "CONS-GIN" else None,
             procedure=procedure,
         )

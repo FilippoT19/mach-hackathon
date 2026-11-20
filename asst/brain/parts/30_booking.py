@@ -11,6 +11,56 @@ def _ledger(chat: list[Message], head: str) -> dict[str, str] | None:
     return found
 
 
+def _prescription_reply(chat: list[Message], number: str | None) -> dict[str, str] | None:
+    reply = _ledger(chat, "prescription")
+    if number and reply is not None and reply.get("prescription_number") not in (None, number):
+        return None
+    return reply
+
+
+def _expired_prescription(chat: list[Message], number: str | None) -> bool:
+    expired: bool | None = None
+    for row in chat:
+        if row.sender != LEDGER:
+            continue
+        head = first_word(row.text)
+        fields = fields_of(row.text)
+        row_number = fields.get("prescription_number")
+        if number and row_number and row_number != number:
+            continue
+        upper = row.text.upper()
+        if head == "refused" and "PRESCRIPTION_EXPIRED" in upper:
+            expired = True
+        elif head == "prescription":
+            state = fields.get("state", "").lower()
+            expired = state == "expired" or "PRESCRIPTION_EXPIRED" in upper
+    return expired is True
+
+
+async def _ask_renewal(
+    city: City, message: Message, chat: list[Message], citizen: str, number: str | None
+) -> None:
+    if not number or _we(
+        chat,
+        city.agent_id,
+        "purpose=prescription_renewal",
+        to=citizen,
+        word="data.request",
+    ):
+        return
+    line = await _human(
+        city,
+        chat,
+        "the prescription has expired and the citizen must ask their GP for a renewal",
+        "La ricetta è scaduta. Chieda al medico di base di rinnovarla usando questo numero.",
+    )
+    await _say(
+        city,
+        citizen,
+        f"data.request purpose=prescription_renewal fields=prescription_number prescription_number={number} {line}",
+    )
+
+
 def _latest_slots(chat: list[Message]) -> str | None:
     found: str | None = None
     for row in chat:
@@ -95,6 +145,43 @@ def _gender(chat: list[Message]) -> str | None:
         if raw in {"m", "f"}:
             return raw
     return None
+
+
+_DAY_ALIASES = {
+    "mon": "mon",
+    "monday": "mon",
+    "lun": "mon",
+    "lunedì": "mon",
+    "tue": "tue",
+    "tuesday": "tue",
+    "mar": "tue",
+    "martedì": "tue",
+    "wed": "wed",
+    "wednesday": "wed",
+    "mer": "wed",
+    "mercoledì": "wed",
+    "thu": "thu",
+    "thursday": "thu",
+    "gio": "thu",
+    "giovedì": "thu",
+    "fri": "fri",
+    "friday": "fri",
+    "ven": "fri",
+    "venerdì": "fri",
+}
+
+
+def _days(chat: list[Message]) -> frozenset[str] | None:
+    found: set[str] = set()
+    for row in chat:
+        if not row.sender.startswith("citizen:"):
+            continue
+        raw = fields_of(row.text).get("days", "")
+        for value in raw.lower().replace(",", "/").split("/"):
+            day = _DAY_ALIASES.get(value.strip())
+            if day:
+                found.add(day)
+    return frozenset(found) or None
 
 
 _CROSS_SERVICE_TYPES = {
@@ -427,17 +514,23 @@ async def _advance_alone(
     citizen = _citizen(chat)
     if citizen is None:
         return
-    reply = _ledger(chat, "prescription")
+    number = _number(chat)
+    reply = _prescription_reply(chat, number)
     priority = None if reply is None else reply.get("priority")
     procedure = fixed or (None if reply is None else reply.get("procedure"))
-    number = _number(chat)
     agenda = _ledger(chat, "agenda")
     now = _when("" if agenda is None else agenda.get("agenda_now", ""))
     world = _latest_slots(chat)
+    if fixed is None and _expired_prescription(chat, number):
+        await _ask_renewal(city, message, chat, citizen, number)
+        return
     # Ask, then read the reply from history: the push of a ledger message does not open a turn.
     for _pass in range(3):
-        reply = _ledger(chat, "prescription")
+        reply = _prescription_reply(chat, number)
         priority = None if reply is None else reply.get("priority")
+        if fixed is None and _expired_prescription(chat, number):
+            await _ask_renewal(city, message, chat, citizen, number)
+            return
         if priority == "P":
             offer_id = f"wl-{message.need_id or message.msg_id}"
             token = f"offer_id={offer_id}"
@@ -464,7 +557,10 @@ async def _advance_alone(
                 city,
                 message.need_id,
                 chat,
-                lambda rows: _has_procedure(rows) and _has_agenda(rows),
+                lambda rows: (
+                    _expired_prescription(rows, number)
+                    or (_has_procedure(rows, number) and _has_agenda(rows))
+                ),
             )
             continue
         if not procedure:
@@ -512,6 +608,7 @@ async def _advance_alone(
             priority=priority,
             lang=_lang(chat),
             gender=_gender(chat),
+            days=_days(chat),
             facility=agent if fixed == "CONS-GIN" else None,
             procedure=procedure,
         )

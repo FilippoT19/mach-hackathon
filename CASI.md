@@ -83,11 +83,11 @@ Vince chi copre più **punti ciechi**: servizi che non esistono, lingue rare, ac
 
 | ID | Caso | Rischio | Soluzione proposta | Logica | Chi | Stato |
 |---|---|---|---|---|---|---|
-| BK-11 | **Giorni preferiti** (`days`) ignorati | +2 invece di +1 | Mettere `days` nel filtro e dare priorità agli slot in quei giorni | `S_pref` vale il doppio | Filippo + Magesh | da fare |
+| BK-11 | **Giorni preferiti** (`days`) ignorati | +2 invece di +1 | Leggere `days` dal cittadino e ordinare prima gli slot nei giorni richiesti, mantenendo il fallback sugli altri giorni | `S_pref` vale il doppio | Filippo + Magesh | implementato, test aggiunto |
 | X-10 | **Lingua rara**: oggi la tabella ha `*` per h3 | −1 fuori `S`, cittadino non capisce | Leggere le lingue dei medici dal registro (`world`), non dal codice. h3 parla **vi** | Oggi un cittadino `fr` finisce da h3, che parla vi: errore | Filippo | da fare |
 | X-11 | Lingua senza medico (arabo, cinese, ucraino…) | −1 | Frase nella sua lingua, medico `en` se lo capisce, altrimenti altra ASST con consenso | Nessun cittadino resta senza risposta per la lingua | Filippo | da fare |
 | X-12 | Scrive in un'altra lingua ma senza `lang` | −1 freddo | Chiedere al modello la lingua del testo | `_lang` oggi torna `it` se manca il campo | Filippo | da fare |
-| GP-10 | **Rinnovo ricetta (P1)**: ricetta scaduta dopo 2 giorni | −1 regola ignorata | Booking chiede `data.request purpose=prescription_renewal`, il gp rinnova | Regola P1, arriva durante la gara | Filippo + Giulia | da fare |
+| GP-10 | **Rinnovo ricetta (P1)**: ricetta scaduta dopo 2 giorni | −1 regola ignorata | Booking chiede `data.request purpose=prescription_renewal`; il cittadino torna dal GP con una nuova ricetta | Regola P1, arriva durante la gara | Filippo + Giulia | implementato, test aggiunto |
 | BK-12 | **Altra ASST (P2)** | −2 dati prima del consenso | Dopo il catalogo locale, chiede `consent purpose=cross_asst`, usa `city.find` per cercare facility partner, invia solo `need.request` con criteri, risolve ogni facility tramite Index prima di `city.say` e inoltra le offerte remote | −2 audit se esce un dato prima del consenso | Filippo + Magesh | implementato, test aggiunto |
 | BK-13 | **Riserva U (P3)** 20% | −1 | Per B, D, P solo slot fuori riserva | Regola P3 | Filippo + Magesh | parziale (il filtro c'è) |
 | FA-10 | **Struttura cancella** (`fault.cancel` dal livello 6, alla prima prenotazione) | −1, rischio −4 | Riprenotare subito entro la scadenza e avvisare il cittadino con il motivo | Capita a **ogni** cittadino dal livello 6 | Filippo | da fare |

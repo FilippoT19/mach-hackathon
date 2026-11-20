@@ -29,12 +29,69 @@ def _our_rx(chat: list[Message], agent: str) -> dict[str, str]:
     return found
 
 
+def _renewal_source(chat: list[Message], number: str) -> dict[str, str] | None:
+    for row in reversed(chat):
+        if row.sender != LEDGER or first_word(row.text) != "prescription":
+            continue
+        fields = fields_of(row.text)
+        if fields.get("prescription_number") == number and fields.get("procedure"):
+            return fields
+    return None
+
+
+async def _renew_prescription(
+    city: City, message: Message, chat: list[Message], old_number: str
+) -> None:
+    agent = city.agent_id
+    source = _renewal_source(chat, old_number)
+    if source is None:
+        if not _we(chat, agent, f"prescription_number={old_number}", to=LEDGER, word="prescription"):
+            await _say(city, LEDGER, f"prescription prescription_number={old_number}")
+        chat = await _until(
+            city,
+            message.need_id,
+            chat,
+            lambda rows: _renewal_source(rows, old_number) is not None,
+        )
+        source = _renewal_source(chat, old_number)
+    if source is None:
+        await _say(
+            city,
+            message.sender,
+            "Mi dispiace, non riesco a recuperare la ricetta da rinnovare. Descriva il problema al medico di base.",
+        )
+        return
+    procedure = source.get("procedure", "")
+    priority = source.get("priority", "D")
+    new_number = _rx(message.need_id, message.msg_id)
+    if not _we(chat, agent, f"prescription_number={new_number}", to=LEDGER, word="prescribe"):
+        if not await _say(
+            city,
+            LEDGER,
+            f"prescribe patient={message.sender} procedure={procedure} priority={priority} "
+            f"prescription_number={new_number} renewal_of={old_number}",
+        ):
+            return
+    if _we(chat, agent, f"prescription_number={new_number}", to=message.sender, word="prescription"):
+        return
+    await _say(
+        city,
+        message.sender,
+        f"prescription prescription_number={new_number} procedure={procedure} priority={priority} "
+        "La ricetta è stata rinnovata. Ora può contattare il centro prenotazioni.",
+    )
+
+
 async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     agent = city.agent_id
     if message.sender == LEDGER:
         await _announce(city, message, chat, agent)
         return
     if not message.sender.startswith("citizen:"):
+        return
+    fields = fields_of(message.text)
+    if not _emergency(message) and "prescription_number" in fields and _symptom(message) is None:
+        await _renew_prescription(city, message, chat, fields["prescription_number"])
         return
     code = None if _emergency(message) else _symptom(message)
     if code is None and not _emergency(message):
@@ -52,7 +109,6 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
         return
     if code is None:
         # Never leave the citizen without an answer (review: -1 for a message left unanswered).
-        # A renewal carries only prescription_number: that path is still to do (rule P1).
         asked = any(row.sender == agent and row.recipient == message.sender for row in chat)
         if not asked and "prescription_number" not in fields_of(message.text):
             await _say(

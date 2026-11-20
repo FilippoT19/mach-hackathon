@@ -165,7 +165,7 @@ Un solo file, `asst/brain/agent.py`, per i 5 agenti. Legge il ruolo dalla card. 
 3. Chiede `world procedure=…` e filtra gli slot (`fitting`): futuri (+4 ore agenda), liberi, entro la scadenza della priorità, non nella riserva U, medico che parla la lingua del cittadino, giorno del medico, genere se il cittadino lo chiede.
 4. Offre i primi 3 slot in un solo giro. Se nessuno va bene, chiede la pagina dopo (max 8); poi chiede il consenso `cross_asst`, cerca facility partner con `city.find` e invia solo criteri in `need.request`. Se nessuno risponde, offre la lista d'attesa.
 5. `confirm` del cittadino → cerca la facility nell'Index e gira `confirm` all'identificativo restituito con `city.say`. `booking.receipt` della struttura → la gira al cittadino. `cancel` della struttura → annulla e rioffre.
-- **Non gestisce ancora:** i giorni preferiti dal cittadino (`days`), rinnovo (P1), domande di dati.
+- **Non gestisce ancora:** domande di dati generiche.
 
 ### Ospedale / Specialista / Consultorio (`_facility`)
 1. `confirm` dal centro prenotazioni → `hold` → `commit` → `booking.receipt`.
