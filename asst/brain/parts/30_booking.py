@@ -668,6 +668,17 @@ async def _advance_alone(
             return
         state = None if reply is None else reply.get("state")
         if fixed is None and state not in (None, "issued"):
+            # BK-21: never silent on a prescription we cannot use.
+            if not _we(chat, agent, "", to=citizen, word="prescription.note"):
+                en = _lang(chat) != "it"
+                await _say(city, citizen, "prescription.note state=" + str(state) + " " + (
+                    "I cannot use this prescription for a new booking (it is already used or no longer "
+                    "valid). Please write to your GP with this number: they will issue a new one, and I "
+                    "will have the free slots ready for you."
+                    if en else
+                    "Non posso usare questa ricetta per una nuova prenotazione (risulta già usata o non "
+                    "più valida). Scriva al suo medico di base con questo numero: gliene prepara una "
+                    "nuova e io le tengo pronti i posti liberi."))
             return
         agenda = _ledger(chat, "agenda")
         now = _when("" if agenda is None else agenda.get("agenda_now", ""))
