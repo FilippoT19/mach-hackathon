@@ -1834,6 +1834,14 @@ async def _on_confirm(
     offer = _our_offer(chat, agent, offer_id) if offer_id else {}
     slot = fields.get("slot_id") or offer.get("slot_id", "")
     facility = fields.get("facility") or offer.get("facility", "")
+    if message.sender.startswith("agent:") and (not slot or not consent):
+        # FA-01 (P-francesco-5): a confirm from an agent without slot or consent never gets silence;
+        # the consent belongs to the booking centre, so we answer the sender and it can resend.
+        why = "missing_slot_id" if not slot else "missing_consent_ref"
+        if not _we(chat, agent, f"reason={why}", to=message.sender, word="cancel"):
+            await _say(city, message.sender, f"cancel offer_id={offer_id} reason={why} "
+                       f"Manca {why.split('_', 1)[1]}: rimandate il confirm completo e blocchiamo subito il posto.")
+        return
     if not slot:
         return
     citizen = fields.get("citizen") or (
@@ -2435,7 +2443,17 @@ async def _on_refused(
 async def _on_checkin(city: City, message: Message, chat: list[Message], *, reports: bool) -> None:
     booking_id = fields_of(message.text).get("booking_id", "")
     citizen = message.sender if message.sender.startswith("citizen:") else _citizen(chat)
-    if not booking_id or not citizen:
+    if not citizen:
+        return
+    en = _lang([*chat, message]) != "it"
+    if not booking_id:
+        # FA-03 (P-francesco-3): an id we do not have is asked, never guessed; never silent.
+        if not _we(chat, city.agent_id, "", to=citizen, word="checkin.help"):
+            await _say(city, citizen, "checkin.help " + (
+                "Welcome! To register your arrival I need the booking number (booking_id) written "
+                "on your receipt: could you write it to me?" if en else
+                "Benvenuto! Per registrare il suo arrivo mi serve il numero di prenotazione "
+                "(booking_id) scritto sulla ricevuta: me lo può scrivere?"))
         return
     token = f"booking_id={booking_id}"
     if not _we(chat, city.agent_id, token, to=LEDGER, word="checkin"):
@@ -2444,10 +2462,32 @@ async def _on_checkin(city: City, message: Message, chat: list[Message], *, repo
     found = await _await_line(city, message.need_id, chat, "checked_in", token, op="checkin")
     if found is None:
         _LOG.info("care.checkin.missing", extra={"need_id": (message.need_id or "")[:48]})
+        if not _we(chat, city.agent_id, token, to=citizen, word="checkin.wait"):
+            await _say(city, citizen, f"checkin.wait {token} " + (
+                "I have sent your check-in to the register: I will confirm as soon as the answer "
+                "arrives." if en else
+                "Ho inviato il suo check-in al registro: le confermo appena arriva la risposta."))
         return
     reply, fresh = found
     if first_word(reply.text) == "checked_in":
         await _on_checked_in(city, reply, fresh, reports=reports)
+        return
+    # FA-03: refused. Explain once per attempt, with the half-day window; after 3 send to booking.
+    tries = sum(1 for r in chat if r.sender == city.agent_id and r.recipient == citizen
+                and first_word(r.text) == "checkin.refused")
+    if tries >= 3:
+        return
+    if tries < 2:
+        line = ("I could not register your arrival: check-in opens in the half-day of the visit "
+                "(08-13 or 13-18). If you are early, write to me again from that time." if en else
+                "Non sono riuscito a registrare il suo arrivo: il check-in si fa nella mezza giornata "
+                "della visita (08-13 o 13-18). Se è in anticipo, mi riscriva da quell'ora.")
+    else:
+        line = ("I am sorry, I cannot register the check-in with this booking. Please check the "
+                "number on the receipt, or ask the booking centre, which can verify it." if en else
+                "Mi dispiace, non riesco a registrare il check-in con questa prenotazione. Controlli "
+                "il numero sulla ricevuta, oppure si rivolga al centro prenotazioni che può verificarla.")
+    await _say(city, citizen, f"checkin.refused {token} {line}")
 
 
 async def _on_checked_in(

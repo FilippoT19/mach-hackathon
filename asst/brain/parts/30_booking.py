@@ -876,6 +876,14 @@ async def _on_confirm(
     offer = _our_offer(chat, agent, offer_id) if offer_id else {}
     slot = fields.get("slot_id") or offer.get("slot_id", "")
     facility = fields.get("facility") or offer.get("facility", "")
+    if message.sender.startswith("agent:") and (not slot or not consent):
+        # FA-01 (P-francesco-5): a confirm from an agent without slot or consent never gets silence;
+        # the consent belongs to the booking centre, so we answer the sender and it can resend.
+        why = "missing_slot_id" if not slot else "missing_consent_ref"
+        if not _we(chat, agent, f"reason={why}", to=message.sender, word="cancel"):
+            await _say(city, message.sender, f"cancel offer_id={offer_id} reason={why} "
+                       f"Manca {why.split('_', 1)[1]}: rimandate il confirm completo e blocchiamo subito il posto.")
+        return
     if not slot:
         return
     citizen = fields.get("citizen") or (
