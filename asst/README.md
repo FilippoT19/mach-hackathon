@@ -45,7 +45,9 @@ Messaggio pronto da incollare nella propria AI: [PROMPT-SQUADRA.md](PROMPT-SQUAD
 cd ~/mach-hackathon/asst
 git checkout main && git pull
 python seats.py --check
-city deploy gp                       # solo il ruolo cambiato; specialist PRIMA di hospital
+./ship.sh                            # test + deploy in parallelo di tutti i ruoli, retry automatico
+./ship.sh booking_centre             # solo i ruoli indicati
+city deploy gp                       # a mano: solo il ruolo cambiato; specialist PRIMA di hospital
 city status agent:gp
 city rollback agent:gp --to 1.0.1    # se la versione nuova va male
 ```
