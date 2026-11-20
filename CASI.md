@@ -172,3 +172,5 @@ Nella PR scrivere: ID dei casi toccati, prima e dopo, test fatti.
 | BK-29 | booking | Percorso 129: il cittadino annulla ogni offerta (reason=deadline) e il booking manda sempre nuove offerte: 20 messaggi contro 29. | Dopo due annullamenti: lista d attesa, domanda sui giorni preferiti, frase di sicurezza con il 112; niente altre offerte. | Fine del ping-pong; tono umano. |
 
 | X-42b | gp (e tutti) | Nei percorsi 126-133 (gp 1.0.7) il journey si chiude con escalate.emergency: la domanda sull indirizzo non arriva mai al cittadino. | Il primo messaggio del 112 nomina già il pronto soccorso più vicino della nostra zona (Via Arganini Gerolamo 38, accessibile) e dice che lo avvisiamo. La domanda sull indirizzo resta come passo in più. | Proattività nel solo messaggio che conta. |
+
+| X-44 | booking | La need.request cross-ASST non portava le preferenze del cittadino: un partner con la lingua rara giusta non poteva sceglierla (consiglio dal gruppo). | La richiesta porta lang= (se non italiano), gender= e days= quando il cittadino li ha detti. Nessun dato personale. | Collaborazione tra ASST che serve davvero al cittadino. |
