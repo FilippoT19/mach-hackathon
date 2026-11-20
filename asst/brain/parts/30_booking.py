@@ -945,7 +945,10 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
         "us first: we will move the appointment and free the slot for another citizen.",
     )
     if not await _say(
-        city, citizen, f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref} {line}"
+        city,
+        citizen,
+        f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref} {line} "
+        + _prep_line((_prescription_reply(chat, _number(chat)) or {}).get("procedure", ""), _lang(chat) != "it"),  # P-02
     ):
         return
     # X-31: proactive next step — ask where the citizen lives and how they move, then tell them
@@ -1162,3 +1165,22 @@ async def _citizen_cancel(
         ),
     )
     await _advance(city, message, chat, fixed=fixed, replacing=False)
+
+
+_PREP = {
+    "VIS-CARD": ("eventuali ECG e referti cardiologici precedenti, l'elenco dei farmaci che prende",
+                 "any previous ECG and heart reports, the list of medicines you take"),
+    "VIS-FIS": ("eventuali radiografie o risonanze precedenti e abiti comodi per muoversi",
+                "any previous X-rays or MRI scans and comfortable clothes to move in"),
+}
+
+
+def _prep_line(procedure: str, en: bool) -> str:
+    """P-02: what to bring and when to arrive, before the citizen asks."""
+
+    it_extra, en_extra = _PREP.get(procedure, ("eventuali referti precedenti", "any previous reports"))
+    if en:
+        return ("To be ready for the visit: arrive 15 minutes early and bring your health card, the "
+                f"prescription number, {en_extra}. I will tell you how to get there right away.")
+    return ("Per arrivare pronto alla visita: venga 15 minuti prima e porti la tessera sanitaria, il "
+            f"numero della ricetta, {it_extra}. Subito dopo le dico come arrivare.")
