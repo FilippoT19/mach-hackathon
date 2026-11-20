@@ -17,7 +17,7 @@ controllo se i gruppi "online" hanno un percorso nuovo che li verifica.
 | G2 | Ciclo offerta/annullo: il cittadino annulla ogni offerta (`reason=deadline`) → `wrong_outcome no_booking` | 129, 119, 0003/0002 (14/20 msg) | BK-29 (+ BK-27 scadenza) | fix su main, in coda (ship10) | — |
 | G3 | Booking muto vecchio (BK-15, livello 2) | 045–065 | BK-15 | verificato | 069–074 done |
 | G4 | Red flag: percorso chiuso al primo messaggio, review gp 0/0/1 (collab 0) | 125, 126, 127, 130, 132, 133 | X-42b (PS più vicino nel primo messaggio) | fix su main, in coda (ship11) | — |
-| G5 | **Collaborazione 0 per tutti gli agenti**, anche con referral e avviso all'ospedale. Regola e19: +1 solo per "uno scambio con un altro agente che ha fatto avanzare il need". Nota su 120: il gp "ha contattato il booking" ma C=0; il booking "ha solo risposto". Il referral + "Ricevuto" non fa avanzare niente. | quasi tutti | da fare: lo scambio deve cambiare l'esito (es. il booking risponde al gp con il primo posto libero e il gp lo dice al cittadino; il booking scrive per primo) | aperto | — |
+| G5 | **Collaborazione 0 per tutti gli agenti**, anche con referral e avviso all'ospedale. Regola e19: +1 solo per "uno scambio con un altro agente che ha fatto avanzare il need". Nota su 120: il gp "ha contattato il booking" ma C=0; il booking "ha solo risposto". Il referral + "Ricevuto" non fa avanzare niente. | quasi tutti | G5-a booking.notice, G5-b report.notice | fix su main | — |
 | G6 | Proattività 0 per booking e strutture | 118, 121, 122, 500002 | P-02 (promemoria), X-31 (mappa) | online parziale | da verificare in un percorso `done` dopo 1.0.7 |
 
 ## Regole
