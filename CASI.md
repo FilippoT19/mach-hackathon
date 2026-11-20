@@ -150,3 +150,5 @@ Nella PR scrivere: ID dei casi toccati, prima e dopo, test fatti.
 
 | FA-03 | strutture | Check-in senza booking_id, rifiutato o con Ledger muto: nessuna risposta (P-francesco-3). | Senza booking_id chiede il numero; Ledger muto: "le confermo appena arriva"; rifiuto: fascia 08-13/13-18, al terzo rimanda al booking. Mai la parola checkin come atto. | Mai muto (P0). |
 | FA-01 | strutture | confirm del booking senza consent_ref o slot_id: la struttura chiedeva il consenso al cittadino e poi taceva (P-francesco-5). | Risposta subito al mittente: cancel reason=missing_consent_ref o missing_slot_id, con frase. | Il consenso lo raccoglie il booking; collaborazione entro 10 s. |
+
+| X-42 | gp (e tutti) | Caso 107: dolore al petto, il GP manda al 112 ma non chiede dove si trova il cittadino (review: proattività e collaborazione 0). | Dopo il 112 il GP chiede l indirizzo (data.request purpose=emergency fields=address); alla risposta indica il pronto soccorso più vicino dalle porte dell Index, con km e 112. GP e altri ruoli usano lo stesso _escalate. | Proattività sulla mappa anche nell emergenza. |

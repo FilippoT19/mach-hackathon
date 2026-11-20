@@ -30,6 +30,11 @@ async def _escalate(city: City, message: Message, chat: list[Message]) -> None:
             "112 or go to the nearest emergency room. Do not drive: if you can, ask someone "
             "to go with you. I am also telling our hospital.",
         )
+    # X-42: proactive — ask where the citizen is, then name the nearest emergency room (map).
+    if message.sender.startswith("citizen:") and not _we(chat, agent, "purpose=emergency", to=message.sender, word="data.request"):
+        await _say(city, message.sender, "data.request purpose=emergency fields=address "
+                   "Mi dice dove si trova adesso? Le indico subito il pronto soccorso più vicino a lei. "
+                   "/ Where are you now? I will tell you the nearest emergency room right away.")
     hospital = await _peer(city, "hospital", "ospedale hospital asst-niguarda")
     if hospital and hospital != agent and not _we(chat, agent, "emergency.notice", to=hospital, word="emergency.notice"):
         await _say(
@@ -188,26 +193,7 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
         # the team model maps it to one of OUR codes, or to RED_FLAG. It never invents one.
         code = await _llm_symptom(city, message.text)
     if _emergency(message) or code == "RED_FLAG":
-        if not _we(chat, agent, "escalate.emergency", to=message.sender, word="escalate.emergency"):
-            await _say(
-                city,
-                message.sender,
-                "escalate.emergency reason=red_flag Capisco, quello che mi descrive va preso sul "
-                "serio subito. Chiami subito il 112 o vada al pronto soccorso più vicino. Non si "
-                "metta alla guida: se può, si faccia accompagnare e non resti da solo. Avviso "
-                "anche il nostro ospedale. / I understand, this needs attention right now. Call "
-                "112 or go to the nearest emergency room. Do not drive: if you can, ask someone "
-                "to go with you. I am also telling our hospital.",
-            )
-        # X-28: collaboration on a red flag - tell our hospital (found with city.find). No id.
-        hospital = await _peer(city, "hospital", "ospedale hospital asst-niguarda")
-        if hospital and not _we(chat, agent, "emergency.notice", to=hospital, word="emergency.notice"):
-            await _say(
-                city,
-                hospital,
-                "emergency.notice reason=red_flag Un cittadino con red flag è stato indirizzato "
-                "al 112 o al pronto soccorso. Vi avviso in caso arrivi da voi.",
-            )
+        await _escalate(city, message, chat)  # X-42: one path for all roles (112, notice, nearest ER)
         return
     if code is None:
         # Never leave the citizen without an answer (review: -1 for a message left unanswered).
@@ -327,3 +313,29 @@ def _prefs_line(prefs: dict[str, str], en: bool) -> str:
     what = " and ".join(bits) if en else " e ".join(bits)
     return (f" I have passed your request for {what} to the booking centre, so they will offer you only suitable slots."
             if en else f" Ho già segnalato al centro prenotazioni la sua richiesta di {what}: le proporrà solo posti adatti.")
+
+
+_ANSWERED_ER: set[str] = set()
+
+
+async def _on_emergency_where(city: City, message: Message, chat: list[Message]) -> bool:
+    """X-42: the citizen tells us where they are after a red flag -> nearest emergency room."""
+
+    if not message.sender.startswith("citizen:") or "address" not in fields_of(message.text) and not _citizen_point(message.text):
+        return False
+    if not _we(chat, city.agent_id, "purpose=emergency", to=message.sender, word="data.request"):
+        return False
+    key = message.need_id or message.msg_id
+    if key in _ANSWERED_ER:
+        return True
+    _ANSWERED_ER.add(key)
+    en = _lang([*chat, message]) != "it"
+    point = _citizen_point(message.text)
+    line = await _nearest_line(city, point, en, "") if point else ""
+    if not line:
+        line = (" The nearest emergency room is our hospital in Via Arganini Gerolamo 38 (wheelchair "
+                "accessible); in an emergency always call 112." if en else
+                " Il pronto soccorso più vicino è il nostro ospedale in Via Arganini Gerolamo 38 "
+                "(accessibile in sedia a rotelle); in emergenza chiami sempre il 112.")
+    await _say(city, message.sender, ("Thank you." if en else "Grazie.") + line)
+    return True

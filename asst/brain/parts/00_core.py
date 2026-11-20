@@ -144,6 +144,8 @@ async def handle(role: str, city: City, message: Message, chat: list[Message]) -
         await city.say(message.sender, f"address={street}")
         return
     _note_lang(message)  # X-30
+    if await _on_emergency_where(city, message, chat):
+        return
     if message.sender.startswith("citizen:"):
         # X-41: a red flag is sent to 112 by EVERY role, not only the GP.
         if role != "gp" and _red_flag(message):
