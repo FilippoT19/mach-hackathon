@@ -192,6 +192,97 @@ async def main() -> int:
     chat.append(row("agent:bk", CITIZEN, "cancel offer_id=of-S-2 reason=facility_cancelled", 3))
     check("BK-14 _withdrawn trova la riga giusta", brain._withdrawn(chat, "agent:bk") == {"S-2"}, brain._withdrawn(chat, "agent:bk"))
 
+    # 15. FA-03/FA-13/FA-14/FA-15: hospital check-in. The Ledger answers through history.
+    import os
+
+    os.environ["CITY_ROLE"] = "hospital"
+    HOSP = "agent:hosp"
+    REFUSAL = "Registrazione non possibile: fuori dalla fascia oraria della visita."
+
+    class LedgerCity(FakeCity):
+        """History = the case so far + what we sent + the Ledger's answer to each checkin."""
+
+        def __init__(self, base: list[Message], answers: list[str | None]):
+            super().__init__(HOSP)
+            self.base = base
+            self.answers = answers  # one per checkin we send; None = the Ledger stays silent
+
+        async def history(self, peer=None, *, need_id=None):
+            rows = list(self.base)
+            n = 0
+            for i, (to_, text) in enumerate(self.sent):
+                rows.append(row(HOSP, to_, text, 100 + i))
+                if to_ == LEDGER and text.startswith("checkin "):
+                    answer = self.answers[n] if n < len(self.answers) else None
+                    n += 1
+                    if answer:
+                        rows.append(row(LEDGER, HOSP, answer, 200 + i))
+            return rows
+
+    def checkin_msg(text: str, n: int = 50) -> Message:
+        return Message(type="chat", sender=CITIZEN, msg_id=f"c{n}", need_id="N-1", body={"text": text}, recipient=HOSP)
+
+    async def hosp_turn(msg: Message, base: list[Message], answers: list[str | None]) -> LedgerCity:
+        city = LedgerCity(base, answers)
+        await brain._facility(city, msg, [*base, msg], reports=False, hold_self=False)
+        return city
+
+    ok_line = "checked_in booking_id=B1 citizen=citizen:c-1 slot_id=S-9 at=2026-11-05T09:00:00Z"
+    msg = checkin_msg("checkin booking_id=B1 ledger_ref=L1")
+    c = await hosp_turn(msg, [], [ok_line])
+    cit = to(c, CITIZEN)
+    check("FA-03 check-in -> checkin al Ledger", to(c, LEDGER) == ["checkin booking_id=B1 citizen=citizen:c-1"], c.sent)
+    check("FA-03 conferma con i valori del registro", cit and cit[0].startswith("checkin booking_id=B1 ") and "slot_id=S-9" in cit[0], cit)
+    check("FA-03 ospedale: frase sull'accessibilità", cit and "sedia a rotelle" in cit[0], cit)
+
+    c = await hosp_turn(msg, [], [REFUSAL])
+    cit = to(c, CITIZEN)
+    check("FA-13 rifiuto in testo libero -> risposta al cittadino", len(cit) == 1 and "08-13" in cit[0], c.sent)
+    check("FA-13 risposta al rifiuto senza atto checkin", cit and not cit[0].startswith("checkin") and "checkin" not in brain.words(cit[0]), cit)
+
+    base = [msg, row(HOSP, LEDGER, "checkin booking_id=B1 citizen=citizen:c-1", 1), row(LEDGER, HOSP, REFUSAL, 2)]
+    c = await hosp_turn(checkin_msg("checkin booking_id=B1 ledger_ref=L1", 51), base, [ok_line])
+    check("FA-13 nuovo messaggio dopo il rifiuto -> nuovo checkin", to(c, LEDGER) == ["checkin booking_id=B1 citizen=citizen:c-1"], c.sent)
+    check("FA-13 secondo tentativo riuscito -> conferma", any(t.startswith("checkin booking_id=B1") for t in to(c, CITIZEN)), c.sent)
+
+    three = [msg]
+    for i in range(3):
+        three += [row(HOSP, LEDGER, "checkin booking_id=B1 citizen=citizen:c-1", 10 + 2 * i), row(LEDGER, HOSP, REFUSAL, 11 + 2 * i)]
+    c = await hosp_turn(checkin_msg("checkin booking_id=B1 ledger_ref=L1", 52), three, [])
+    check("FA-13 dopo 3 rifiuti -> nessun nuovo checkin", not to(c, LEDGER), c.sent)
+    check("FA-13 dopo 3 rifiuti -> frase finale gentile", len(to(c, CITIZEN)) == 1 and "centro prenotazioni" in to(c, CITIZEN)[0], c.sent)
+
+    c = await hosp_turn(checkin_msg("checkin ledger_ref=L1"), [], [])
+    check("FA-14 checkin senza booking_id -> lo chiede, niente Ledger", not to(c, LEDGER) and len(to(c, CITIZEN)) == 1 and "booking_id" in to(c, CITIZEN)[0], c.sent)
+
+    done = [msg, row(HOSP, LEDGER, "checkin booking_id=B1 citizen=citizen:c-1", 1), row(LEDGER, HOSP, ok_line, 2), row(HOSP, CITIZEN, "checkin booking_id=B1 ok", 3)]
+    c = await hosp_turn(checkin_msg("checkin booking_id=B1 ledger_ref=L1", 53), done, [])
+    check("FA-13 reinvio dopo il successo -> niente Ledger, conferma ripetuta", not to(c, LEDGER) and to(c, CITIZEN) and to(c, CITIZEN)[0].startswith("checkin booking_id=B1"), c.sent)
+
+    c = await hosp_turn(msg, [], [None])
+    cit = to(c, CITIZEN)
+    check("FA-13 Ledger muto -> messaggio di attesa senza atto checkin", len(cit) == 1 and "checkin" not in brain.words(cit[0]), c.sent)
+
+    pending = [msg, row(HOSP, LEDGER, "checkin booking_id=B1 citizen=citizen:c-1", 1)]
+    late = row(LEDGER, HOSP, REFUSAL, 2)
+    c = LedgerCity([*pending, late], [])
+    await brain._facility(c, late, [*pending, late], reports=False, hold_self=False)
+    check("FA-13 rifiuto arrivato come turno a sé -> cittadino avvisato", len(to(c, CITIZEN)) == 1, c.sent)
+    told = [*pending, late, row(HOSP, CITIZEN, "booking_id=B1 riprovi", 3)]
+    c = LedgerCity(told, [])
+    await brain._facility(c, late, told, reports=False, hold_self=False)
+    check("FA-13 stesso rifiuto già detto -> nessun doppione", not c.sent, c.sent)
+
+    c = await hosp_turn(checkin_msg("buongiorno, sono arrivato! booking_id=B1"), [], [ok_line])
+    check("FA-15 'sono arrivato' senza atto -> checkin al Ledger", to(c, LEDGER) == ["checkin booking_id=B1 citizen=citizen:c-1"], c.sent)
+    c = await hosp_turn(checkin_msg("dove posso parcheggiare?"), [], [])
+    check("FA-15 domanda libera -> risposta gentile, niente Ledger", not to(c, LEDGER) and len(to(c, CITIZEN)) == 1, c.sent)
+
+    os.environ["CITY_ROLE"] = "specialist_care"
+    c = await hosp_turn(checkin_msg("dove posso parcheggiare?"), [], [])
+    check("FA-15 solo l'ospedale risponde al testo libero", not c.sent, c.sent)
+    del os.environ["CITY_ROLE"]
+
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 
