@@ -74,7 +74,7 @@ Vince chi copre più **punti ciechi**: servizi che non esistono, lingue rare, ac
 
 | ID | Caso | Rischio | Soluzione | Logica | Test | Stato |
 |---|---|---|---|---|---|---|
-| OPS-01 | Deploy fallito `health: p99` | nessuno (resta la versione vecchia) | Rilanciare `city deploy <agente>` | La conformance chiede 20 risposte `/health` sotto 0,3 s. Se la piattaforma è lenta, fallisce con codice giusto. Il brain non tocca `/health` | — | capitato a specialist 1.0.2, rilanciato |
+| OPS-01 | Deploy fallito `health: p99` o `ingress route did not become ready (404)` | nessuno (resta la versione vecchia) | Rilanciare `city deploy <agente>` | La conformance chiede 20 risposte `/health` sotto 0,3 s. Se la piattaforma è lenta, fallisce con codice giusto. Il brain non tocca `/health` | — | capitato a specialist 1.0.2, rilanciato |
 | OPS-02 | Push su main senza controllo | modifiche non viste | Protezione di main + CODEOWNERS: serve l'approvazione di Filippo | Solo Filippo rilascia | — | in PR #6 |
 | OPS-05 | **Buco durante il deploy**: Journeys N-…009–013 (20:24–20:28 UTC) senza risposta mentre il gp passava a 1.0.1. Tra loro N-…009 "dolore al petto" (red flag) | −4 porta vuota, −2 red flag senza escalation, se il cittadino non rimanda | Deploy **solo** nella mezz'ora senza cittadini tra un livello e l'altro (o nel freeze 06–10). Mai durante l'arrivo dei cittadini né nelle finestre ×4. I cittadini rimandano dopo 16 minuti (max 3 volte): il buco si recupera solo se il deploy è finito prima | Il server scambia la versione quando il CLI ha già smesso di aspettare (`UPSTREAM_TIMEOUT`). Per qualche minuto l'agente non risponde | — | regola attiva dal 20/11 20:36 |
 
