@@ -619,6 +619,6 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
         for s in picks
     ]
     await _say(city, message.sender, "\n".join(lines + [
-        "Ecco i nostri posti liberi. Dopo il consenso cross_asst del cittadino mandateci confirm "
+        "Ecco i nostri posti liberi. Dopo il consenso cross_asst del cittadino inviateci la conferma "
         "con offer_id, slot_id, citizen, consent_ref e prescription_number: rispondiamo con la ricevuta."
     ]))

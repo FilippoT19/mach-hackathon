@@ -5,6 +5,107 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 
 <!-- aggiungi qui sotto -->
 
+> **Giro 3: errori gravi ancora presenti su `main` @ `98afeb3`** (righe di `asst/brain/parts/`).
+> Fonti: e19 (`need.request` cross-ASST solo criteri senza consenso, consenso prima dell'hold, la scelta si fa
+> sul primo messaggio con le offerte), formato comune cross-ASST, Journeys W01QQQ delle 00:40
+> (000111, 000124, 000013 / …130002; falliti da 12 a 49 su 200).
+> **Certo** = si vede nel codice. **Da verificare** = dipende dal testo reale del Ledger o del cittadino.
+
+#### Tabella: errori gravi che persistono (ordine = da correggere prima)
+
+| ID | Errore | Dove | Journeys | Certezza | Priorità | Correzione (riassunto) |
+|---|---|---|---|---|---|---|
+| P-francesco-24 | Il booking manda la richiesta "ad altra ASST" anche al **nostro** ospedale, specialista e consultorio, che rispondono con gli **stessi** slot già rifiutati | `30_booking.py:453` | 000111 | Certo | **P0** | Saltare i nostri 5 agenti (`_ours(target)`) |
+| P-francesco-25 | Un'offerta di un partner che contiene la parola `confirm` viene presa per una **conferma** e sparisce senza risposta. Il nostro ospedale la scrive sempre | `30_booking.py:574` (prima di `:579`), `30_booking.py:907-908`, `40_facility.py:622` | 000124 | Certo | **P0** | Smistare i messaggi degli agenti per **prima parola** (`offer`, `confirm`, `cancel`, `booking.receipt`); togliere "confirm" dalla frase dell'ospedale |
+| P-francesco-26 | Ogni `cancel reason=no_availability` dei partner fa ripartire **una raffica** di offerte; il motivo vero viene sostituito da `facility_cancelled` | `30_booking.py:1028-1040`, `:768` | 000111 (36 msg) | Certo | **P0** | Un `cancel` senza nostro `offer_id` = "quel partner non ha posti", **nessuna** nuova offerta; motivo del partner mantenuto; tetto di 2 giri, poi `offer … waiting_list=true` |
+| P-francesco-27 | Offerte dei partner girate **senza filtro** su scadenza, lingua, sesso, giorni, e una per messaggio (allarga P-francesco-15) | `30_booking.py:524-547` | 000111, 000013 (`reason=lang`, `reason=deadline`) | Certo | **P0** | Filtrare come gli slot locali; un solo messaggio con i soli token ufficiali |
+| P-francesco-28 | Il consenso `cross_asst` viene chiesto **prima** di cercare; la risposta di consenso senza `purpose=` sparisce; le offerte arrivate dopo la lista d'attesa riaprono una scelta già fatta | `30_booking.py:418-437`, `:562-569`, `:907-908`, `:484-493` | 000124 (−1) | Certo (codice); formato della risposta da verificare | **P1** | Prima la richiesta con soli criteri, poi **un solo** messaggio: offerte filtrate + `consent purpose=cross_asst`, oppure lista d'attesa |
+| P-francesco-29 | "Ricetta scaduta" letta da **qualsiasi** riga del Ledger del caso (anche verso le strutture, anche senza numero): anche la ricetta **nuova** risulta scaduta → `_ask_renewal` già fatto → silenzio | `30_booking.py:31-47`, `:50-58` | 000013 / …130002 (finisce con una nuova ricetta) | Da verificare (riga di rifiuto senza `prescription_number`) | **P1** | Solo righe del Ledger **al booking** o con **lo stesso** numero; rinnovo chiesto una volta **per numero** |
+| P-francesco-30 | La scadenza della ricetta (BK-27) non filtra niente se la riga `prescription` del Ledger non ha uno dei campi data cercati → offerte oltre la scadenza → annullamenti `deadline` (causa a monte di G2) | `30_booking.py:254-273` | 000054, 000111, 129 | Da verificare (campi reali della riga `prescription`) | **P1** | Se mancano i campi, contare dalla prima `agenda_now` del caso o dall'ora del `referral`; mai "nessun limite" |
+| P-francesco-14 | Dopo un annullamento del cittadino: slot validi scartati e silenzio sulla pagina 2 | `30_booking.py:1234`, `:823-835` | 000054 | Certo | **P0** | Vedi P-francesco-14 (sotto) |
+| P-francesco-16 | Impostori: filtro spento, ricevute e annulli mai filtrati | `10_shared.py:74`, `30_booking.py:969`, `:1028` | — | Certo | **P0 da sabato 10:00** | Vedi P-francesco-16 |
+| P-francesco-17 | Referto senza consenso e senza follow-up | `40_facility.py` (`report … outcome_code=VISIT`) | — | Certo | P1 | Vedi P-francesco-17 |
+| P-francesco-18 | Rinnovo nello stesso need → stesso numero → silenzio | `20_gp.py:173` | 000013? | Da verificare | P1 | Vedi P-francesco-18 |
+| P-francesco-19 | Red flag nascosta accanto a una parola nota | `20_gp.py:216` | — | Certo | P1 | Vedi P-francesco-19 |
+| P-francesco-20 | "non" in qualsiasi frase = rifiuto del consenso cross-ASST | `30_booking.py:315` | — | Certo | P1 | Vedi P-francesco-20 |
+| P-francesco-21 | Richiesta di consenso del booking senza `purpose=` | `30_booking.py:919-928` | — | Certo | P1 | Vedi P-francesco-21 |
+
+**Come si combinano in 000111**: gli slot locali sono oltre la scadenza del cittadino (P-30) → annulli `deadline` →
+consenso cross-ASST → richiesta anche ai nostri reparti (P-24) → il nostro ospedale rimanda gli stessi slot,
+girati senza filtro (P-27) → ogni `cancel no_availability` delle altre ASST fa una nuova raffica (P-26) →
+il cittadino annulla tutto, il percorso si ferma senza esito.
+
+### [x] P-francesco-24: richieste "ad altra ASST" mandate ai nostri reparti
+- Journey: 000111 (**da verificare**: tra i mittenti delle offerte "cross-ASST" c'è `agent:jdj692g4145e`) — ruolo: booking_centre
+- Codice: `30_booking.py:453`: `if not target or target == city.agent_id or target in sent.cross_peers: continue`. `city.find` restituisce anche i nostri ospedale, specialista e consultorio (stessa capability); `40_facility.py:584` (`_partner_request`) risponde con i nostri slot, senza il filtro di scadenza della ricetta e senza escludere gli slot già offerti o annullati.
+- Cosa fa il cittadino: ha annullato gli slot locali per scadenza, dà il consenso `cross_asst`.
+- Cosa risponde oggi il nostro agente: riceve dal **nostro** ospedale gli stessi slot e glieli rioffre come "altra ASST" (`cross_asst=true`).
+- Review / punti persi: −1 (nessuna prenotazione con S non vuoto), percorso in loop; offerta "cross-ASST" falsa → rischio attributo falso.
+- **Correzione (certa)**: nel ciclo di `_cross_asst` saltare anche i nostri agenti: `if not target or _ours(target) or target in sent.cross_peers: continue` (`_ours` è in `10_shared.py`). Facoltativo: in `_partner_request` rispondere `cancel reason=same_asst` se il mittente è nostro.
+- Test a parole: "`city.find` restituisce il nostro ospedale e un ospedale di un'altra ASST → mi aspetto il `need.request` solo verso l'altra ASST".
+- Priorità secondo me: **P0**
+
+### [x] P-francesco-25: offerte dei partner scambiate per conferme e scartate
+- Journey: 000124 (consenso chiesto, poi nessuna offerta) — ruolo: booking_centre
+- Codice: `_desk`: `30_booking.py:574` (`if "confirm" in kind and (… agent …)`) viene **prima** di `30_booking.py:579` (`if "offer" in kind …`). `kind` = tutte le parole del testo. La riga finale delle offerte del nostro ospedale (`40_facility.py:622`) dice "mandateci **confirm** con offer_id…"; anche i partner possono scrivere "confirm" nella loro frase. `_on_confirm` non trova `consent_ref` né `citizen=` → `30_booking.py:907-908` `return` senza risposta.
+- Cosa fa il partner: `offer offer_id=… slot_id=… request_id=…` + frase con "confirm".
+- Cosa risponde oggi il nostro agente: niente; l'offerta non arriva al cittadino. Passa solo quella letta entro ~6 s dentro `_cross_asst` (`30_booking.py:484-493`).
+- Review / punti persi: −1 (S non vuoto nel partner), collaborazione persa.
+- **Correzione (certa)**: per i mittenti `agent:` smistare per **prima parola** del messaggio, non per una parola qualsiasi: `first_word == "offer"` → `_partner_offer`; `first_word == "confirm"` → `_on_confirm`; `first_word == "cancel"` → `_partner_cancel`; `first_word == "booking.receipt"` → `_forward_receipt`. Togliere la parola "confirm" dalla frase del nostro ospedale (`40_facility.py:622`), per esempio "inviateci la conferma con offer_id, slot_id, citizen, consent_ref e prescription_number".
+- Test a parole: "dato da un partner `offer offer_id=of-X slot_id=X request_id=r1` + 'mandateci confirm …', mi aspetto l'offerta al cittadino e nessun `hold`".
+- Priorità secondo me: **P0**
+
+### [~] P-francesco-26 (punto 1 e 3 fatti; tetto e lista d attesa da fare): ogni `cancel no_availability` dei partner fa ripartire le offerte
+- Journey: 000111 (36 messaggi, raffiche di 4-5 offerte) — ruolo: booking_centre
+- Codice: `30_booking.py:1028-1040` (`_partner_cancel`: senza `offer_id` non avvisa il cittadino ma chiama **sempre** `_advance(replacing=True)`); `30_booking.py:768` (`trigger = … or message.msg_id`: ogni `cancel` è un "evento nuovo" → `sent.again` azzerato → stessi slot rioffriti); `30_booking.py:1039` (`reason=facility_cancelled` fisso). Il limite BK-29 (`:1212`) conta solo gli annulli del cittadino.
+- Cosa fa il partner: formato comune: `cancel reason=no_availability request_id=cross-N-…` (uno per ogni ASST interpellata).
+- Cosa risponde oggi il nostro agente: una nuova raffica di offerte locali per ogni partner che risponde "no".
+- Review / punti persi: −1 (nessuna prenotazione), review −1 (messaggi a ripetizione), percorso fermo.
+- **Correzione (certa)**:
+  1. `cancel` **senza** `offer_id`, oppure con `offer_id` che non è nostro → segnare quel partner come "senza posti" (`sent.cross_peers` → risposto) e **non** chiamare `_advance`.
+  2. Quando tutti i partner interpellati hanno risposto senza offerte (o al turno successivo del cittadino) → `_relaxed` (lista d'attesa come `offer offer_id=wl-… waiting_list=true`).
+  3. `cancel` con un nostro `offer_id` (la struttura annulla un'offerta o una prenotazione) → avvisare il cittadino con il **motivo del mittente** (`reason=` del messaggio, `facility_cancelled` solo se manca) e rioffrire **una volta**, con `trigger = offer_id`.
+  4. Tetto per need: al massimo 2 giri di offerte, poi lista d'attesa.
+- Test a parole: "dopo il `need.request` a 3 partner, tre `cancel reason=no_availability request_id=r1` → mi aspetto **una** lista d'attesa e nessuna nuova offerta".
+- Priorità secondo me: **P0**
+
+### [ ] P-francesco-27: offerte dei partner senza filtro e una per messaggio (estende P-francesco-15)
+- Journey: 000111, 000013 / …130002 (annulli `reason=lang` e `reason=deadline`) — ruolo: booking_centre
+- Codice: `30_booking.py:524-547` (`_partner_offer`): nessun controllo su scadenza (`fitting` / `_before_rx_deadline`), lingua, sesso, giorni; `text = message.text` (`:543`) girato così com'è; ogni messaggio di un partner = un messaggio al cittadino.
+- Cosa fa il cittadino: annulla le offerte con medico che non parla la sua lingua o oltre la scadenza.
+- Review / punti persi: −1; e19: la scelta si fa sul **primo** messaggio con le offerte, quindi le offerte buone di un secondo partner non contano; rischio −2 per attributi del medico (P-15).
+- **Correzione (certa)**: raccogliere le righe `offer` dei partner, tenere solo quelle con `agenda_date` dentro la finestra della priorità e della ricetta, `doctor_lang` (se c'è) uguale alla lingua del cittadino, `doctor_gender` e giorno se richiesti; mandarle in **un solo** messaggio, riscritte con i soli token ufficiali (vedi P-15) e una nostra frase.
+- Test a parole: "partner con un'offerta `doctor_lang=fr` e una `doctor_lang=en`, cittadino `lang=en` → mi aspetto solo la seconda, senza `doctor_lang`".
+- Priorità secondo me: **P0**
+
+### [ ] P-francesco-28: flusso cross-ASST: consenso prima della ricerca, risposta di consenso persa
+- Journey: 000124 (−1: consenso chiesto prima della richiesta, poi nessuna offerta) — ruolo: booking_centre
+- Codice: `30_booking.py:418-437` (consenso **prima** del `need.request`; dopo il primo invio `if sent.cross_sent: return True` → i turni successivi escono senza dire niente); `30_booking.py:562-569` (la risposta del cittadino è riconosciuta come consenso cross-ASST solo se contiene `purpose=cross_asst`; altrimenti va in `_on_confirm`, che senza slot si ferma a `:907-908`); `30_booking.py:484-493` (aspetta ~6 s; poi lista d'attesa; le offerte dei partner che arrivano dopo vengono girate su una scelta già fatta).
+- Cosa fa il cittadino: risponde `consent consent_ref=C1` (forse senza `purpose`).
+- Review / punti persi: −1 (S non vuoto nel partner), passivo.
+- Correzione: e19 permette il `need.request` **solo criteri** senza consenso; il consenso serve prima dell'hold e prima di dare dati. Quindi: (1) finito il catalogo locale, mandare subito il `need.request` (senza consenso) ai partner **non nostri**; (2) raccogliere le risposte per qualche secondo; (3) mandare **un solo** messaggio: le offerte filtrate (P-27) + `consent purpose=cross_asst` ("per prenotare lì mi serve il suo consenso"), oppure la lista d'attesa se nessuno ha posti; (4) dopo la nostra domanda `cross_asst`, un `consent … consent_ref=…` del cittadino vale come consenso anche senza `purpose=`.
+- Test a parole: "dato `consent consent_ref=C1` del cittadino dopo `consent purpose=cross_asst`, mi aspetto la prosecuzione cross-ASST e non il silenzio".
+- Priorità secondo me: **P1** (correzione del codice certa; il formato della risposta del cittadino è da verificare in 000124)
+
+### [ ] P-francesco-29: la ricetta nuova risulta ancora "scaduta"
+- Journey: 000013 / …130002 (dopo `facility_cancelled` il percorso finisce con una nuova ricetta) — ruolo: booking_centre
+- Codice: `30_booking.py:31-47` (`_expired_prescription` legge **tutte** le righe del Ledger del caso, anche quelle indirizzate alle strutture; una riga `refused … PRESCRIPTION_EXPIRED` **senza** `prescription_number` vale per qualsiasi numero); `30_booking.py:50-58` (`_ask_renewal`: se una richiesta di rinnovo è già stata mandata, **qualsiasi** numero → `return` senza risposta).
+- Cosa fa il cittadino: rinnova la ricetta dal gp e torna al booking con il numero nuovo.
+- Cosa risponde oggi il nostro agente: considera scaduta anche la ricetta nuova e non risponde.
+- Review / punti persi: −1 (nessuna prenotazione), −1 review.
+- Correzione: contare solo righe del Ledger con `recipient == booking` **oppure** con `prescription_number` uguale; `_ask_renewal` deduplicato **per numero** (`purpose=prescription_renewal … prescription_number=<numero>`); con un numero nuovo e una riga `prescription … state=issued` → procedere con le offerte.
+- **Da verificare** in 000013: il messaggio del booking dopo `facility_cancelled` (`data.request purpose=prescription_renewal` o `prescription.note state=…`) e la riga del Ledger che lo precede. Se è `prescription.note state=used/booked` dopo un `fault.cancel` (livello 6), il booking deve **riprenotare con la stessa ricetta** invece di mandare il cittadino dal gp (`30_booking.py:730`).
+- Priorità secondo me: **P1**
+
+### [ ] P-francesco-30: la scadenza della ricetta non filtra se il Ledger non ha i campi data
+- Journey: 000054, 000111, 129 (annulli `reason=deadline`) — ruolo: booking_centre
+- Codice: `30_booking.py:254-273` (`_before_rx_deadline`): cerca `valid_until/expires_at/expiry/deadline/due/due_by` e `issued_at/issued/issue_date/prescribed_at/created_at/date`; se la riga `prescription` del Ledger non ne ha nessuno → `return True` (`:273`), cioè **nessun limite**. Resta solo la finestra calcolata dall'`agenda_now` del momento dell'offerta (`10_shared.py`, `fitting`), che parte più tardi della ricetta.
+- Cosa fa il cittadino: annulla ogni offerta per `deadline`.
+- Review / punti persi: −1 per ogni percorso G2; causa a monte di 000111.
+- Correzione: se mancano i campi, usare come inizio la **prima** `agenda_now` letta nel caso (o l'ora del `referral` del gp) e applicare `B` = 2 giorni, `D` = 5; nel dubbio stare **prima** del limite (`<` e non `<=`).
+- **Da verificare**: i campi reali della riga `prescription …` del Ledger in 000054 (basta copiarla qui).
+- Priorità secondo me: **P1** (P0 se la riga non ha date)
+
 > **Giro 2: problemi che restano su `main` @ `d493e37`** (righe di `asst/brain/parts/`; `seats.py --check`
 > e `test_brain.py` verdi). Fonti: `docs/kit/e19-rules.md`, `booking_centre.md`, `facility.md`, formato comune
 > cross-ASST (Discord #mach-2026), Journeys wave W01QQQ (000054, 000123), REGISTRO G2.
