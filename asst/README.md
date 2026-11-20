@@ -3,47 +3,60 @@
 Questa cartella è quella che conta per la classifica. Gli agenti girano sulla piattaforma
 della città (`city deploy`), non sul nostro backend FastAPI.
 
-**Leggete prima [PILLAR.md](../PILLAR.md):** stato della gara, link, rubrica, regole, imprevisti.
+**Leggete prima [PILLAR.md](../PILLAR.md):** stato della gara, link, rubrica, regole, imprevisti, logica degli agenti.
 
-- `brain/agent.py`: **un solo brain per tutti e 5 i ruoli** (legge il ruolo dalla card).
-  Parte dall'esempio ufficiale `templates/examples/agent.py` del kit, che copre i livelli 1–3.
-  Si modifica solo qui, poi si ricopia nelle 5 cartelle con `python seats.py --brain`.
-- `seats.py`: imposta `role` e `capabilities` nelle 5 card e copia il brain.
-- Le 5 cartelle agente (`gp/`, `booking_centre/`, `hospital/`, `specialist/`,
-  `family_counseling/`) le crea `city init` dopo il login, con gli id veri della squadra.
+## Dove si lavora
 
-## Setup (una persona sola, il team leader, sul laptop)
+Un solo brain serve tutti e 5 gli agenti (legge il ruolo dalla card). Il brain è diviso in parti, **una per ruolo**:
+
+**Filippo è responsabile di tutti i file.** Gli altri lavorano in coppia con lui e danno consigli.
+
+| File | Cosa contiene | Responsabile · in coppia con |
+|---|---|---|
+| `brain/parts/00_core.py` | Avvio, costanti (medici, protocolli, red flag), smistamento per ruolo | Filippo |
+| `brain/parts/10_shared.py` | Funzioni comuni: token, storia del caso, filtro degli slot | Filippo |
+| `brain/parts/15_voice.py` | `city.llm`: capire il sintomo, frasi umane, pulizia delle frasi | Filippo · Giulia (testi) |
+| `brain/parts/20_gp.py` | Medico di base | Filippo · Giulia |
+| `brain/parts/30_booking.py` | Centro prenotazioni (e prenotazione del consultorio) | Filippo · Magesh |
+| `brain/parts/40_facility.py` | Ospedale, specialista, consultorio | Filippo |
+
+**Modificate solo `brain/parts/`.** `brain/agent.py` e `<agente>/agent/agent.py` sono **generati**: non toccateli a mano.
+
+## Come lavoriamo (regola d'oro: Filippo controlla tutto prima della piattaforma)
+
+1. Un branch per modifica: `git checkout -b gp/rinnovo-ricetta`.
+2. Modificate il vostro file in `brain/parts/`.
+3. Generate e controllate:
+   ```bash
+   cd asst
+   python seats.py --brain                                        # unisce le parti e copia nei 5 agenti
+   python seats.py --check                                        # deve dire CHECK OK
+   ~/.local/share/uv/tools/city-cli/bin/python tests/test_brain.py   # deve dire TUTTI I TEST OK
+   ```
+4. Provate in locale, se volete: `city run gp` (chat come `citizen`, `agent` o `ledger`; non tocca la città).
+5. Aprite una PR verso `main`, oppure mandate la proposta a Filippo. **Filippo** decide, la legge e la unisce.
+6. **Solo Filippo** fa il merge su `main` e `city deploy`. Nessun altro rilascia sulla piattaforma.
+
+## Comandi di rilascio (solo Filippo)
 
 ```bash
-uv tool install city-cli        # oppure: uv tool upgrade city-cli
-city login                      # deve finire con "Signed in as <squadra>"
+cd ~/mach-hackathon/asst
+git checkout main && git pull
+python seats.py --check
+city deploy gp                       # solo il ruolo cambiato; specialist PRIMA di hospital
+city status agent:gp
+city rollback agent:gp --to 1.0.1    # se la versione nuova va male
+```
+
+Ogni deploy dura circa 2 minuti e deve chiudere con `released`. Dopo il deploy committate la `version` aggiornata in `card.yaml`.
+**Mai** `city retire`: l'agente non si può più riusare. **Mai** committare `~/.config/city/`.
+
+## Setup iniziale (già fatto il 20/11)
+
+```bash
+city login
 cd asst
-city init agent booking_centre
-city init agent hospital
-city init agent gp
-city init agent specialist
-city init agent family_counseling
-python seats.py                 # imposta i ruoli + copia il brain
-for a in booking_centre hospital gp specialist family_counseling; do city card validate $a; done
-city deploy specialist          # specialist PRIMA di hospital
-city deploy hospital
-city deploy booking_centre
-city deploy gp
-city deploy family_counseling
-city status
+city init agent booking_centre   # e hospital, gp, specialist, family_counseling
+python seats.py                  # ruoli nelle card + brain
+city deploy specialist           # poi hospital, booking_centre, gp, family_counseling
 ```
-
-Ogni deploy dura circa 2 minuti e deve chiudere con `released`. Poi committate le 5 cartelle
-(contengono solo card, yaml e brain: nessun segreto). **Mai** committare `~/.config/city/`.
-
-## Ciclo di lavoro in gara
-
-```bash
-# 1. modificare asst/brain/agent.py
-python seats.py --brain
-city run gp                     # test locale in chat (citizen / agent / ledger)
-city deploy gp                  # rilascia solo il ruolo cambiato
-city rollback agent:gp --to 1.0.1   # se la versione nuova va male
-```
-
-**Mai** `city retire`: l'agente non si può più riusare.

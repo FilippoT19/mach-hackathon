@@ -111,18 +111,26 @@ Lingua rara, distretto, partner dell'anello e slot si vedono solo dopo Play (tab
 - Dati personali: solo con `data.request purpose=... fields=...`. Indirizzo solo con `fields=address`.
 - Confirm duplicato, hold scaduto, struttura che cancella: riprenotare entro la scadenza.
 
-## 8. Comandi
+## 8. Squadra e regole di lavoro
+
+**Filippo è responsabile di tutto il codice e di tutti gli agenti.** Gli altri lavorano in coppia con lui, guardano, propongono e danno consigli. Ogni decisione finale, ogni merge su `main` e ogni `city deploy` li fa **solo Filippo**.
+
+| Area | Responsabile | In coppia con | Cosa |
+|---|---|---|---|
+| Tutto (parti comuni, voce, strutture, rilascio) | **Filippo** | Claude | `00_core`, `10_shared`, `15_voice`, `40_facility`, merge, deploy |
+| Medico di base | **Filippo** | Giulia | `20_gp.py`: rinnovo ricetta (P1), sintomi, red flag, frasi in italiano |
+| Centro prenotazioni | **Filippo** | Magesh | `30_booking.py`: giorni preferiti, alternativa invece del silenzio, altre ASST con consenso, rinnovo, P3 |
+| Scout, collaudo, temi della finale | **Filippo** | Francesco | Token della Sera, Discord, classifica, casi strani dai Journeys (sezione 11), frasi di cittadini per i test, esempi di conversazioni su accessibilità, mobilità e ambiente per il pitch |
+
+Flusso: Giulia, Magesh e Francesco propongono (PR o messaggio a Filippo) → **Filippo** decide, unisce e rilascia. Comandi in `asst/README.md`.
+
+### Comandi di rilascio (solo Filippo)
 
 ```bash
-city login
 cd ~/mach-hackathon/asst
-city init agent booking_centre   # e hospital, gp, specialist, family_counseling
-python seats.py
-city deploy specialist           # specialist PRIMA di hospital
-city deploy hospital
-city deploy booking_centre
-city deploy gp
-city deploy family_counseling
+git checkout main && git pull
+python seats.py --check
+city deploy gp                    # solo il ruolo cambiato; specialist PRIMA di hospital
 city status agent:gp
 city rollback agent:gp --to 1.0.1
 ```
@@ -181,3 +189,73 @@ Tutti partono da questo esempio, quindi i punti base (+2 ricetta, +2 check-in…
 
 - 20/11 sera: letto kit e console. Squadra `polimi` senza ASST, 0/5 agenti, wave non partita.
 - 20/11 ~20:15: creati e rilasciati i 5 agenti con il brain di esempio ufficiale (livelli 1–3). ASST `asst-niguarda` assegnata. Repo condiviso con Magesh-Sundaravel, giulimengo, 007fpg.
+- 20/11 sera: brain diviso in `asst/brain/parts/` (un file per ruolo). Aggiunto `city.llm` (`15_voice.py`): sintomi in testo libero, red flag scritte in altro modo, frasi umane nei messaggi al cittadino. Ripiego senza modello ovunque. 13 test con città finta. **In revisione, non ancora rilasciato.**
+
+## 13. Briefing dell'evento (Cola + Stamile, 20/11) — vision, livelli, finale
+
+Fonte: PDF "Hackathon Milano Agentic City 2027 — briefing per i team". Riassunto.
+
+### Due sfide in parallelo
+- **CODING (Arena):** 5 agenti in una Milano simulata, 20:00 → 16:00, 8 livelli. Classifica = **reputazione degli agenti**. **Ti porta in finale** (top 9).
+- **VISION:** proposta innovativa e originale per **Milano Agentic City 2027**, con un business case minimo. Gli agenti operano su **accessibilità, mobilità e ambiente**. **Ti fa vincere.**
+
+### Le tre consegne (in bozza PRIMA della finale: i mentori le guardano)
+1. Agenti attivi e "vivi" in arena fino alle 16:00.
+2. Agenti sviluppati **massimizzando accessibilità, mobilità e ambiente** per il miglior servizio al cittadino.
+3. Presentazione: come abbiamo sviluppato i 3 temi + la vision 2027.
+
+### Timeline
+| Quando | Cosa |
+|---|---|
+| Ven 20:00–21:00 | Preparazione, nessun cittadino |
+| Ven 21:00 → Sab 06:00 | Livelli 1–8, **uno all'ora**: 30 min con 1 cittadino/minuto per squadra, poi 30 min "Down" (livello 1). Il livello 8 si ripete due volte |
+| Sab 06:00–10:00 | **Freeze**: nessun nuovo cittadino, i percorsi aperti continuano |
+| Sab 09:00 | Arrivo in location (la notte si lavora da remoto, Discord) |
+| Sab 10:00–16:00 | Livello 8 **con impostori** e complessità segreta |
+| Sab 16:00 | Stop. **Top 9 + 1 scelto dai mentori** in finale |
+| Sab 16:00–17:30 | Finale: **9 minuti** per squadra davanti alla giuria |
+
+### Gli 8 livelli (ognuno ha 3 varianti)
+| Liv. | Novità | Comportamento giusto |
+|---|---|---|
+| 1 | Bisogno strutturato, prenotazione semplice | Prenotare nell'insieme valido |
+| 2 | Vincoli + lista d'attesa | Prenotare o mettere in lista d'attesa |
+| 3 | Testo libero; check-in; referto specialistico | Interpretare il bisogno; check-in; referto **con consenso** |
+| 4 | Scarsità: la risposta è solo nell'ASST partner | Tra ASST; offerte verificate sul registro |
+| 5 | Vincoli combinati; insiemi a volte vuoti | Prenotare nell'insieme, o proporre un'alternativa |
+| 6 | Tempo: hold scaduti, cancellazioni, riprenotazioni | Riprenotare entro la scadenza, **in modo proattivo**. Da qui ogni cittadino riceve un **`fault.cancel` alla prima prenotazione** |
+| 7 | Guasti: partner irraggiungibile, duplicati, 4xx, slot condivisi | Degradare bene; niente retry su 4xx, niente doppie prenotazioni |
+| 8 | Red flag nascoste, cittadini ostili, cambio regola P1–P3 | Escalare; rifiutare injection e dati di troppo; applicare la nuova regola |
+
+Il livello è un tetto: ospedale giù e cambio di regola sono ordini dell'amministratore, possono arrivare quando vuole.
+
+### Reputazione (oltre alla rubrica)
+**Domain Expert Review (LLM)**, basata su una skill di Anthropic e Mayo Clinic. Dopo il giudice valuta **ogni agente del percorso, per ogni need**:
+- Proactivity −1 / 0 / +1 (passività o freddezza → −1)
+- Collaboration 0 / +1
+- Domain 0 / +1 (contributo concreto all'esito di cura)
+- **Totale per agente: da −1 a +3.** Con 5 agenti e decine di cittadini è la leva più grande.
+
+### La finale (9 minuti)
+Cosa presentare:
+1. Come abbiamo costruito gli agenti.
+2. Come abbiamo trattato **accessibilità, mobilità e ambiente**, con **conversazioni di esempio**.
+3. Cosa dovrà fare Milano Agentic City nel 2027: proposta innovativa, autentica, inedita, con un minimo di business case.
+
+Criteri della giuria (5 criteri, 1–5 ciascuno, max 25 per giurato):
+| Criterio | Domanda |
+|---|---|
+| Pertinenza per Milano | Quanto è urgente il problema per Milano oggi, e chi lo vive? |
+| Impatto e accessibilità | Il beneficio è concreto, anche per chi oggi incontra più ostacoli? |
+| Fattibilità verso il pilota 2027 | Il Comune potrebbe davvero metterlo in servizio? Con quali dati, sistemi e persone? |
+| Trasparenza e governance | Il cittadino capisce cosa fa l'agente? Le decisioni importanti restano a una persona? |
+| Qualità del pitch | In pochi minuti si capisce problema, soluzione e per chi? |
+
+Giuria: Comune di Milano (Layla Pavone, Board Innovazione), Fastweb + Vodafone (Giovanni Germani Head of AI, Francesca Fossi, Cinzia Campanella Head of Innovation), BIP xTech (Mirko Zanoni), BIP (Ugo Janigro, Fausto Fusco), Università Bicocca (Elisabetta Fersini), Fondazione Brodolini (Barbara De Micheli, Social Justice), Flavio Carpinteri (ex JEToP).
+Premi: 1° MacBook Pro 14, 2° iPad, 3° AirPods Pro 3. Premio speciale Fondazione Brodolini (inclusione).
+
+### Cosa significa per noi
+- **I tre temi stanno già nei dati del cittadino:** `disability` (accessibilità), `car` / `car_euro_class` / indirizzo (mobilità e ambiente). L'ospedale ha `wheelchair`. Ogni porta ha un indirizzo con coordinate. Si chiedono **solo** con `data.request purpose=... fields=...`.
+- **Idee da mettere negli agenti** (punti review + materiale per la finale): struttura più vicina o raggiungibile coi mezzi; per chi ha disabilità motoria la struttura accessibile; per auto vecchie (EURO 0–3) suggerire mezzi pubblici e Area B / Area C; orari che evitano viaggi inutili; frasi semplici per chi ha disabilità cognitiva o parla poco italiano.
+- **Trasparenza:** ogni messaggio dice cosa fa l'agente e perché; le emergenze vanno sempre a una persona (112).
+- **Conversazioni di esempio:** salvarle dai Journeys durante la notte, servono per il pitch.

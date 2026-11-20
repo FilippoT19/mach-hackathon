@@ -1,18 +1,24 @@
-"""Fill role/capabilities on the five agent folders and copy our shared brain into each.
+"""Build the shared brain from brain/parts/, set the five seats, and copy the brain into each agent.
 
-Run from asst/ AFTER `city login` and the five `city init agent <name>` commands:
+Run from asst/:
 
-    python seats.py          # patch cards + copy brain/agent.py into every agent
-    python seats.py --brain  # only re-copy the brain (after editing brain/agent.py)
+    python seats.py          # set role/capabilities on the 5 cards + build + copy the brain
+    python seats.py --brain  # build brain/agent.py from brain/parts/ and copy it into the 5 agents
+    python seats.py --check  # build in memory and check: it compiles, and every copy is up to date
 
-The brain is one file for all five seats: it reads its role from card.yaml.
+Edit ONLY the files in brain/parts/ (one per role). brain/agent.py and <agent>/agent/agent.py
+are generated: never edit them by hand. The parts are joined in name order (00_, 10_, 20_ ...).
 """
+import py_compile
 import re
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+PARTS = HERE / "brain" / "parts"
+BRAIN = HERE / "brain" / "agent.py"
 SEATS = {  # folder: (card role, capability)
     "booking_centre": ("booking_centre", "booking_centre"),
     "hospital": ("facility", "hospital.physiatry"),
@@ -20,6 +26,46 @@ SEATS = {  # folder: (card role, capability)
     "specialist": ("facility", "specialist_care.cardiology"),
     "family_counseling": ("facility", "family_counseling.gynecology"),
 }
+# The first two lines of every part are a label for humans; they are not part of the brain.
+_LABEL = ("# PART:", "# Non è un modulo a sé:")
+
+
+def build() -> str:
+    parts = sorted(PARTS.glob("*.py"))
+    if not parts:
+        sys.exit(f"no parts in {PARTS}")
+    out = []
+    for part in parts:
+        lines = part.read_text(encoding="utf-8").splitlines(keepends=True)
+        out += [line for line in lines if not line.startswith(_LABEL)]
+    return "".join(out)
+
+
+def compiles(source: str) -> str | None:
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False, encoding="utf-8") as tmp:
+        tmp.write(source)
+    try:
+        py_compile.compile(tmp.name, doraise=True)
+    except py_compile.PyCompileError as err:
+        return str(err)
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
+    return None
+
+
+def check(root: Path) -> None:
+    source = build()
+    problems = []
+    error = compiles(source)
+    if error:
+        problems.append(f"the built brain does not compile:\n{error}")
+    targets = [BRAIN] + [root / f / "agent" / "agent.py" for f in SEATS]
+    for target in targets:
+        if not target.exists() or target.read_text(encoding="utf-8") != source:
+            problems.append(f"out of date: {target.relative_to(root)} (run: python seats.py --brain)")
+    if problems:
+        sys.exit("CHECK FAILED\n- " + "\n- ".join(problems))
+    print(f"CHECK OK: brain compiles, {len(targets)} copies match brain/parts/")
 
 
 def set_seat(card: Path, role: str, capability: str) -> None:
@@ -47,16 +93,24 @@ def set_city_role(city_yaml: Path, role: str) -> None:
 
 
 def main(root: Path = HERE) -> None:
+    if "--check" in sys.argv:
+        check(root)
+        return
     brain_only = "--brain" in sys.argv
     missing = [f for f in SEATS if not (root / f / "card.yaml").exists()]
     if missing:
         sys.exit(f"missing agent folders {missing}: run `city init agent <name>` for each first")
+    source = build()
+    error = compiles(source)
+    if error:
+        sys.exit(f"the built brain does not compile, nothing copied:\n{error}")
+    BRAIN.write_text(source, encoding="utf-8")
     for folder, (role, capability) in SEATS.items():
         d = root / folder
         if not brain_only:
             set_seat(d / "card.yaml", role, capability)
             set_city_role(d / "city.yaml", role)
-        shutil.copyfile(HERE / "brain" / "agent.py", d / "agent" / "agent.py")
+        shutil.copyfile(BRAIN, d / "agent" / "agent.py")
         print(f"{folder:18} role={role:15} capability={capability}")
 
 
