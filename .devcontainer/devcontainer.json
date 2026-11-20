@@ -1,0 +1,28 @@
+{
+  "name": "MACH Hackathon",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "22" },
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1": {}
+  },
+  "hostRequirements": { "cpus": 4, "memory": "8gb" },
+  "forwardPorts": [3000, 8000, 5432],
+  "portsAttributes": {
+    "3000": { "label": "web", "onAutoForward": "openBrowser" },
+    "8000": { "label": "api" },
+    "5432": { "label": "postgres", "onAutoForward": "silent" }
+  },
+  "secrets": {
+    "ANTHROPIC_API_KEY": { "description": "Team Claude API key (console.anthropic.com)" },
+    "DATABASE_URL": { "description": "Optional: shared cloud Postgres URL (postgresql+asyncpg://...). Leave empty to use the local container DB." }
+  },
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "postStartCommand": "docker compose up -d db redis",
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python", "charliermarsh.ruff", "dbaeumer.vscode-eslint", "ckolkman.vscode-postgres"]
+    }
+  }
+}
