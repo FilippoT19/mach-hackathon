@@ -35,17 +35,22 @@ They get injected into every teammate's codespace.
 | `ANTHROPIC_API_KEY` | Team key from console.anthropic.com |
 | `DATABASE_URL` | *(optional)* shared cloud Postgres URL, `postgresql+asyncpg://…`. Without it each codespace uses its own local DB |
 
-## Shared cloud database (for the demo / shared data)
+## Shared cloud database: Supabase
 
-Create a free **Supabase** project (it includes Postgres, pgvector, auth, storage, and a dashboard). Then go to
-Project Settings → Database → Connection string (URI) and change `postgresql://` to
-`postgresql+asyncpg://`. Put the result in the `DATABASE_URL` secret. Tables get created on the first API start.
+1. In Supabase, open the project → **Connect** → **Session pooler** (IPv4; Vercel can't reach the
+   IPv6-only direct host) → copy the URI.
+2. Change `postgresql://` to `postgresql+asyncpg://` and put your DB password in it.
+3. Save it as `DATABASE_URL` in the Codespaces secret and in the Vercel API project's env vars.
+   Tables are created on the first start; run `make data` once with that URL in `.env` to load Milan data.
 
-## Deploy (for judging)
+## Deploy on Vercel (two projects from this one repo)
 
-- **API**: Render → New → Blueprint → this repo (`render.yaml`). Set `ANTHROPIC_API_KEY`,
-  `DATABASE_URL`, and `CORS_ORIGINS` (= the frontend URL).
-- **Web**: Vercel → Import repo → Root directory `frontend` → env `NEXT_PUBLIC_API_URL` = API URL.
+| Vercel project | Root Directory | Environment variables |
+|---|---|---|
+| `mach-api` | `backend` | `DATABASE_URL`, `ANTHROPIC_API_KEY` |
+| `mach-web` | `frontend` | `NEXT_PUBLIC_API_URL` = the `mach-api` URL |
+
+Every push to `main` redeploys both; every PR gets preview URLs. CORS already allows `*.vercel.app`.
 
 ## Milan open data
 
