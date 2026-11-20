@@ -2187,6 +2187,19 @@ async def _citizen_cancel(
         return
     sent.offers.add("ack")
     en = _lang(chat) != "it"
+    # BK-29 (journey 129): after two dropped offers, stop the offer/cancel loop. Waiting list,
+    # an open question on days, and a safety line - then no more slots unless the citizen asks.
+    acks = sum(1 for r in chat if r.sender == city.agent_id and first_word(r.text) == "cancel.ack")
+    if acks >= 2:
+        await _say(city, message.sender, (f"cancel.ack offer_id={offer_id} waiting_list=true " if offer_id else "waiting_list=true ") + (
+            "Understood, I will not send you more slots for now: I have put you on the waiting list and "
+            "I will write to you as soon as a suitable one opens. If you prefer specific days, tell me. "
+            "If you get chest pain, shortness of breath or you faint, call 112 at once."
+            if en else
+            "Capito, per ora non le mando altri posti: l'ho messa in lista d'attesa e le scrivo io appena "
+            "se ne libera uno adatto. Se preferisce giorni precisi, me lo dica. Se compare dolore al "
+            "petto, fiato corto o si sente svenire, chiami subito il 112."))
+        return
     await _say(
         city,
         message.sender,
