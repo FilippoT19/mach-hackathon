@@ -325,6 +325,13 @@ async def main() -> int:
     await brain._gp(city, citizen_msg("ho dolore al petto"), [])
     cit = to(city, CITIZEN)
     check("X-28 red flag saluta la persona e dice 112", cit and cit[0].startswith("escalate.emergency reason=red_flag Capisco") and "112" in cit[0], cit)
+    check("X-42 dopo il 112 chiede dove si trova", any(c.startswith("data.request purpose=emergency fields=address") for c in cit), cit)
+    asked42 = [row("agent:gp", r, t, 2 + i) for i, (r, t) in enumerate(city.sent)]
+    where = row(CITIZEN, "agent:gp", "data.response address=Via_Ornato_10 lat=45.519 lon=9.19", 9)
+    city42 = FakeCity("agent:gp", peers=[Peer(agent_id=HO, role="hospital", capabilities=("hospital",), address=__import__("city_sdk.city", fromlist=["CivicAddress"]).CivicAddress(label="Via Arganini Gerolamo 38", lat=45.5155, lon=9.1835))])
+    await brain.handle("gp", city42, where, [citizen_msg("ho dolore al petto"), *asked42, where])
+    out42 = to(city42, CITIZEN)
+    check("X-42 pronto soccorso più vicino con km e 112", out42 and "Via Arganini" in out42[0] and "km" in out42[0] and "112" in out42[0], out42)
     ho = to(city, HO)
     check("X-28 red flag avvisa il nostro ospedale", len(ho) == 1 and ho[0].startswith("emergency.notice") and "citizen:" not in ho[0], city.sent)
     check("X-28 nessun messaggio all'ospedale di un'altra squadra", not to(city, "agent:other-ho"), city.sent)
