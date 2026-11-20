@@ -37,6 +37,8 @@ Un solo brain serve tutti e 5 gli agenti (legge il ruolo dalla card). Il brain Ã
 5. Aprite una PR verso `main`, oppure mandate la proposta a Filippo. **Filippo** decide, la legge e la unisce.
 6. **Solo Filippo** fa il merge su `main` e `city deploy`. Nessun altro rilascia sulla piattaforma.
 
+Messaggio pronto da incollare nella propria AI: [PROMPT-SQUADRA.md](PROMPT-SQUADRA.md).
+
 ## Comandi di rilascio (solo Filippo)
 
 ```bash

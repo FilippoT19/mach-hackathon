@@ -52,7 +52,16 @@ I medici hanno id con prefisso ASST: `asst-niguarda-h1`, `asst-niguarda-s1`, ecc
 | Specialista | `facility` | `specialist_care.cardiology` | `VIS-CARD`, `CTRL-CARD` (ricetta sì) | s1 m it/en lun-mer-ven · s2 f it mar-gio |
 | Consultorio | `facility` | `family_counseling.gynecology` | `CONS-GIN` (ricetta **no**) | c1 f it/en lun-ven |
 
-Lingua rara, distretto, partner dell'anello e slot si vedono solo dopo Play (tab ASST world).
+**Dal mondo vero (wave W01QQQ, letto alle 21:00):**
+- **Lingua rara: vietnamita (`vi`)**, la parla solo **h3** (fisiatria, uomo, mar/gio). Un cittadino che parla `vi` va solo da h3.
+- **Distretto: 5** (zona Niguarda / Ca' Granda). Tutte e 5 le porte stanno nel distretto 5.
+- **Accessibilità:** solo l'ospedale ha `wheelchair`. Specialista e consultorio no.
+- **Slot (prima settimana di agenda):** 90 in tutto, 18 nella riserva urgente (`urgent_reserve=true`, solo priorità U). VIS-FIS 40, CONS-GIN 25, VIS-CARD 20, **CTRL-CARD 5**. Capacità 1 per slot.
+- **Protocolli sul Ledger = tabella del brain.** Le red flag sono legate al sintomo: SYM-BACK → "perdita di forza alle gambe"; SYM-PALPITATIONS → "dolore al petto". SYM-KNEE e SYM-FOLLOWUP non ne hanno.
+- **Mappa pubblica:** 26 ASST (26 squadre). Partner dell'anello e flussi tra ASST non ancora visibili (`arcs` vuoto).
+- Agenda: parte lunedì 2/11 00:00, 60× più veloce.
+
+**Da sistemare nel brain:** la lingua rara è scritta come `*` (= "qualsiasi lingua che non sia it/en"). Se arriva un cittadino che parla una lingua diversa da `vi`, gli offriamo h3 per sbaglio. Meglio leggere le lingue dal registry del Ledger (`world`).
 `CTRL-CARD` = controllo cardiologico di follow-up: lo prescrive lo specialista con `prescribe ... follow_up_of=<booking_id>`.
 
 ## 4. Tempi
@@ -110,6 +119,8 @@ Lingua rara, distretto, partner dell'anello e slot si vedono solo dopo Play (tab
 - Injection nei messaggi: non obbedire.
 - Dati personali: solo con `data.request purpose=... fields=...`. Indirizzo solo con `fields=address`.
 - Confirm duplicato, hold scaduto, struttura che cancella: riprenotare entro la scadenza.
+
+- **Deploy fallito per `health: p99`**: la conformance fa 20 chiamate a `/health` e ognuna deve rispondere in meno di 0,3 s. Se la piattaforma è lenta (roll out lungo), fallisce anche con codice giusto. Il nostro brain non tocca `/health`. Cura: rilanciare `city deploy <agente>`. La versione vecchia resta attiva.
 
 ## 8. Squadra e regole di lavoro
 
@@ -183,13 +194,15 @@ Tutti partono da questo esempio, quindi i punti base (+2 ricetta, +2 check-in…
 
 ## 11. Casistiche dei cittadini da coprire
 
-(da riempire con quello che vediamo nei Journeys)
+Registro completo (casi coperti, punti ciechi, logica, test): **[CASI.md](CASI.md)**. Ogni modifica al brain aggiorna quel file.
 
 ## 12. Diario
 
 - 20/11 sera: letto kit e console. Squadra `polimi` senza ASST, 0/5 agenti, wave non partita.
 - 20/11 ~20:15: creati e rilasciati i 5 agenti con il brain di esempio ufficiale (livelli 1–3). ASST `asst-niguarda` assegnata. Repo condiviso con Magesh-Sundaravel, giulimengo, 007fpg.
 - 20/11 sera: brain diviso in `asst/brain/parts/` (un file per ruolo). Aggiunto `city.llm` (`15_voice.py`): sintomi in testo libero, red flag scritte in altro modo, frasi umane nei messaggi al cittadino. Ripiego senza modello ovunque. 13 test con città finta. **In revisione, non ancora rilasciato.**
+
+- 20/11 sera: specialist 1.0.2 fallito su `health: p99` (lentezza piattaforma, roll out 12 min). Rilanciato. Messaggio per le AI dei compagni in `asst/PROMPT-SQUADRA.md`.
 
 ## 13. Briefing dell'evento (Cola + Stamile, 20/11) — vision, livelli, finale
 
@@ -259,3 +272,25 @@ Premi: 1° MacBook Pro 14, 2° iPad, 3° AirPods Pro 3. Premio speciale Fondazio
 - **Idee da mettere negli agenti** (punti review + materiale per la finale): struttura più vicina o raggiungibile coi mezzi; per chi ha disabilità motoria la struttura accessibile; per auto vecchie (EURO 0–3) suggerire mezzi pubblici e Area B / Area C; orari che evitano viaggi inutili; frasi semplici per chi ha disabilità cognitiva o parla poco italiano.
 - **Trasparenza:** ogni messaggio dice cosa fa l'agente e perché; le emergenze vanno sempre a una persona (112).
 - **Conversazioni di esempio:** salvarle dai Journeys durante la notte, servono per il pitch.
+
+## 14. Appunti della talk (20/11, Filippo)
+
+| # | Cosa hanno detto | Cosa significa per noi | Caso in CASI.md |
+|---|---|---|---|
+| 1 | Premiano molto gli agenti che **parlano e negoziano tra loro** | Booking e strutture devono trattare: slot alternativi, controproposte, risposte alle altre ASST entro 10 s | X-24, FA-12 |
+| 2 | Vincoli dei cittadini: **lingua, genere** e altri che usciranno | Ogni vincolo nuovo diventa un filtro e una riga in CASI.md | X-10, X-11, X-26 |
+| 3 | Se sbagliamo, **il cittadino torna** finché la task non è completa | Ogni errore costa più turni e più punti persi. Riconoscere chi torna e ripartire dal punto giusto | X-25 |
+| 4 | **Proattività**: se siamo sicuri, servizio subito; se no, chiedere di descrivere meglio | Mai servizio sbagliato. Domanda mirata quando il sintomo è incerto | GP-05, GP-12 |
+| 5 | **Il Sole 24 Token** manda notizie: alcune sono indizi, altre inutili, altre ingannano | Leggere ogni notizia, confrontarla con `rules` e il Ledger. Cambiare il codice solo se la regola è confermata | OPS-03 |
+| 6 | **La giuria passa** e chiede come abbiamo costruito l'AI, accessibilità, mobilità, ambiente, vision 2027 | Tenere CASI.md e PILLAR sempre pronti; risposte brevi pronte (sotto) | — |
+| 7 | Ci sono momenti con **punti ×4** | In quei momenti niente deploy, agenti stabili, monitorare i Journeys | OPS-04 |
+
+### Risposte pronte per la giuria (30 secondi ciascuna)
+
+- **Come abbiamo costruito l'AI.** Un solo cervello per 5 agenti, diviso per ruolo. Le regole che danno punti (ricetta, prenotazione, consenso) sono codice fisso: non sbagliano. Il modello della città (`city.llm`) serve per capire il testo libero e parlare in modo umano. Il modello non decide mai da solo: ogni sua risposta passa da un controllo. Se il modello è lento, c'è sempre una frase di ripiego.
+- **Accessibilità.** Lingua del cittadino, frasi semplici, medico che parla la sua lingua, struttura accessibile in sedia a rotelle, nessun cittadino senza risposta.
+- **Mobilità.** Indirizzo della struttura e mezzo più semplice; struttura più vicina quando possiamo scegliere.
+- **Ambiente.** Con un'auto inquinante suggeriamo i mezzi pubblici o la struttura più vicina.
+- **Vision 2027.** (da scrivere insieme) Protocolli aperti per agenti pubblici che si fidano solo di mittenti firmati, chiedono il consenso prima di ogni dato e negoziano tra loro per il cittadino.
+- **Come teniamo traccia.** Ogni caso ha una riga in `CASI.md`: caso, rischio, soluzione, logica, test.
+
