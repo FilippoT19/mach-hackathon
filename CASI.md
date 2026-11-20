@@ -57,6 +57,7 @@ Vince chi copre più **punti ciechi**: servizi che non esistono, lingue rare, ac
 | BK-01 | Cittadino con ricetta valida | +2 se in `S_pref`, +1 in `S` | Legge ricetta e ora dal Ledger, filtra gli slot (futuri, entro la priorità, lingua, giorno, genere), offre i primi 3 | Il filtro rispetta le regole del Ledger: niente slot fuori regola | manca test | rilasciato 1.0.0 |
 | BK-02 | Priorità P | −1 se niente | Offre subito la lista d'attesa | P non ha scadenza: la lista d'attesa è la risposta giusta | manca test | rilasciato 1.0.0 |
 | BK-03 | Ricevuta della struttura | +2 | La gira al cittadino con una frase umana | Il cittadino deve sapere che è prenotato e cosa fare dopo | manca test | in conformance 1.0.1 |
+| BK-10 | **Nessuno slot va bene** dopo aver letto tutte le pagine (oggi: silenzio) | −1 "nessuna prenotazione con S non vuoto" o `no_reply`; con alternativa: 0 | Se c'è un'altra pagina, la chiede al Ledger e aspetta. Se le pagine sono finite: `offer offer_id=wl-<need> waiting_list=true procedure=… priority=…` + frase umana "la metto in lista d'attesa". Una sola volta per need | La rubrica dà 0 (non −1) per "S vuoto + alternativa rilassata". La lista d'attesa è l'unica alternativa che non prenota mai fuori da `S`. Vale anche dopo un `cancel` della struttura | `BK-10 nessuno slot -> lista d'attesa`, `… una volta sola`, `… chiede pagina 2`, `slot adatto -> offerta normale` | in PR (branch filippo/bk10-mai-silenzio) |
 
 ### Strutture (`40_facility.py`)
 
@@ -81,7 +82,7 @@ Vince chi copre più **punti ciechi**: servizi che non esistono, lingue rare, ac
 
 | ID | Caso | Rischio | Soluzione proposta | Logica | Chi | Stato |
 |---|---|---|---|---|---|---|
-| BK-10 | **Nessuno slot va bene** → oggi silenzio | −1 freddo, −1 niente prenotazione, rischio −4 | Offrire sempre un'alternativa: altro giorno, altro medico, lista d'attesa, altra ASST. Mai silenzio | Il silenzio è il punto cieco più caro. Ogni risposta vale più di nessuna | Filippo + Magesh | da fare |
+| BK-14 | **Tre offerte in tre messaggi** (oggi): le regole dicono che il cittadino sceglie nel turno del primo messaggio e ignora i successivi | perde `S_pref` (+2 → +1 o −1) | Mettere i 3 slot nello **stesso messaggio**, una riga per offerta, ognuna con `offer_id` e `slot_id`. Prima rendere riga per riga la lettura delle nostre offerte (`_our_offer`, `_offered`, `_withdrawn`, `_on_refused`), che oggi leggono solo la prima | Regola e19 righe 95 e 637: "Mettete ogni slot nello stesso messaggio". Oggi il cittadino vede di fatto un solo slot | Filippo + Magesh | **da fare, priorità alta** |
 | BK-11 | **Giorni preferiti** (`days`) ignorati | +2 invece di +1 | Mettere `days` nel filtro e dare priorità agli slot in quei giorni | `S_pref` vale il doppio | Filippo + Magesh | da fare |
 | X-10 | **Lingua rara**: oggi la tabella ha `*` per h3 | −1 fuori `S`, cittadino non capisce | Leggere le lingue dei medici dal registro (`world`), non dal codice. h3 parla **vi** | Oggi un cittadino `fr` finisce da h3, che parla vi: errore | Filippo | da fare |
 | X-11 | Lingua senza medico (arabo, cinese, ucraino…) | −1 | Frase nella sua lingua, medico `en` se lo capisce, altrimenti altra ASST con consenso | Nessun cittadino resta senza risposta per la lingua | Filippo | da fare |

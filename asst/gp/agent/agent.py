@@ -963,8 +963,44 @@ async def _advance_alone(
     if taken and not replacing:
         return
     page, pages = _page(world)
-    if page < pages and page < _MAX_PAGE and not _asked(chat, agent, procedure, page + 1):
-        await _say(city, LEDGER, f"world procedure={procedure} page={page + 1}")
+    if page < pages and page < _MAX_PAGE:
+        if not _asked(chat, agent, procedure, page + 1):
+            await _say(city, LEDGER, f"world procedure={procedure} page={page + 1}")
+        return
+    # BK-10: every page read and nothing fits. Silence scores -1 (and risks no_reply); a relaxed
+    # alternative scores 0. The waiting list is the one alternative that never books outside S.
+    await _relaxed(city, message, chat, key, citizen, procedure, number, priority)
+
+
+async def _relaxed(
+    city: City,
+    message: Message,
+    chat: list[Message],
+    key: str,
+    citizen: str,
+    procedure: str,
+    number: str | None,
+    priority: str | None,
+) -> None:
+    offer_id = f"wl-{message.need_id or message.msg_id}"
+    sent = _sent(key)
+    if offer_id in sent.offers or _we(chat, city.agent_id, f"offer_id={offer_id}", to=citizen, word="offer"):
+        return
+    line = await _human(
+        city,
+        chat,
+        "no appointment that fits the citizen is free in the time allowed; we put them on the "
+        "waiting list and will offer the first suitable slot that opens",
+        "Al momento non c'è un posto adatto a lei nei tempi previsti. La metto in lista d'attesa: "
+        "le proponiamo il primo posto libero.",
+    )
+    parts = ["offer", f"offer_id={offer_id}", "waiting_list=true", f"procedure={procedure}"]
+    if priority:
+        parts.append(f"priority={priority}")
+    if number:
+        parts.append(f"prescription_number={number}")
+    if await _say(city, citizen, " ".join(parts) + f" {line}"):
+        sent.offers.add(offer_id)
 
 
 async def _on_confirm(
