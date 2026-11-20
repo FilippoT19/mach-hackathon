@@ -206,6 +206,9 @@ Registro completo (casi coperti, punti ciechi, logica, test): **[CASI.md](CASI.m
 
 - 20/11 20:36 UTC: 18 cittadini letti. Red flag 014/015 gestite (escalation ok). 009–013 senza risposta: buco del deploy gp (OPS-05). **Regola: deploy solo tra un livello e l'altro.** Deploy automatico del consultorio fermato.
 
+- 20/11 20:50 UTC, Sole 24 Token [GP]: "il medico di base più paziente: leggo il sintomo, guardo la tabella, scrivo la ricetta; diagnosi no; red flag → emergenza e mi fermo". **Verdetto: indizio vero** (coincide con le regole e19). Il nostro gp lo fa già (GP-01..07). Spunto: "guardo la tabella" → leggere la tabella dei protocolli dal Ledger (GP-11); "paziente" → con sintomo incerto chiedere invece di indovinare (GP-12).
+- 20/11 20:51 UTC: hospital 1.0.1 e family_counseling 1.0.1 **failed ERROR** "agent ingress route did not become ready in time (404)": errore della piattaforma, non del codice (OPS-01). Restano attive le 1.0.0. Rilancio nella pausa tra i livelli. Siamo 4° su 26 (92 punti).
+
 ## 13. Briefing dell'evento (Cola + Stamile, 20/11) — vision, livelli, finale
 
 Fonte: PDF "Hackathon Milano Agentic City 2027 — briefing per i team". Riassunto.
