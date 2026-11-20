@@ -44,6 +44,9 @@ async def _facility(
                 "accompagniamo al pronto soccorso.",
             )
         return
+    if head == "need.request" and message.sender.startswith("agent:"):
+        await _partner_request(city, message, chat)  # FA-12
+        return
     if message.sender == LEDGER and head == "held":
         await _on_held(city, message, chat)
     elif message.sender == LEDGER and head == "committed":
@@ -325,3 +328,61 @@ async def _on_reported(city: City, message: Message, chat: list[Message]) -> Non
         "you if a follow-up is needed. Thank you for trusting us.",
     )
     await _say(city, citizen, f"report booking_id={booking_id} outcome_code=VISIT {line}")
+
+
+# --- FA-12: cross-ASST request from another booking centre (format agreed in the group) ------
+_RARE_LANG = {"h3": "vi"}  # our h3 physiatrist speaks Vietnamese (registry)
+_PARTNER_DONE: set[str] = set()
+
+
+def _doctor_tokens(doctor_id: str) -> str:
+    short = doctor_id.rsplit("-", 1)[-1]
+    spec = _DOCTORS.get(short)
+    if spec is None:
+        return ""
+    langs = sorted(l for l in spec[0] if l != "*")
+    if short in _RARE_LANG:
+        langs.append(_RARE_LANG[short])
+    return f"doctor_lang={'/'.join(langs)} doctor_gender={spec[1]}"
+
+
+async def _partner_request(city: City, message: Message, chat: list[Message]) -> None:
+    """Answer within seconds with our fitting slots, one per line; no citizen data needed."""
+    fields = fields_of(message.text)
+    request_id = fields.get("request_id") or message.need_id or message.msg_id
+    if request_id in _PARTNER_DONE:
+        return
+    procedure = fields.get("procedure", "")
+    priority = fields.get("priority") or None
+    agent = city.agent_id
+    if not procedure:
+        _PARTNER_DONE.add(request_id)
+        await _say(city, message.sender, f"cancel reason=no_availability request_id={request_id} Manca procedure=.")
+        return
+    if not _exact(chat, agent, "agenda"):
+        await _say(city, LEDGER, "agenda")
+    await _say(city, LEDGER, f"world procedure={procedure} facility={agent} page=1")
+    chat = await _until(city, message.need_id, chat, lambda rows: _has_agenda(rows) and _latest_slots(rows) is not None)
+    agenda = _ledger(chat, "agenda")
+    now = _when("" if agenda is None else agenda.get("agenda_now", ""))
+    world = _latest_slots(chat)
+    _PARTNER_DONE.add(request_id)
+    picks = []
+    if now is not None and world is not None:
+        picks = fitting(
+            [line for line in world.splitlines() if "slot_id=" in line],
+            now=now, priority=priority, lang=fields.get("lang", "it"),
+            gender=fields.get("gender") or None, facility=agent, procedure=procedure,
+        )[:3]
+    if not picks:
+        await _say(city, message.sender, f"cancel reason=no_availability request_id={request_id} Al momento non abbiamo posti adatti per {procedure}.")
+        return
+    lines = [
+        f"offer offer_id=of-{s['slot_id']} slot_id={s['slot_id']} doctor_id={s['doctor_id']} facility={agent} "
+        f"procedure={s['procedure']} agenda_date={s['at']} {_doctor_tokens(s['doctor_id'])} request_id={request_id}"
+        for s in picks
+    ]
+    await _say(city, message.sender, "\n".join(lines + [
+        "Ecco i nostri posti liberi. Dopo il consenso cross_asst del cittadino mandateci confirm "
+        "con offer_id, slot_id, citizen, consent_ref e prescription_number: rispondiamo con la ricevuta."
+    ]))
