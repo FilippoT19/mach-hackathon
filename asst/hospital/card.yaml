@@ -1,7 +1,7 @@
 agent_id: agent:jdj692g4145e
 team: team:polimi
 name: hospital
-version: 1.0.5
+version: 1.0.6
 cap_versions:
   - "1.0"
 profiles:
