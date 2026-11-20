@@ -366,7 +366,8 @@ async def main() -> int:
 
     # 11. BK-10: another page exists -> ask the Ledger for it, do not offer the waiting list yet.
     c = await run_desk(slots_far(pages="1/2"))
-    check("BK-10 c'è pagina 2 -> chiede pagina 2", any("page=2" in t for t in to(c, LEDGER)) and not to(c, CITIZEN), c.sent)
+    check("BK-10 c'è pagina 2 -> chiede pagina 2", any("page=2" in t for t in to(c, LEDGER)) and not any("waiting" in t or "attesa" in t for t in to(c, CITIZEN)), c.sent)
+    check("BK-30 pagina 2 -> il cittadino sa che cerco", any("controllando" in t for t in to(c, CITIZEN)), c.sent)
 
     # 12. BK-12: after local pages are exhausted, query a facility peer without citizen data.
     remote = {"id": "agent:remote-hospital", "role": "facility", "capabilities": ["hospital.physiatry"]}
