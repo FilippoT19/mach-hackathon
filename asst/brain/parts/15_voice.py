@@ -6,7 +6,7 @@
 # The model never decides a token. It only (1) maps free text to a code we already know and
 # (2) writes one sentence that we clean before it goes next to our key=value tokens.
 
-_LLM_TIMEOUT = 8.0
+_LLM_TIMEOUT = 4.0  # only the symptom mapping still waits for the model
 _ACT_WORDS = frozenset(
     {
         "need.request", "offer", "confirm", "cancel", "prescription", "consent", "data.request",
@@ -89,9 +89,16 @@ async def _llm_symptom(city: City, text: str) -> str | None:
     return None
 
 
+_VOICE_MODEL = False
+
+
 async def _human(city: City, chat: list[Message], what: str, fallback: str) -> str:
     """One warm sentence in the citizen's language about ``what``, or ``fallback``."""
 
+    # X-29: no model on the reply path. A slow model lost the GP sentence (GP-13) and every
+    # second of wait risks the reply window and the 10 s clock. Fixed sentences are instant.
+    if not _VOICE_MODEL:
+        return fallback
     lang = _lang(chat)
     language = _LANG_NAMES.get(lang, f"the language with code '{lang}'")
     line = await _ask_llm(

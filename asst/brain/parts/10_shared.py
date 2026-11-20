@@ -69,6 +69,12 @@ _OUR_AGENTS = {
     "family_counseling": "agent:mm18nddkfc5w",
 }
 _PEERS: dict[str, str] = {}
+# X-29: where our facilities are (their own card addresses) - mobility and accessibility.
+_FACILITY_WHERE = {
+    "agent:jdj692g4145e": "al nostro ospedale in Via Arganini Gerolamo 38 (accessibile in sedia a rotelle)",
+    "agent:jmjfst55vgjz": "dal nostro specialista in Viale Ca' Granda 28",
+    "agent:mm18nddkfc5w": "al nostro consultorio in Via Giolli Raffaello 23",
+}
 
 
 async def _peer(city: City, family: str, query: str) -> str | None:
