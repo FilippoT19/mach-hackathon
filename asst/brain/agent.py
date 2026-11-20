@@ -584,6 +584,43 @@ def _our_rx(chat: list[Message], agent: str) -> dict[str, str]:
     return found
 
 
+_VISIT = {
+    "VIS-FIS": ("una visita fisiatrica", "a physiatry visit"),
+    "VIS-CARD": ("una visita cardiologica", "a cardiology visit"),
+    "CTRL-CARD": ("un controllo cardiologico", "a cardiology follow-up"),
+    "CONS-GIN": ("una consulenza ginecologica", "a gynaecology consultation"),
+}
+_WHEN = {
+    "U": ("da fare oggi", "to be done today"),
+    "B": ("da fare entro 2 giorni", "to be done within 2 days"),
+    "D": ("da fare entro 5 giorni", "to be done within 5 days"),
+    "P": ("programmabile, anche in lista d'attesa", "to be scheduled, also on the waiting list"),
+}
+
+
+def _rx_line(chat: list[Message], procedure: str | None, priority: str | None) -> str:
+    """GP-13: a fixed, instant sentence. The model is too slow here: the ledger push opens a
+    second turn and that bare prescription reached the citizen first (review: domain 0,
+    "does not acknowledge the person or provide a professional next step")."""
+
+    en = _lang(chat) == "en"
+    visit = _VISIT.get(procedure or "", ("la visita", "the visit"))[1 if en else 0]
+    when = _WHEN.get(priority or "", ("", ""))[1 if en else 0]
+    if en:
+        return (
+            f"Thank you for describing it. As your GP I have prescribed {visit}"
+            + (f", {when}" if when else "")
+            + ". I am telling the booking centre now: contact it with this prescription number "
+            "and it will offer you the first suitable slots."
+        )
+    return (
+        f"Grazie per avermi descritto il disturbo. Come suo medico di base le ho prescritto {visit}"
+        + (f", {when}" if when else "")
+        + ". Avviso subito il centro prenotazioni: lo contatti con questo numero di ricetta e le "
+        "proporrà i primi posti adatti."
+    )
+
+
 async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     agent = city.agent_id
     if message.sender == LEDGER:
@@ -640,14 +677,7 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
             return
     if _we(chat, agent, token, to=message.sender, word="prescription"):
         return
-    line = await _human(
-        city,
-        chat,
-        "the GP issued the prescription; the next step is to contact the booking centre with "
-        "the prescription number to book the visit",
-        "Ecco la sua ricetta. Ora contatti il centro prenotazioni con questo numero: le "
-        "troveranno il primo posto utile.",
-    )
+    line = _rx_line(chat, procedure, priority)
     await _say(
         city,
         message.sender,
@@ -686,7 +716,7 @@ async def _announce(city: City, message: Message, chat: list[Message], agent: st
         parts.append(f"procedure={procedure}")
     if priority:
         parts.append(f"priority={priority}")
-    await _say(city, citizen, " ".join(parts))
+    await _say(city, citizen, " ".join(parts) + " " + _rx_line(chat, procedure, priority))
 
 
 # --- centro prenotazioni and consultorio -------------------------------------------------------
