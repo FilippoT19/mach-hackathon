@@ -323,6 +323,15 @@ async def main() -> int:
     await brain._desk(city4, no, chat2 + [no], hold_self=False, fixed=None)
     out = to(city4, CITIZEN)
     check("X-31 rifiuto: indicazioni generiche", out and out[0].startswith("Nessun problema.") and "M5" in out[0], out)
+    # 23. X-32: nearest hospital in the whole city from Index doors.
+    from city_sdk.city import CivicAddress
+    near = Peer(agent_id="agent:far1", role="hospital", address=CivicAddress(label="Via Vicina 1", lat=45.5191, lon=9.1901))
+    far = Peer(agent_id="agent:far2", role="hospital", address=CivicAddress(label="Via Lontana 9", lat=45.40, lon=9.10))
+    brain._ANSWERED_WHERE.clear()
+    city5 = FakeCity("agent:bk", peers=[far, near])
+    await brain._desk(city5, reply, chat2 + [reply], hold_self=False, fixed=None)
+    out = to(city5, CITIZEN)
+    check("X-32 ospedale più vicino in città", out and "Via Vicina 1" in out[0] and "112" in out[0], out)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 

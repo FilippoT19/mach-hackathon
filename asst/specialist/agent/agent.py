@@ -1480,7 +1480,31 @@ async def _on_where(city: City, message: Message, chat: list[Message]) -> None:
     head = "Thank you." if en else "Grazie."
     if km is None and "address" not in fields_of(message.text):
         head = "No problem." if en else "Nessun problema."
-    await _say(city, message.sender, f"{head} {_route_line(en, km, door, fields_of(message.text))}")
+    extra = await _nearest_line(city, point, en, facility) if point else ""
+    await _say(city, message.sender, f"{head} {_route_line(en, km, door, fields_of(message.text))}{extra}")
+
+
+async def _nearest_line(city: City, point: tuple[float, float], en: bool, booked: str) -> str:
+    """X-32: the nearest hospital in the whole city (any ASST), from the Index doors."""
+    try:
+        peers = await asyncio.wait_for(city.find("ospedale hospital pronto soccorso Milano"), timeout=4.0)
+    except Exception:
+        return ""
+    best: tuple[float, str] | None = None
+    for peer in peers:
+        addr = getattr(peer, "address", None)
+        if addr is None or getattr(addr, "lat", None) is None:
+            continue
+        if "hospital" not in (peer.role or "") and not any("hospital" in c for c in peer.capabilities):
+            continue
+        d = _km(point, (float(addr.lat), float(addr.lon)))
+        if best is None or d < best[0]:
+            best = (d, str(addr.label))
+    if best is None:
+        return ""
+    if en:
+        return f" For any urgent need, the nearest hospital to you is at {best[1]}, about {best[0]:.1f} km away; in an emergency always call 112."
+    return f" Per qualsiasi urgenza, l'ospedale più vicino a lei è in {best[1]}, a circa {best[0]:.1f} km; in emergenza chiami sempre il 112."
 # --- facility ----------------------------------------------------------------------------------
 
 
