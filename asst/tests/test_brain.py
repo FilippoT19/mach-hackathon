@@ -154,8 +154,18 @@ async def main() -> int:
 
     # 9. Model sentence is used when it is good.
     brain._LLM_TIMEOUT = 8.0
-    c = await run_gp("ho mal di schiena", model("Capisco il fastidio: con questa ricetta prenoti subito la visita."))
-    check("frase del modello usata", to(c, CITIZEN) and "Capisco il fastidio" in to(c, CITIZEN)[0], c.sent)
+    c = await run_gp("ho mal di schiena", model("Frase del modello, non deve servire", delay=1.0))
+    cit = to(c, CITIZEN)
+    check("GP-13 frase fissa subito: visita, priorità, passo dopo", cit and "visita fisiatrica" in cit[0] and "entro 2 giorni" in cit[0] and "centro prenotazioni" in cit[0] and "modello" not in cit[0], cit)
+
+    # GP-13: the ledger push path (_announce) carries the same human sentence.
+    city = FakeCity("agent:gp")
+    rx = "prescription_number-N-1-X"
+    chat = [row(CITIZEN, "agent:gp", "ho mal di schiena", 0), row("agent:gp", LEDGER, f"prescribe patient={CITIZEN} procedure=VIS-FIS priority=B prescription_number={rx}", 1)]
+    push = Message(type="chat", sender=LEDGER, msg_id="p1", need_id="N-1", body={"text": f"prescribed prescription_number={rx} patient={CITIZEN} procedure=VIS-FIS priority=B"}, recipient="agent:gp")
+    await brain._gp(city, push, chat + [push])
+    cit = to(city, CITIZEN)
+    check("GP-13 anche la ricetta dal Ledger ha la frase", cit and cit[0].startswith("prescription ") and "Come suo medico di base" in cit[0], cit)
 
     # 10. BK-10: no slot fits and no page is left -> relaxed alternative (waiting list), not silence.
     c = await run_desk(slots_far(pages="1/1"))
