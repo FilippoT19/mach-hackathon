@@ -607,7 +607,7 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
         picks = fitting(
             [line for line in world.splitlines() if "slot_id=" in line],
             now=now, priority=priority, lang=fields.get("lang", "it"),
-            gender=fields.get("gender") or None, facility=agent, procedure=procedure,
+            gender=fields.get("gender_preference") or fields.get("gender") or None, facility=agent, procedure=procedure,
         )[:3]
     if not picks:
         await _say(city, message.sender, f"cancel reason=no_availability request_id={request_id} Al momento non abbiamo posti adatti per {procedure}.")

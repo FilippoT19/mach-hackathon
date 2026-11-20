@@ -470,7 +470,7 @@ async def _cross_asst(
             parts.append(f"lang={want_lang}")
         want_gender = _gender(chat)
         if want_gender:
-            parts.append(f"gender={want_gender}")
+            parts.append(f"gender={want_gender} gender_preference={want_gender}")
         want_days = _days(chat)
         if want_days:
             parts.append("days=" + "/".join(sorted(want_days)))
