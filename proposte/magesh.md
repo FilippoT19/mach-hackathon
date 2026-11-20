@@ -5,6 +5,15 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 
 <!-- aggiungi qui sotto -->
 
+### [ ] P-magesh-6 (CO-10): red flag in gravidanza al consultorio → offerte invece del 112
+- Journey: nessuno (lettura del codice su `main` 98d473f) — ruolo: family_counseling
+- Cosa fa il cittadino: una cittadina incinta scrive al consultorio, es. "sono incinta e ho perdite di sangue", "ho un dolore forte alla pancia", "ho le contrazioni", "I'm pregnant and bleeding"
+- Cosa risponde oggi il nostro agente: X-41 manda al 112 da ogni ruolo, ma il consultorio riconosce la red flag solo per parole fisse (`_RED_FLAGS` + `_RED_FLAGS_MORE`). Coperti: "sanguinamento abbondante", "heavy bleeding", "svenuta", "non riesco a respirare". NON coperti: "perdite di sangue", "sanguino", "bleeding" senza "heavy", "dolore forte", "contrazioni". Il medico di base ha anche il controllo con `city.llm` (`_llm_symptom` → `RED_FLAG`), il consultorio no: il messaggio finisce in `_desk` e la cittadina riceve offerte di slot con la ginecologa
+- Review / punti persi: −2 (CO-10 in CASI.md); far prenotare una visita a chi ha un'emergenza è il caso più grave per domain e sicurezza
+- Cosa dovrebbe fare: al consultorio, se il testo parla di gravidanza ("incinta", "gravidanza", "pregnant") insieme a sangue, perdite, dolore forte/intenso, contrazioni o perdita di liquido, rispondere `escalate.emergency reason=red_flag` con la stessa frase del 112 ("non si metta alla guida, non resti da sola") e mandare `emergency.notice` all'ospedale, come X-41. Nessuna offerta di slot nello stesso turno. In più (facoltativo): per i messaggi al consultorio che le parole fisse non riconoscono, usare lo stesso controllo `RED_FLAG` con `city.llm` del medico di base, con lo stesso timeout e lo stesso ripiego. Aggiornare la riga CO-10 in CASI.md: X-41 la copre solo in parte
+- Test a parole: "dato 'sono incinta di 7 mesi e ho perdite di sangue' al consultorio, mi aspetto `escalate.emergency reason=red_flag` + frase 112 e `emergency.notice` all'ospedale, nessun `offer`"; "dato 'I'm pregnant and have strong contractions', idem in inglese"; "dato 'vorrei una visita ginecologica di controllo in gravidanza', mi aspetto le offerte normali (nessun falso allarme)"
+- Priorità secondo te: P0
+
 > Analisi del consultorio (`family_counseling`) fatta su una versione vecchia del brain e
 > ricontrollata su `main` (6f68a93). Già risolti su main, quindi NON proposti: lista d'attesa quando
 > nessuno slot va bene (BK-10, `_relaxed`), `confirm` senza `consent_ref` (ora chiede il consenso),
