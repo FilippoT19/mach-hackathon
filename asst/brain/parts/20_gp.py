@@ -160,10 +160,12 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     if _we(chat, agent, token, to=message.sender, word="prescription"):
         return
     line = _rx_line([*chat, message], procedure, priority, code)
+    prefs = _prefs(message.text)
+    note = _prefs_line(prefs, _lang([*chat, message]) != "it")
     await _say(
         city,
         message.sender,
-        f"prescription {token} procedure={procedure} priority={priority} {line}",
+        f"prescription {token} procedure={procedure} priority={priority} {line}{note}",
     )
     # X-27: after the citizen has the prescription, tell our booking centre it is coming.
     # Review +1 collaboration; the booking answers within seconds (+1 clock). No citizen id.
@@ -173,7 +175,9 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
             city,
             booking,
             f"referral {token} procedure={procedure} priority={priority} "
-            "Ricetta emessa: il cittadino vi contatterà a breve con questo numero.",
+            + "".join(f"{k}={v} " for k, v in prefs.items())
+            + "Ricetta emessa: il cittadino vi contatterà a breve con questo numero."
+            + (" Preferenze del cittadino indicate nei campi." if prefs else ""),
         )
 
 
@@ -202,3 +206,38 @@ async def _announce(city: City, message: Message, chat: list[Message], agent: st
     await _say(city, citizen, " ".join(parts) + " " + _rx_line(chat, procedure, priority, code))
 
 
+
+
+# X-33: preferences the citizen writes in words (doctor's language, gender), passed to booking.
+_PREF_LANG = {
+    "en": re.compile(r"speaks? english|english[- ]speaking|in english|parla inglese|in inglese", re.I),
+}
+_PREF_F = re.compile(r"\b(female|woman|lady) (doctor|physician)|\bdottoressa\b|medico donna|una donna", re.I)
+_PREF_M = re.compile(r"\bmale (doctor|physician)|medico uomo|\bun uomo\b", re.I)
+
+
+def _prefs(text: str) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for code, rx in _PREF_LANG.items():
+        if rx.search(text):
+            out["lang"] = code
+    if _PREF_F.search(text):
+        out["gender"] = "f"
+    elif _PREF_M.search(text):
+        out["gender"] = "m"
+    return out
+
+
+def _prefs_line(prefs: dict[str, str], en: bool) -> str:
+    if not prefs:
+        return ""
+    bits = []
+    if prefs.get("lang") == "en":
+        bits.append("a doctor who speaks English" if en else "un medico che parla inglese")
+    if prefs.get("gender") == "f":
+        bits.append("a female doctor" if en else "una dottoressa")
+    elif prefs.get("gender") == "m":
+        bits.append("a male doctor" if en else "un medico uomo")
+    what = " and ".join(bits) if en else " e ".join(bits)
+    return (f" I have passed your request for {what} to the booking centre, so they will offer you only suitable slots."
+            if en else f" Ho già segnalato al centro prenotazioni la sua richiesta di {what}: le proporrà solo posti adatti.")

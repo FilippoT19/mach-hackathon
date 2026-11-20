@@ -122,7 +122,25 @@ def _lang(chat: list[Message]) -> str:
     return "it"
 
 
+_PREF_BY_RX: dict[str, dict[str, str]] = {}
+
+
+def _rx_pref(chat: list[Message], key: str) -> str | None:
+    """X-33: a preference the GP passed in the referral for this prescription."""
+    for row in chat:
+        if row.sender.startswith("citizen:"):
+            number = fields_of(row.text).get("prescription_number")
+            if number and key in _PREF_BY_RX.get(number, {}):
+                return _PREF_BY_RX[number][key]
+    return None
+
+
 def _gender(chat: list[Message]) -> str | None:
+    pref = _gender_said(chat)
+    return pref if pref is not None else _rx_pref(chat, "gender")
+
+
+def _gender_said(chat: list[Message]) -> str | None:
     for row in chat:
         if not row.sender.startswith("citizen:"):
             continue
@@ -248,6 +266,9 @@ async def _on_referral(city: City, message: Message, chat: list[Message]) -> Non
     if _we(chat, city.agent_id, token, to=message.sender, word="referral.ack"):
         return
     procedure = fields_of(message.text).get("procedure", "")
+    pref = {k: v for k, v in fields_of(message.text).items() if k in ("lang", "gender") and v}
+    if pref:
+        _PREF_BY_RX[number] = pref  # X-33
     parts = ["referral.ack", token] + ([f"procedure={procedure}"] if procedure else [])
     await _say(
         city,
