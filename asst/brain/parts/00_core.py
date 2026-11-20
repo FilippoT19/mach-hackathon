@@ -17,7 +17,9 @@ import os
 import re
 from collections import OrderedDict
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 
 from city_sdk.city import LEDGER, CapError, City, Message, Need, OutOfScope, clinical, understood

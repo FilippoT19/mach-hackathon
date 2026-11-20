@@ -133,7 +133,7 @@ il cittadino annulla tutto, il percorso si ferma senza esito.
 - Test a parole: "dato `held hold_id=H1 slot_id=S1` (senza fence) e consenso nella storia, mi aspetto `commit hold_id=H1 consent_ref=…` e nessun `cancel`".
 - Priorità secondo me: **P0 se nei Journeys compare `missing_fence`**, altrimenti P2
 
-### [ ] P-francesco-14: dopo l'annullo del cittadino (`reason=deadline`) il booking tace o perde slot validi (REGISTRO G2, Journey 000054)
+### [~] P-francesco-14 (in deploy): dopo l'annullo del cittadino (`reason=deadline`) il booking tace o perde slot validi (REGISTRO G2, Journey 000054)
 - Journey: 000054 (slot 11 nov annullato, poi niente), 129 — ruolo: booking_centre
 - Codice: `30_booking.py:1226` (`_citizen_cancel` → `_advance(replacing=False)`); `30_booking.py:823-835`; `30_booking.py:1204-1213` (BK-29).
 - Cosa fa il cittadino: `cancel offer_id=of-S1 reason=deadline`.
@@ -146,7 +146,7 @@ il cittadino annulla tutto, il percorso si ferma senza esito.
 - Test a parole: "offerte S1,S2,S3; il cittadino annulla S1 per deadline → mi aspetto S2/S3 di nuovo (se nei tempi) o la pagina 2; alla risposta `slots page=2` del Ledger mi aspetto un'offerta o `offer … waiting_list=true`, mai silenzio".
 - Priorità secondo me: **P0**
 
-### [ ] P-francesco-15: le offerte delle altre ASST arrivano al cittadino così come sono (rischio −2 al booking)
+### [~] P-francesco-15 (in deploy): le offerte delle altre ASST arrivano al cittadino così come sono (rischio −2 al booking)
 - Journey: — (livello 4) — ruolo: booking_centre
 - Codice: `30_booking.py:543-546` (`_partner_offer`: `text = message.text` + `cross_asst=true`, inviato al cittadino).
 - Cosa fa il partner: risponde nel formato comune: `offer offer_id=… slot_id=… doctor_id=… facility=… procedure=… agenda_date=… doctor_lang=… doctor_gender=… request_id=… wheelchair=true` + frase per gli agenti ("mandateci confirm…").
@@ -156,7 +156,7 @@ il cittadino annulla tutto, il percorso si ferma senza esito.
 - Test a parole: "data l'offerta di un partner con `doctor_lang=fr doctor_gender=m request_id=r1` e frase, mi aspetto al cittadino solo i token ufficiali, senza `doctor_lang`, `doctor_gender`, `request_id` e senza la frase del partner".
 - Priorità secondo me: **P1** (P0 al livello 4)
 
-### [ ] P-francesco-16: impostori (sabato dalle 10): filtro spento, ricevute e annulli mai filtrati
+### [~] P-francesco-16 (in deploy): impostori (sabato dalle 10): filtro spento, ricevute e annulli mai filtrati
 - Journey: — (livello 8) — ruolo: booking_centre (e strutture)
 - Codice: `10_shared.py:74, 90-93` (`_TRUSTED_PARTNERS` vuoto → `_trusted` vero per tutti; `_KNOWN_PARTNERS` ha solo Lorenteggio); `30_booking.py:969` (`_forward_receipt`) e `30_booking.py:1020` (`_partner_cancel`) **non** chiamano `_trusted`.
 - Cosa fa l'impostore: manda al booking `booking.receipt booking_id=X ledger_ref=Y` o `cancel offer_id=…`.
@@ -166,7 +166,8 @@ il cittadino annulla tutto, il percorso si ferma senza esito.
 - Test a parole: "dato `booking.receipt booking_id=X ledger_ref=Y` da `agent:sconosciuto` a cui non abbiamo mandato confirm, mi aspetto nessun messaggio al cittadino".
 - Priorità secondo me: **P0 da sabato 10:00**, P2 prima
 
-### [ ] P-francesco-17: specialista: referto senza consenso e senza follow-up (SP-10, SP-11)
+### [-] P-francesco-17: specialista: referto senza consenso e senza follow-up (SP-10, SP-11)
+- Motivo: servono un caso reale di consenso al referto e un criterio verificato per prescrivere `CTRL-CARD`.
 - Journey: — (**da verificare**: verdetto "Referto archiviato e follow-up per protocollo") — ruolo: specialist
 - Codice: `40_facility.py:541-542` (`report … outcome_code=VISIT` subito dopo `checked_in`); `40_facility.py:554-571` (frase: "il suo medico di base può consultarlo; se serve un controllo, sarà lui a indicarglielo").
 - Cosa fa il cittadino: check-in dallo specialista.
@@ -176,7 +177,7 @@ il cittadino annulla tutto, il percorso si ferma senza esito.
 - Test a parole: "dato `checked_in booking_id=B1` dallo specialista, mi aspetto `consent purpose=report_sharing` al cittadino prima del `report`".
 - Priorità secondo me: **P1**
 
-### [ ] P-francesco-18: rinnovo nello stesso need → stesso numero → nessun rinnovo e silenzio (GP-10)
+### [~] P-francesco-18 (in deploy): rinnovo nello stesso need → stesso numero → nessun rinnovo e silenzio (GP-10)
 - Journey: — (**da verificare**: il cittadino torna dal GP per il rinnovo con lo stesso `need_id`?) — ruolo: gp
 - Codice: `20_gp.py:170` (`new_number = _rx(message.need_id, message.msg_id)`) con `10_shared.py` `_rx` (il numero dipende solo dal `need_id`); `20_gp.py:171-181` (controlli `_we`).
 - Cosa fa il cittadino: con P1 attiva, `need.request prescription_number=prescription_number-N-…` al GP.
@@ -186,7 +187,7 @@ il cittadino annulla tutto, il percorso si ferma senza esito.
 - Test a parole: "storia con `prescribe … prescription_number=prescription_number-N-1` e messaggio del cittadino con quel numero nello stesso need → mi aspetto un `prescribe … renewal_of=prescription_number-N-1` con un numero nuovo".
 - Priorità secondo me: **P1 se P1 è attiva**, altrimenti P2
 
-### [ ] P-francesco-19: red flag nascosta accanto a una parola nota → ricetta invece del 112 (GP-03)
+### [~] P-francesco-19 (in deploy): red flag nascosta accanto a una parola nota → ricetta invece del 112 (GP-03)
 - Journey: — (livello 8, "red flag nascoste") — ruolo: gp
 - Codice: `20_gp.py:200-204`: se `_symptom` trova una parola nota ("schiena", "ginocchio"), il modello (che sa riconoscere `RED_FLAG`) non viene chiamato.
 - Cosa fa il cittadino: "Ho mal di schiena e da ieri non sento più le gambe" (non contiene la frase fissa "perdita di forza alle gambe").
@@ -196,7 +197,7 @@ il cittadino annulla tutto, il percorso si ferma senza esito.
 - Test a parole: "dato 'mal di schiena e non sento più le gambe' e il modello che risponde RED_FLAG, mi aspetto `escalate.emergency` e nessun `prescribe`".
 - Priorità secondo me: **P1**
 
-### [ ] P-francesco-20: consenso cross-ASST: "non" in qualsiasi frase = rifiuto
+### [~] P-francesco-20 (in deploy): consenso cross-ASST: "non" in qualsiasi frase = rifiuto
 - Journey: — (livello 4) — ruolo: booking_centre
 - Codice: `30_booking.py:315` (`if any(word in lowered.split() for word in {"no", "non", "rifiuto", "rifiutato"})`).
 - Cosa fa il cittadino: dopo `consent purpose=cross_asst`, risponde "Va bene, non ho problemi" o "Sì, non c'è problema".
@@ -206,7 +207,7 @@ il cittadino annulla tutto, il percorso si ferma senza esito.
 - Test a parole: "dato 'sì, non ho problemi' dopo la richiesta cross_asst, mi aspetto che la ricerca parta (o una domanda), non la lista d'attesa".
 - Priorità secondo me: **P1** dal livello 4
 
-### [ ] P-francesco-21: richiesta di consenso del booking senza `purpose=` e con un riferimento inventato
+### [~] P-francesco-21 (in deploy): richiesta di consenso del booking senza `purpose=` e con un riferimento inventato
 - Journey: — (**da verificare**: risposta del cittadino a `consent consent_required=true …`) — ruolo: booking_centre (e consultorio)
 - Codice: `30_booking.py:919-928`: `consent consent_required=true offer_id=… slot_id=… consent_ref_required=cons-<need>-booking`.
 - Cosa fa il cittadino: conferma un'offerta senza `consent_ref`.
@@ -216,7 +217,7 @@ il cittadino annulla tutto, il percorso si ferma senza esito.
 - Test a parole: "dato `confirm offer_id=of-S1` senza `consent_ref`, mi aspetto `consent purpose=booking offer_id=of-S1 …` senza `consent_ref_required`".
 - Priorità secondo me: **P1**
 
-### [ ] P-francesco-22: ricevuta doppia al cittadino (Journey 000123)
+### [~] P-francesco-22 (in deploy): ricevuta doppia al cittadino (Journey 000123)
 - Journey: 000123 — ruolo: booking_centre + strutture
 - Codice: `40_facility.py:269-283` (`_on_committed` chiamato sia nel turno del confirm, `_finish_booking`, sia nel turno della riga `committed`; nessun lock, controllo `_we` su storia vecchia); `30_booking.py:969` (`_forward_receipt` senza lock); `40_facility.py:277` (se la struttura non trova il `confirm` nella storia manda la ricevuta **direttamente** al cittadino, e il booking la gira di nuovo).
 - Cosa fa il cittadino: niente (succede dopo il commit).
@@ -226,7 +227,7 @@ il cittadino annulla tutto, il percorso si ferma senza esito.
 - Test a parole: "due turni `committed booking_id=B1` quasi insieme → una sola `booking.receipt` al booking e una sola al cittadino".
 - Priorità secondo me: **P2**
 
-### [ ] P-francesco-23: la lista d'attesa promette un ricontatto che nessuno fa
+### [~] P-francesco-23 (in deploy): la lista d'attesa promette un ricontatto che nessuno fa
 - Journey: — — ruolo: booking_centre
 - Codice: `30_booking.py:864` ("appena si libera un posto adatto glielo proponiamo"), messaggio P (`30_booking.py` ramo `priority == "P"`: "glielo propongo io, non deve richiamare"), BK-29 `30_booking.py:1210` ("le scrivo io appena se ne libera uno").
 - Cosa fa il cittadino: riceve la lista d'attesa.
