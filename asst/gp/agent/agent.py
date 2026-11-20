@@ -1454,6 +1454,7 @@ async def _cross_asst(
             chat,
             "the citizen must consent before we search for an appointment in another ASST",
             "Nella sua ASST non c'è disponibilità. Posso cercare in un'altra ASST?",
+            en="There is no free appointment in your ASST. May I look for one in another ASST?",
         )
         if await _say(city, citizen, f"consent purpose=cross_asst {line}"):
             sent.cross_asked = True
@@ -1857,6 +1858,18 @@ async def _advance_alone(
     if page < pages and page < _MAX_PAGE:
         if not _asked(chat, agent, procedure, page + 1):
             await _say(city, LEDGER, f"world procedure={procedure} page={page + 1}")
+            if page == 1 and "wait" not in sent.offers:
+                # BK-30: a long catalogue takes many Ledger turns; never leave the citizen silent.
+                sent.offers.add("wait")
+                await _say(
+                    city,
+                    citizen,
+                    "I have your request and I am checking every free appointment for you now; "
+                    "I will write again in a moment."
+                    if _lang(chat) != "it"
+                    else "Ho la sua richiesta e sto controllando tutti i posti liberi per lei; "
+                    "le riscrivo tra un momento.",
+                )
         return
     # Search another ASST only after the complete local catalogue has been exhausted.
     if await _cross_asst(city, message, chat, key, citizen, procedure, priority):
