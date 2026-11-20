@@ -22,7 +22,10 @@ Stato di ogni proposta (lo aggiorna Filippo/Claude), sulla riga del titolo:
 - `[x] risolta (ID CASI, versione online)` → fix online e verificato nei journey.
 - `[-] scartata (perché)`.
 
-Si scrive con una PR o direttamente nell'editor di GitHub su questo file (solo questo file).
+**Ognuno scrive solo nel proprio file**, così due persone non vanno mai in conflitto:
+[giulia](proposte/giulia.md) · [francesco](proposte/francesco.md) · [magesh](proposte/magesh.md) · [filippo](proposte/filippo.md).
+Nuovo membro: crea `proposte/<nome>.md`. Si scrive con l'editor di GitHub (matita → "Commit directly to main" è bloccato: scegli "Create a new branch" e apri la PR) oppure con una PR. Le PR che toccano solo `proposte/` vengono unite subito.
+In questo file restano solo il modello e lo storico.
 
 ## Dove cercare i punti persi
 
