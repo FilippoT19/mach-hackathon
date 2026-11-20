@@ -2256,8 +2256,12 @@ async def _facility(
             return
         await _partner_request(city, message, chat)  # FA-12
         return
-    if message.sender.startswith("agent:") and not _ours(message.sender):
-        return  # X-13: only our booking may confirm or cancel at our facility
+    if message.sender.startswith("agent:") and not _ours(message.sender) and not _trusted(message.sender):
+        # X-13: an unknown agent never books here, but it always gets an answer (conformance needs an effect).
+        if not _we(chat, city.agent_id, "", to=message.sender, word="cancel"):
+            await _say(city, message.sender, "cancel reason=unknown_partner Non risultate tra le ASST partner: "
+                       "scriveteci con need.request dal vostro centro prenotazioni.")
+        return
     if message.sender == LEDGER and head == "held":
         await _on_held(city, message, chat)
     elif message.sender == LEDGER and head == "committed":
