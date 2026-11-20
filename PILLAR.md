@@ -272,3 +272,25 @@ Premi: 1° MacBook Pro 14, 2° iPad, 3° AirPods Pro 3. Premio speciale Fondazio
 - **Idee da mettere negli agenti** (punti review + materiale per la finale): struttura più vicina o raggiungibile coi mezzi; per chi ha disabilità motoria la struttura accessibile; per auto vecchie (EURO 0–3) suggerire mezzi pubblici e Area B / Area C; orari che evitano viaggi inutili; frasi semplici per chi ha disabilità cognitiva o parla poco italiano.
 - **Trasparenza:** ogni messaggio dice cosa fa l'agente e perché; le emergenze vanno sempre a una persona (112).
 - **Conversazioni di esempio:** salvarle dai Journeys durante la notte, servono per il pitch.
+
+## 14. Appunti della talk (20/11, Filippo)
+
+| # | Cosa hanno detto | Cosa significa per noi | Caso in CASI.md |
+|---|---|---|---|
+| 1 | Premiano molto gli agenti che **parlano e negoziano tra loro** | Booking e strutture devono trattare: slot alternativi, controproposte, risposte alle altre ASST entro 10 s | X-24, FA-12 |
+| 2 | Vincoli dei cittadini: **lingua, genere** e altri che usciranno | Ogni vincolo nuovo diventa un filtro e una riga in CASI.md | X-10, X-11, X-26 |
+| 3 | Se sbagliamo, **il cittadino torna** finché la task non è completa | Ogni errore costa più turni e più punti persi. Riconoscere chi torna e ripartire dal punto giusto | X-25 |
+| 4 | **Proattività**: se siamo sicuri, servizio subito; se no, chiedere di descrivere meglio | Mai servizio sbagliato. Domanda mirata quando il sintomo è incerto | GP-05, GP-12 |
+| 5 | **Il Sole 24 Token** manda notizie: alcune sono indizi, altre inutili, altre ingannano | Leggere ogni notizia, confrontarla con `rules` e il Ledger. Cambiare il codice solo se la regola è confermata | OPS-03 |
+| 6 | **La giuria passa** e chiede come abbiamo costruito l'AI, accessibilità, mobilità, ambiente, vision 2027 | Tenere CASI.md e PILLAR sempre pronti; risposte brevi pronte (sotto) | — |
+| 7 | Ci sono momenti con **punti ×4** | In quei momenti niente deploy, agenti stabili, monitorare i Journeys | OPS-04 |
+
+### Risposte pronte per la giuria (30 secondi ciascuna)
+
+- **Come abbiamo costruito l'AI.** Un solo cervello per 5 agenti, diviso per ruolo. Le regole che danno punti (ricetta, prenotazione, consenso) sono codice fisso: non sbagliano. Il modello della città (`city.llm`) serve per capire il testo libero e parlare in modo umano. Il modello non decide mai da solo: ogni sua risposta passa da un controllo. Se il modello è lento, c'è sempre una frase di ripiego.
+- **Accessibilità.** Lingua del cittadino, frasi semplici, medico che parla la sua lingua, struttura accessibile in sedia a rotelle, nessun cittadino senza risposta.
+- **Mobilità.** Indirizzo della struttura e mezzo più semplice; struttura più vicina quando possiamo scegliere.
+- **Ambiente.** Con un'auto inquinante suggeriamo i mezzi pubblici o la struttura più vicina.
+- **Vision 2027.** (da scrivere insieme) Protocolli aperti per agenti pubblici che si fidano solo di mittenti firmati, chiedono il consenso prima di ogni dato e negoziano tra loro per il cittadino.
+- **Come teniamo traccia.** Ogni caso ha una riga in `CASI.md`: caso, rischio, soluzione, logica, test.
+
