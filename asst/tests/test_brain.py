@@ -24,6 +24,8 @@ class FakeCity:
         self.agent_id = agent_id
         self._peers = peers or []
         self.sent: list[tuple[str, str]] = []
+        self.find_queries: list[str] = []
+        self.peers = self._peers
         self._llm = llm
         self.inbound = None
         self.address = ""
@@ -32,9 +34,6 @@ class FakeCity:
         self.sent.append((to, text))
         return f"m-{len(self.sent)}"
 
-    async def find(self, query):
-        return list(self._peers)
-
     async def history(self, peer=None, *, need_id=None):
         return []
 
@@ -42,6 +41,10 @@ class FakeCity:
         if self._llm is None:
             raise CapError("KEY_UNKNOWN", "no key")
         return await self._llm(messages)
+
+    async def find(self, query):
+        self.find_queries.append(query)
+        return list(self.peers)
 
 
 def citizen_msg(text: str, **body) -> Message:
@@ -85,16 +88,22 @@ def slots_three() -> str:
     return "slots page=1/1\n" + "\n".join(lines)
 
 
-async def run_desk(slots: str, already: list[tuple[str, str, str]] | None = None) -> FakeCity:
+async def run_desk(
+    slots: str,
+    already: list[tuple[str, str, str]] | None = None,
+    *,
+    peers=None,
+) -> FakeCity:
     """Booking turn on a case where the Ledger already sent prescription, agenda and slots."""
     city = FakeCity("agent:bk")
+    city.peers = peers or []
     texts = [
         (CITIZEN, "agent:bk", "vorrei prenotare prescription_number=prescription_number-RX-1"),
         (LEDGER, "agent:bk", "prescription prescription_number=prescription_number-RX-1 procedure=VIS-CARD priority=B state=issued"),
         (LEDGER, "agent:bk", f"agenda agenda_now={NOW}"),
         (LEDGER, "agent:bk", slots),
     ] + (already or [])
-    chat = [row(s, r, t, i) for i, (s, r, t) in enumerate(texts)]
+    chat = [row(x[0], x[1], x[2], i) for i, x in enumerate(texts)]
     brain._SENT.clear()
     await brain._advance_alone(city, chat[3], chat, "N-1", fixed=None, replacing=False)
     return city
@@ -129,6 +138,17 @@ async def main() -> int:
     led, cit = to(c, LEDGER), to(c, CITIZEN)
     check("frase fissa -> prescribe al Ledger", led and led[0].startswith("prescribe ") and "procedure=VIS-FIS priority=B" in led[0], led)
     check("frase fissa -> ricetta + frase di ripiego", cit and cit[0].startswith("prescription ") and "centro prenotazioni" in cit[0], cit)
+
+    # 1b. GP renewal: prescription_number alone renews the old procedure and priority.
+    city = FakeCity("agent:gp")
+    renewal_chat = [
+        row(CITIZEN, "agent:gp", "need.request prescription_number=RX-OLD", 0),
+        row(LEDGER, "agent:gp", "prescription prescription_number=RX-OLD procedure=VIS-CARD priority=B state=expired", 1),
+    ]
+    await brain._gp(city, renewal_chat[0], renewal_chat)
+    renewed = to(city, LEDGER), to(city, CITIZEN)
+    check("GP renewal -> nuova prescribe", renewed[0] and renewed[0][0].startswith("prescribe ") and "procedure=VIS-CARD priority=B" in renewed[0][0], renewed)
+    check("GP renewal -> nuova prescription al cittadino", renewed[1] and renewed[1][0].startswith("prescription ") and "procedure=VIS-CARD" in renewed[1][0], renewed)
 
     # 2. Free text the phrases miss: the model maps it to a known code.
     c = await run_gp("mi si è gonfiato il ginocchio sinistro giocando a calcetto", model("SYM-KNEE"))
@@ -179,23 +199,56 @@ async def main() -> int:
     cit = to(city, CITIZEN)
     check("GP-13 anche la ricetta dal Ledger ha la frase", cit and cit[0].startswith("prescription ") and "Come suo medico di base" in cit[0], cit)
 
-    # 10. BK-10: no slot fits and no page is left -> relaxed alternative (waiting list), not silence.
-    c = await run_desk(slots_far(pages="1/1"))
+    # 10. BK-10: no local slot -> ask for cross-ASST consent, then use the waiting list if no peer answers.
+    cross_consent = [
+        ("agent:bk", CITIZEN, "consent purpose=cross_asst", 4),
+        (CITIZEN, "agent:bk", "consent purpose=cross_asst consent_ref=cons-N-1-cross", 5),
+    ]
+    c = await run_desk(slots_far(pages="1/1"), already=cross_consent)
     cit = to(c, CITIZEN)
     check("BK-10 nessuno slot -> lista d'attesa al cittadino", len(cit) == 1 and "waiting_list=true" in cit[0] and "offer_id=wl-N-1" in cit[0], c.sent)
     check("BK-10 lista d'attesa con frase umana", cit and "lista d'attesa" in cit[0].lower(), cit)
-    c = await run_desk(slots_far(pages="1/1"), already=[("agent:bk", CITIZEN, "offer offer_id=wl-N-1 waiting_list=true")])
+    c = await run_desk(
+        slots_far(pages="1/1"),
+        already=cross_consent + [("agent:bk", CITIZEN, "offer offer_id=wl-N-1 waiting_list=true")],
+    )
     check("BK-10 lista d'attesa una volta sola", not to(c, CITIZEN), c.sent)
 
     # 11. BK-10: another page exists -> ask the Ledger for it, do not offer the waiting list yet.
     c = await run_desk(slots_far(pages="1/2"))
     check("BK-10 c'è pagina 2 -> chiede pagina 2", any("page=2" in t for t in to(c, LEDGER)) and not to(c, CITIZEN), c.sent)
 
-    # 12. A fitting slot is still offered as before.
+    # 12. BK-12: after local pages are exhausted, query a facility peer without citizen data.
+    remote = {"id": "agent:remote-hospital", "role": "facility", "capabilities": ["hospital.physiatry"]}
+    c = await run_desk(slots_far(pages="1/1"), already=cross_consent, peers=[remote])
+    partner = to(c, "agent:remote-hospital")
+    check("BK-12 consenso cross-ASST prima della ricerca", partner and partner[0].startswith("need.request "), c.sent)
+    check("BK-12 nessun dato cittadino nella richiesta", partner and CITIZEN not in partner[0] and "prescription_number" not in partner[0], partner)
+
+    # 13. A fitting slot is still offered as before.
     c = await run_desk(slots_near())
     check("slot adatto -> offerta normale", any(t.startswith("offer ") and "slot_id=S-NEAR" in t for t in to(c, CITIZEN)), c.sent)
+    preferred = brain.fitting(
+        [line for line in slots_three().splitlines() if "slot_id=" in line],
+        now=brain._when(NOW),
+        priority="B",
+        lang="it",
+        days=frozenset({"thu"}),
+        procedure="VIS-CARD",
+    )
+    check("BK-11 giorni preferiti -> slot del giorno prima", preferred and preferred[0]["slot_id"] == "S-2", preferred)
 
-    # 13. BK-14: three fitting slots -> ONE message with three offer lines + one human sentence.
+    # 14. GP renewal: an expired prescription gets a renewal request instead of booking.
+    city = FakeCity("agent:bk")
+    renewal_chat = [
+        row(CITIZEN, "agent:bk", "vorrei prenotare prescription_number=RX-OLD", 0),
+        row(LEDGER, "agent:bk", "refused prescription_number=RX-OLD reason=PRESCRIPTION_EXPIRED", 1),
+    ]
+    await brain._advance_alone(city, renewal_chat[1], renewal_chat, "N-1", fixed=None, replacing=False)
+    renewal = to(city, CITIZEN)
+    check("GP-10 ricetta scaduta -> richiesta rinnovo", renewal and renewal[0].startswith("data.request ") and "purpose=prescription_renewal" in renewal[0], renewal)
+
+    # 15. BK-14: three fitting slots -> ONE message with three offer lines + one human sentence.
     c = await run_desk(slots_three())
     cit = to(c, CITIZEN)
     check("BK-14 un solo messaggio al cittadino", len(cit) == 1, cit)
@@ -203,9 +256,12 @@ async def main() -> int:
     lines = cit[0].splitlines() if cit else []
     check("BK-14 una offerta per riga", sum(l.startswith("offer ") for l in lines) == 3 and all(l.count("offer_id=") <= 1 for l in lines), lines)
 
-    # 14. BK-14: the citizen confirms the SECOND offer -> we confirm slot S-2, not the first line.
+    # 16. BK-14: the citizen confirms the SECOND offer -> we confirm slot S-2, not the first line.
     bundle = cit[0] if cit else ""
     city = FakeCity("agent:bk")
+    city.peers = [
+        {"id": "agent:spec", "role": "facility", "capabilities": ["specialist_care.cardiology"]}
+    ]
     chat = [
         row(CITIZEN, "agent:bk", "vorrei prenotare prescription_number=prescription_number-RX-1", 0),
         row("agent:bk", CITIZEN, bundle, 1),
