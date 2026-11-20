@@ -5,6 +5,15 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 
 <!-- aggiungi qui sotto -->
 
+### [ ] P-magesh-7 (CO-20): "senza ricetta" al consultorio è nel codice ma non in CASI.md e non ha test
+- Journey: nessuno (lettura del codice su `main` 69870f8) — ruolo: family_counseling
+- Cosa fa il cittadino: chiede una visita al consultorio senza numero di ricetta, es. "vorrei una visita ginecologica"
+- Cosa risponde oggi il nostro agente: bene. Offre fino a 3 slot con la ginecologa e la frase "Al consultorio si accede direttamente, senza ricetta… I suoi dati restano riservati al consultorio" (`30_booking.py:784`, commento `CO-20`). Però CO-20 non ha una riga in CASI.md, e in `tests/test_brain.py` compare solo nel commento della sezione 26 (riga 442), senza nessun `check` sul consultorio. Anche CO-01 ha ancora "manca test"
+- Review / punti persi: nessuno oggi; il rischio è perderli dopo: se una modifica allo sportello condiviso (`_desk`, usato anche da booking_centre) fa chiedere la ricetta al consultorio, nessun test se ne accorge (−1 secondo CO-01)
+- Cosa dovrebbe fare: nessun cambio al comportamento. (1) Aggiungere la riga CO-20 in CASI.md (oppure unirla a CO-01, se è lo stesso caso): caso "il consultorio dice che non serve ricetta e che i dati restano riservati", soluzione "frase fissa CO-20 nell'offerta quando `fixed=CONS-GIN`", test. (2) Aggiungere in `test_brain.py` un `check` per il consultorio, che copre anche il "manca test" di CO-01
+- Test a parole: "dato 'vorrei una visita ginecologica' al consultorio, senza `prescription_number`, mi aspetto almeno un `offer` con il medico `c1` e la frase 'senza ricetta', e nessuna richiesta di ricetta (`prescription.note` / `prescription.wait`)"; "dato lo stesso messaggio in inglese, mi aspetto la frase 'needs no prescription'"
+- Priorità secondo te: P2 (non perde punti oggi, protegge da regressioni)
+
 ### [ ] P-magesh-6 (CO-10): red flag in gravidanza al consultorio → offerte invece del 112
 - Journey: nessuno (lettura del codice su `main` 98d473f) — ruolo: family_counseling
 - Cosa fa il cittadino: una cittadina incinta scrive al consultorio, es. "sono incinta e ho perdite di sangue", "ho un dolore forte alla pancia", "ho le contrazioni", "I'm pregnant and bleeding"
