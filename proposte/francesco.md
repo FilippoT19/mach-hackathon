@@ -5,6 +5,135 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 
 <!-- aggiungi qui sotto -->
 
+> **Giro 2: problemi che restano su `main` @ `d493e37`** (righe di `asst/brain/parts/`; `seats.py --check`
+> e `test_brain.py` verdi). Fonti: `docs/kit/e19-rules.md`, `booking_centre.md`, `facility.md`, formato comune
+> cross-ASST (Discord #mach-2026), Journeys wave W01QQQ (000054, 000123), REGISTRO G2.
+> Già risolti e quindi **non** riproposti: lingua rara h3 (`_speaks`), `lang/gender/days` nel `need.request`
+> (X-44), `wheelchair=true`, `cross_asst_consent_ref`, check-in con nuovo tentativo e risposta sempre (P-francesco-1..9).
+> Ordine = priorità. **12 e 13 sono regressioni** dei fix di giro 1: vanno guardate per prime.
+
+### [ ] P-francesco-12: un `checkin` con una domanda non viene registrato (regressione di P-francesco-4)
+- Journey: — (**da verificare**: check-in del cittadino con "?" o "quando" seguito da `facility.note`) — ruolo: hospital, specialist, family_counseling
+- Codice: `40_facility.py:87` (`elif head == "checkin" … and not _checkin_question(message.text)`), `40_facility.py:100-102` (`_checkin_question`: basta `?`, `quando`, `when` o una parola di `_RESCHEDULE` come sottostringa: `cancel`, `move`, `cambia`, `spost`, `annull`).
+- Cosa fa il cittadino: `checkin booking_id=B1 ledger_ref=L1 Buongiorno, sono arrivata. Devo aspettare molto?` (tono ansioso: e19 dice che il tono cambia le parole, non l'atto).
+- Cosa risponde oggi il nostro agente: il messaggio va in `_facility_free_text`; `_explicit_arrival` è falso per via della domanda; risponde `facility.note` con gli orari. **Nessun `checkin` al Ledger.**
+- Review / punti persi: "Check-in onorato su ricevuta valida" +2 perso; probabile "Ricevuta valida rifiutata" **−2**.
+- Cosa dovrebbe fare: con l'atto `checkin` **e** `booking_id=` si registra sempre (il giudice legge atto + token). `_checkin_question` va usato solo per testo libero **senza** atto `checkin`. Le sottostringhe vanno confrontate a parole intere (`move` non deve scattare in "remove", `cambia` in "cambiato").
+- Test a parole: "dato `checkin booking_id=B1 ledger_ref=L1 sono arrivata, quanto devo aspettare?`, mi aspetto `checkin booking_id=B1 citizen=…` al Ledger".
+- Priorità secondo me: **P0**
+
+### [ ] P-francesco-13: `held` senza `fence=` → ogni prenotazione viene annullata (regressione di P-francesco-6)
+- Journey: — (**da verificare subito**: cercare `cancel … reason=missing_fence` dopo il rilascio di #48) — ruolo: hospital, specialist, family_counseling
+- Codice: `40_facility.py:257-261`: `fence = fields.get("fence", "")`; `if not consent or not fence:` → `cancel hold_id=…` + `cancel … reason=missing_fence`.
+- Cosa fa il booking: `confirm` valido; il Ledger risponde `held hold_id=… slot_id=…`.
+- Cosa risponde oggi il nostro agente: se la riga `held` non ha `fence=`, annulla l'hold e la prenotazione. Prima c'era `fence=1` di ripiego (come nel brain di esempio del kit, `fields.get('fence', '1')`).
+- Review / punti persi: nessuna prenotazione → −1 booking, slot non onorato; se capita sempre, **tutti** i percorsi falliscono.
+- Cosa dovrebbe fare: e19 documenta `commit hold_id=… consent_ref=…` **senza** `fence`. Se `fence` manca, mandare il `commit` senza `fence` (o con il valore del brain d'esempio); annullare solo se manca `consent_ref`. Il simulatore (`tests/test_journey.py:79`) mette sempre `fence=1`, quindi i test non vedono il caso.
+- Test a parole: "dato `held hold_id=H1 slot_id=S1` (senza fence) e consenso nella storia, mi aspetto `commit hold_id=H1 consent_ref=…` e nessun `cancel`".
+- Priorità secondo me: **P0 se nei Journeys compare `missing_fence`**, altrimenti P2
+
+### [ ] P-francesco-14: dopo l'annullo del cittadino (`reason=deadline`) il booking tace o perde slot validi (REGISTRO G2, Journey 000054)
+- Journey: 000054 (slot 11 nov annullato, poi niente), 129 — ruolo: booking_centre
+- Codice: `30_booking.py:1226` (`_citizen_cancel` → `_advance(replacing=False)`); `30_booking.py:823-835`; `30_booking.py:1204-1213` (BK-29).
+- Cosa fa il cittadino: `cancel offer_id=of-S1 reason=deadline`.
+- Cosa risponde oggi il nostro agente:
+  1. `replacing=False` → `taken` = **tutti** gli slot offerti: anche i due non annullati (magari validi) non vengono più proposti.
+  2. Se nella pagina non resta niente, chiede `world … page=2` e chiude il turno (`:835`). La risposta del Ledger apre un turno con mittente `city:ledger`: `dropped` è falso e `taken` non è vuoto → `:824` **esce senza dire niente**. La promessa "cerco subito altri appuntamenti" non viene mantenuta.
+  3. Al secondo annullo (BK-29) manda `cancel.ack … waiting_list=true`: **non** è un atto `offer` con `offer_id=` (e19: `offer_id=` + `waiting_list=true`), quindi il giudice potrebbe non vedere l'alternativa (0 → −1).
+- Review / punti persi: "nessuna prenotazione con S non vuoto" **−1** (tutti i 12 fallimenti della wave sono di questo tipo); review −1.
+- Cosa dovrebbe fare: annullo del cittadino = escludere **solo** lo slot annullato (come `_partner_cancel`, `replacing=True` con `_withdrawn`); accettare la risposta `slots page=N` del Ledger anche dopo un annullo (marcare la ricerca in corso); lista d'attesa sempre come `offer offer_id=wl-<need> waiting_list=true procedure=… priority=…`. Causa a monte: lo slot oltre la scadenza → verificare in 000054 la data di emissione della ricetta e il campo che `_before_rx_deadline` legge (`30_booking.py:250-268`).
+- Test a parole: "offerte S1,S2,S3; il cittadino annulla S1 per deadline → mi aspetto S2/S3 di nuovo (se nei tempi) o la pagina 2; alla risposta `slots page=2` del Ledger mi aspetto un'offerta o `offer … waiting_list=true`, mai silenzio".
+- Priorità secondo me: **P0**
+
+### [ ] P-francesco-15: le offerte delle altre ASST arrivano al cittadino così come sono (rischio −2 al booking)
+- Journey: — (livello 4) — ruolo: booking_centre
+- Codice: `30_booking.py:543-546` (`_partner_offer`: `text = message.text` + `cross_asst=true`, inviato al cittadino).
+- Cosa fa il partner: risponde nel formato comune: `offer offer_id=… slot_id=… doctor_id=… facility=… procedure=… agenda_date=… doctor_lang=… doctor_gender=… request_id=… wheelchair=true` + frase per gli agenti ("mandateci confirm…").
+- Cosa risponde oggi il nostro agente: gira tutto al cittadino, compresi `doctor_lang`, `doctor_gender`, `request_id` e la frase del partner. Non controlla che `doctor_lang` sia la lingua del cittadino.
+- Review / punti persi: e19 (`offer`: niente attributi del medico, solo `doctor_id`) e formato comune ("verso il cittadino solo doctor_id"): un attributo sbagliato = audit **−2** all'agente che manda l'offerta al cittadino, cioè **noi**. Testo di un altro agente al cittadino = rischio injection.
+- Cosa dovrebbe fare: ricostruire la riga con i soli token ufficiali (`offer_id`, `slot_id`, `doctor_id`, `facility`, `procedure`, `agenda_date`, `agenda_day`, `priority`, `prescription_number`, `expiry`, `cross_asst=true`) e la **nostra** frase; scartare righe con `doctor_lang` diverso dalla lingua del cittadino (se c'è); un solo messaggio con tutte le righe dei partner (e19: la scelta si fa sul primo messaggio).
+- Test a parole: "data l'offerta di un partner con `doctor_lang=fr doctor_gender=m request_id=r1` e frase, mi aspetto al cittadino solo i token ufficiali, senza `doctor_lang`, `doctor_gender`, `request_id` e senza la frase del partner".
+- Priorità secondo me: **P1** (P0 al livello 4)
+
+### [ ] P-francesco-16: impostori (sabato dalle 10): filtro spento, ricevute e annulli mai filtrati
+- Journey: — (livello 8) — ruolo: booking_centre (e strutture)
+- Codice: `10_shared.py:74, 90-93` (`_TRUSTED_PARTNERS` vuoto → `_trusted` vero per tutti; `_KNOWN_PARTNERS` ha solo Lorenteggio); `30_booking.py:969` (`_forward_receipt`) e `30_booking.py:1020` (`_partner_cancel`) **non** chiamano `_trusted`.
+- Cosa fa l'impostore: manda al booking `booking.receipt booking_id=X ledger_ref=Y` o `cancel offer_id=…`.
+- Cosa risponde oggi il nostro agente: gira la ricevuta falsa al cittadino (prenotazione fantasma) o annulla e rioffre. Anche con l'elenco acceso, questi due rami restano aperti.
+- Review / punti persi: ricevuta senza commit **−2** (booking), injection obbedita **−2**.
+- Cosa dovrebbe fare: ricevuta e `cancel` accettati **solo** dalla struttura a cui abbiamo mandato il `confirm` per quel need (riga nostra `confirm … slot_id=` verso quel mittente); `offer` solo da chi ha ricevuto il nostro `need.request` (`sent.cross_peers`). Non serve un elenco globale (che bloccherebbe partner veri non pubblicati); gli elenchi su Discord possono essere falsi, il nome nel testo ("SPQ (quelli veri)") non conta, conta l'id del mittente.
+- Test a parole: "dato `booking.receipt booking_id=X ledger_ref=Y` da `agent:sconosciuto` a cui non abbiamo mandato confirm, mi aspetto nessun messaggio al cittadino".
+- Priorità secondo me: **P0 da sabato 10:00**, P2 prima
+
+### [ ] P-francesco-17: specialista: referto senza consenso e senza follow-up (SP-10, SP-11)
+- Journey: — (**da verificare**: verdetto "Referto archiviato e follow-up per protocollo") — ruolo: specialist
+- Codice: `40_facility.py:541-542` (`report … outcome_code=VISIT` subito dopo `checked_in`); `40_facility.py:554-571` (frase: "il suo medico di base può consultarlo; se serve un controllo, sarà lui a indicarglielo").
+- Cosa fa il cittadino: check-in dallo specialista.
+- Cosa risponde oggi il nostro agente: archivia il referto senza `consent purpose=report_sharing` e senza `consent_ref`; non fa mai `prescribe … follow_up_of=<booking_id>` (`CTRL-CARD`). Dice che il follow-up lo decide il medico di base e che il GP può leggere il referto (senza consenso alla condivisione).
+- Review / punti persi: +2 "referto e follow-up per protocollo" mai raggiunto; livello 3 = "referto con consenso"; frase non vera → review/audit.
+- Cosa dovrebbe fare (e19 "Referti", facility.md punto 4): dopo il check-in `consent purpose=report_sharing`; con `consent_ref` → `report booking_id=… outcome_code=… consent_ref=…`; senza → archiviare comunque, non condiviso. Se serve controllo: `prescribe patient=… procedure=CTRL-CARD priority=… follow_up_of=<booking_id>` e nel report `follow_up_prescription_number=…`. La frase al cittadino dice cosa è successo davvero.
+- Test a parole: "dato `checked_in booking_id=B1` dallo specialista, mi aspetto `consent purpose=report_sharing` al cittadino prima del `report`".
+- Priorità secondo me: **P1**
+
+### [ ] P-francesco-18: rinnovo nello stesso need → stesso numero → nessun rinnovo e silenzio (GP-10)
+- Journey: — (**da verificare**: il cittadino torna dal GP per il rinnovo con lo stesso `need_id`?) — ruolo: gp
+- Codice: `20_gp.py:170` (`new_number = _rx(message.need_id, message.msg_id)`) con `10_shared.py` `_rx` (il numero dipende solo dal `need_id`); `20_gp.py:171-181` (controlli `_we`).
+- Cosa fa il cittadino: con P1 attiva, `need.request prescription_number=prescription_number-N-…` al GP.
+- Cosa risponde oggi il nostro agente: se il `need_id` è quello della prima ricetta, `new_number` = vecchio numero; `_we` trova già `prescribe` e `prescription` → nessun `prescribe` al Ledger e `return` **muto**.
+- Review / punti persi: ricetta scaduta mai rinnovata → booking −1 (regola ignorata) o nessuna prenotazione; review −1.
+- Cosa dovrebbe fare: numero del rinnovo diverso dal vecchio (per esempio suffisso `-R1`, `-R2` contando i rinnovi nella storia); se resta uguale, mai silenzio.
+- Test a parole: "storia con `prescribe … prescription_number=prescription_number-N-1` e messaggio del cittadino con quel numero nello stesso need → mi aspetto un `prescribe … renewal_of=prescription_number-N-1` con un numero nuovo".
+- Priorità secondo me: **P1 se P1 è attiva**, altrimenti P2
+
+### [ ] P-francesco-19: red flag nascosta accanto a una parola nota → ricetta invece del 112 (GP-03)
+- Journey: — (livello 8, "red flag nascoste") — ruolo: gp
+- Codice: `20_gp.py:200-204`: se `_symptom` trova una parola nota ("schiena", "ginocchio"), il modello (che sa riconoscere `RED_FLAG`) non viene chiamato.
+- Cosa fa il cittadino: "Ho mal di schiena e da ieri non sento più le gambe" (non contiene la frase fissa "perdita di forza alle gambe").
+- Cosa risponde oggi il nostro agente: `prescribe … VIS-FIS B` e ricetta.
+- Review / punti persi: "Red flag senza escalation" **−2** (primo agente).
+- Cosa dovrebbe fare: chiedere al modello solo "red flag sì/no" anche quando la parola nota c'è (con il ripiego attuale se il modello non risponde); oppure ampliare le frasi fisse per sintomo (SYM-BACK: gambe deboli/che non si muovono/formicolio, controllo di vescica; SYM-PALPITATIONS: dolore/peso al petto, svenimento).
+- Test a parole: "dato 'mal di schiena e non sento più le gambe' e il modello che risponde RED_FLAG, mi aspetto `escalate.emergency` e nessun `prescribe`".
+- Priorità secondo me: **P1**
+
+### [ ] P-francesco-20: consenso cross-ASST: "non" in qualsiasi frase = rifiuto
+- Journey: — (livello 4) — ruolo: booking_centre
+- Codice: `30_booking.py:315` (`if any(word in lowered.split() for word in {"no", "non", "rifiuto", "rifiutato"})`).
+- Cosa fa il cittadino: dopo `consent purpose=cross_asst`, risponde "Va bene, non ho problemi" o "Sì, non c'è problema".
+- Cosa risponde oggi il nostro agente: lo legge come rifiuto → niente ricerca nelle altre ASST → lista d'attesa.
+- Review / punti persi: con S non vuoto nell'ASST partner (livello 4) **−1**.
+- Cosa dovrebbe fare: consenso = `consent_ref=` presente; rifiuto = `consent` senza ref o parole di rifiuto chiare all'inizio ("no", "non voglio", "rifiuto", "preferisco di no"); se ambiguo, una domanda.
+- Test a parole: "dato 'sì, non ho problemi' dopo la richiesta cross_asst, mi aspetto che la ricerca parta (o una domanda), non la lista d'attesa".
+- Priorità secondo me: **P1** dal livello 4
+
+### [ ] P-francesco-21: richiesta di consenso del booking senza `purpose=` e con un riferimento inventato
+- Journey: — (**da verificare**: risposta del cittadino a `consent consent_required=true …`) — ruolo: booking_centre (e consultorio)
+- Codice: `30_booking.py:919-928`: `consent consent_required=true offer_id=… slot_id=… consent_ref_required=cons-<need>-booking`.
+- Cosa fa il cittadino: conferma un'offerta senza `consent_ref`.
+- Cosa risponde oggi il nostro agente: chiede il consenso **senza** `purpose=` e propone lui il riferimento.
+- Review / punti persi: e19: "il cittadino risponde solo per gli scopi che accetta" (`consent purpose=…`); senza `purpose` può non rispondere → prenotazione bloccata (−1). Riferimento inventato = identificativo indovinato.
+- Cosa dovrebbe fare: `consent purpose=booking offer_id=… slot_id=…` + frase; il `consent_ref` lo dà il cittadino.
+- Test a parole: "dato `confirm offer_id=of-S1` senza `consent_ref`, mi aspetto `consent purpose=booking offer_id=of-S1 …` senza `consent_ref_required`".
+- Priorità secondo me: **P1**
+
+### [ ] P-francesco-22: ricevuta doppia al cittadino (Journey 000123)
+- Journey: 000123 — ruolo: booking_centre + strutture
+- Codice: `40_facility.py:269-283` (`_on_committed` chiamato sia nel turno del confirm, `_finish_booking`, sia nel turno della riga `committed`; nessun lock, controllo `_we` su storia vecchia); `30_booking.py:969` (`_forward_receipt` senza lock); `40_facility.py:277` (se la struttura non trova il `confirm` nella storia manda la ricevuta **direttamente** al cittadino, e il booking la gira di nuovo).
+- Cosa fa il cittadino: niente (succede dopo il commit).
+- Cosa risponde oggi il nostro agente: due `booking.receipt` con lo stesso `booking_id`.
+- Review / punti persi: cittadino confuso (review −1); nessun punto di rubrica diretto.
+- Cosa dovrebbe fare: un turno alla volta per need sulla ricevuta (come `_CHECKIN_GATES`) e ricontrollo della storia dentro il lock; la struttura manda la ricevuta al cittadino solo se nessun booking ha chiesto la prenotazione.
+- Test a parole: "due turni `committed booking_id=B1` quasi insieme → una sola `booking.receipt` al booking e una sola al cittadino".
+- Priorità secondo me: **P2**
+
+### [ ] P-francesco-23: la lista d'attesa promette un ricontatto che nessuno fa
+- Journey: — — ruolo: booking_centre
+- Codice: `30_booking.py:864` ("appena si libera un posto adatto glielo proponiamo"), messaggio P (`30_booking.py` ramo `priority == "P"`: "glielo propongo io, non deve richiamare"), BK-29 `30_booking.py:1210` ("le scrivo io appena se ne libera uno").
+- Cosa fa il cittadino: riceve la lista d'attesa.
+- Cosa risponde oggi il nostro agente: promette di riscrivere; nessun codice lo fa (gli agenti non hanno timer, e19: il percorso finisce DONE con la lista d'attesa).
+- Review / punti persi: promessa falsa → review (proattività/onestà).
+- Cosa dovrebbe fare: dire cosa succede davvero: "è in lista d'attesa per <procedura>; se vuole un posto prima, ci riscriva o richiami il medico se il disturbo cambia".
+- Priorità secondo me: **P2**
+
 > **Ospedale: check-in, testo libero, prenotazione.** Analisi del codice di `main` @ `6f68a93`
 > (righe di `asst/brain/parts/`), confrontato con `docs/kit/e19-rules.md` e `docs/kit/facility.md`.
 > Nessun Journey ancora: dove serve la conferma c'è scritto **da verificare nei Journeys**.
