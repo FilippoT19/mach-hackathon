@@ -33,10 +33,12 @@ async def _escalate(city: City, message: Message, chat: list[Message]) -> None:
             message.sender,
             "escalate.emergency reason=red_flag Capisco, quello che mi descrive va preso sul "
             "serio subito. Chiami subito il 112 o vada al pronto soccorso più vicino. Non si "
-            "metta alla guida: se può, si faccia accompagnare e non resti da solo. Avviso "
-            "anche il nostro ospedale. / I understand, this needs attention right now. Call "
-            "112 or go to the nearest emergency room. Do not drive: if you can, ask someone "
-            "to go with you. I am also telling our hospital.",
+            "metta alla guida: se può, si faccia accompagnare e non resti da solo. Il pronto "
+            "soccorso più vicino nella nostra zona è il nostro ospedale in Via Arganini Gerolamo 38 "
+            "(accessibile in sedia a rotelle): li avviso io adesso. / I understand, this needs "
+            "attention right now. Call 112 or go to the nearest emergency room. Do not drive: if "
+            "you can, ask someone to go with you. The nearest emergency room in our area is our "
+            "hospital at Via Arganini Gerolamo 38 (wheelchair accessible): I am telling them now.",
         )
     # X-42: proactive — ask where the citizen is, then name the nearest emergency room (map).
     if message.sender.startswith("citizen:") and not _we(chat, agent, "purpose=emergency", to=message.sender, word="data.request"):
