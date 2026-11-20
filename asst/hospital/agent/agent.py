@@ -1465,6 +1465,16 @@ async def _cross_asst(
         ]
         if priority:
             parts.append(f"priority={priority}")
+        # X-44: the citizen's criteria travel with the request (no personal data).
+        want_lang = _lang(chat)
+        if want_lang and want_lang != "it":
+            parts.append(f"lang={want_lang}")
+        want_gender = _gender(chat)
+        if want_gender:
+            parts.append(f"gender={want_gender}")
+        want_days = _days(chat)
+        if want_days:
+            parts.append("days=" + "/".join(sorted(want_days)))
         if await _say(city, target, " ".join(parts)):
             sent.cross_peers.add(target)
             sent_any = True
