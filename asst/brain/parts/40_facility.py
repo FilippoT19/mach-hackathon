@@ -34,6 +34,19 @@ async def _facility(
 ) -> None:
     head = first_word(message.text)
     kind = words(message.text)
+    if head == "emergency.notice" and message.sender.startswith("agent:"):
+        # X-28: the gp warns us of a red flag. Answer at once (clock +1), once per need.
+        if not _we(chat, city.agent_id, "emergency.ack", to=message.sender, word="emergency.ack"):
+            await _say(
+                city,
+                message.sender,
+                "emergency.ack Ricevuto: se il cittadino arriva da noi lo accogliamo subito e lo "
+                "accompagniamo al pronto soccorso.",
+            )
+        return
+    if head == "need.request" and message.sender.startswith("agent:"):
+        await _partner_request(city, message, chat)  # FA-12
+        return
     if message.sender == LEDGER and head == "held":
         await _on_held(city, message, chat)
     elif message.sender == LEDGER and head == "committed":
@@ -48,6 +61,41 @@ async def _facility(
         await _on_checkin(city, message, chat, reports=reports)
     elif "confirm" in kind:
         await _on_confirm(city, message, chat, hold_self=hold_self)
+    elif message.sender.startswith("citizen:"):
+        await _facility_free_text(city, message, chat, reports=reports)
+
+
+_ARRIVED = ("check-in", "check in", "sono arrivat", "sono qui", "i am here", "i'm here", "i have arrived", "arrived")
+
+
+async def _facility_free_text(city: City, message: Message, chat: list[Message], *, reports: bool) -> None:
+    """FA-20: a citizen text that is not a checkin/confirm never gets silence."""
+    low = message.text.lower()
+    if "booking_id=" in message.text or any(w in low for w in _ARRIVED):
+        number = fields_of(message.text).get("booking_id") or next(
+            (fields_of(r.text).get("booking_id") for r in reversed(chat) if fields_of(r.text).get("booking_id")), None
+        )
+        if number:
+            fake = Message(type=message.type, sender=message.sender, recipient=message.recipient,
+                           msg_id=message.msg_id, need_id=message.need_id,
+                           body={"text": f"checkin booking_id={number} {message.text}"})
+            await _on_checkin(city, fake, chat, reports=reports)
+            return
+    if _we(chat, city.agent_id, "", to=message.sender, word="facility.note"):
+        return
+    en = _lang([*chat, message]) != "it"
+    await _say(
+        city,
+        message.sender,
+        "facility.note "
+        + (
+            "Hello, this is the facility. To book or move a visit please write to our booking "
+            "centre; if you are already here, give me the number on your receipt and I will register your arrival."
+            if en
+            else "Buongiorno, sono la struttura. Per prenotare o spostare una visita scriva al nostro "
+            "centro prenotazioni; se è già qui, mi dia il numero della ricevuta e registro subito il suo arrivo."
+        ),
+    )
 
 
 def _booking_of(chat: list[Message], agent: str, slot_id: str) -> tuple[str, str, str | None]:
@@ -244,7 +292,11 @@ async def _on_checked_in(
             city,
             chat,
             "the citizen has checked in at the facility; the doctor will see them shortly",
-            "Check-in registrato, benvenuto. Il medico la riceve a breve.",
+            "Check-in registrato, benvenuto e grazie di essere arrivato puntuale. Il medico la "
+            "riceve a breve; se ha bisogno di assistenza o di un accompagnamento, lo dica pure "
+            "al nostro personale.",
+            en="You are checked in, welcome and thank you for being on time. The doctor will see "
+            "you shortly; if you need assistance or someone to accompany you, just ask our staff.",
         )
         await _say(city, citizen, f"checkin booking_id={booking_id} {line}")
     if not reports:
@@ -270,6 +322,67 @@ async def _on_reported(city: City, message: Message, chat: list[Message]) -> Non
         city,
         chat,
         "the specialist visit is done and the report is filed; the citizen's GP can read it",
-        "La visita è conclusa e il referto è archiviato. Il suo medico di base può consultarlo.",
+        "La visita è conclusa e il referto è archiviato. Il suo medico di base può consultarlo; "
+        "se serve un controllo, sarà lui a indicarglielo. Grazie di essersi affidato a noi.",
+        en="Your visit is complete and the report is filed. Your GP can read it and will tell "
+        "you if a follow-up is needed. Thank you for trusting us.",
     )
     await _say(city, citizen, f"report booking_id={booking_id} outcome_code=VISIT {line}")
+
+
+# --- FA-12: cross-ASST request from another booking centre (format agreed in the group) ------
+_RARE_LANG = {"h3": "vi"}  # our h3 physiatrist speaks Vietnamese (registry)
+_PARTNER_DONE: set[str] = set()
+
+
+def _doctor_tokens(doctor_id: str) -> str:
+    short = doctor_id.rsplit("-", 1)[-1]
+    spec = _DOCTORS.get(short)
+    if spec is None:
+        return ""
+    langs = sorted(l for l in spec[0] if l != "*")
+    if short in _RARE_LANG:
+        langs.append(_RARE_LANG[short])
+    return f"doctor_lang={'/'.join(langs)} doctor_gender={spec[1]}"
+
+
+async def _partner_request(city: City, message: Message, chat: list[Message]) -> None:
+    """Answer within seconds with our fitting slots, one per line; no citizen data needed."""
+    fields = fields_of(message.text)
+    request_id = fields.get("request_id") or message.need_id or message.msg_id
+    if request_id in _PARTNER_DONE:
+        return
+    procedure = fields.get("procedure", "")
+    priority = fields.get("priority") or None
+    agent = city.agent_id
+    if not procedure:
+        _PARTNER_DONE.add(request_id)
+        await _say(city, message.sender, f"cancel reason=no_availability request_id={request_id} Manca procedure=.")
+        return
+    if not _exact(chat, agent, "agenda"):
+        await _say(city, LEDGER, "agenda")
+    await _say(city, LEDGER, f"world procedure={procedure} facility={agent} page=1")
+    chat = await _until(city, message.need_id, chat, lambda rows: _has_agenda(rows) and _latest_slots(rows) is not None)
+    agenda = _ledger(chat, "agenda")
+    now = _when("" if agenda is None else agenda.get("agenda_now", ""))
+    world = _latest_slots(chat)
+    _PARTNER_DONE.add(request_id)
+    picks = []
+    if now is not None and world is not None:
+        picks = fitting(
+            [line for line in world.splitlines() if "slot_id=" in line],
+            now=now, priority=priority, lang=fields.get("lang", "it"),
+            gender=fields.get("gender") or None, facility=agent, procedure=procedure,
+        )[:3]
+    if not picks:
+        await _say(city, message.sender, f"cancel reason=no_availability request_id={request_id} Al momento non abbiamo posti adatti per {procedure}.")
+        return
+    lines = [
+        f"offer offer_id=of-{s['slot_id']} slot_id={s['slot_id']} doctor_id={s['doctor_id']} facility={agent} "
+        f"procedure={s['procedure']} agenda_date={s['at']} {_doctor_tokens(s['doctor_id'])} request_id={request_id}"
+        for s in picks
+    ]
+    await _say(city, message.sender, "\n".join(lines + [
+        "Ecco i nostri posti liberi. Dopo il consenso cross_asst del cittadino mandateci confirm "
+        "con offer_id, slot_id, citizen, consent_ref e prescription_number: rispondiamo con la ricevuta."
+    ]))

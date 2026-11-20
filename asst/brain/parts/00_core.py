@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import re
 from collections import OrderedDict
@@ -45,7 +46,7 @@ _PROTOCOLS: dict[str, tuple[str, str]] = {
 _KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("SYM-BACK", ("mal di schiena", "back pain")),
     ("SYM-KNEE", ("ginocchio", "knee")),
-    ("SYM-PALPITATIONS", ("cuore che batte", "heart racing")),
+    ("SYM-PALPITATIONS", ("cuore che batte", "heart racing", "palpitazion", "palpitation", "batticuore", "heart pounding", "heart beating fast", "heartbeat")),
     ("SYM-FOLLOWUP", ("controllo del cuore", "routine heart check")),
 )
 _RED_FLAGS = (
@@ -55,6 +56,8 @@ _RED_FLAGS = (
     "chest pain",
 )
 _DEADLINE_DAYS = {"B": 2, "D": 5}
+_EMERGENCY_NEEDS: set[str] = set()
+_RED_FLAGS_MORE = ("sanguinamento abbondante", "heavy bleeding", "non riesco a respirare", "can't breathe", "cannot breathe", "svenut", "fainted")
 _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
 _LOG = logging.getLogger("care")
 # The Relay accepts a ledger reply and then the agent rejects the push, so the reply sits in
@@ -85,9 +88,10 @@ async def main(need: Need, city: City) -> None:
     message = city.inbound
     if message is None:
         return
-    text = message.text or need.summary
-    if clinical(text):
-        raise OutOfScope()
+    # X-40: a clinical question (dose, diagnosis) is never a silent refusal: handle() answers
+    # it in words and goes on with the journey (red flag first).
+    if getattr(need, "is_emergency", False) is True and message.sender.startswith("citizen:"):
+        _EMERGENCY_NEEDS.add(message.need_id or message.msg_id)
     case = await city.history(need_id=message.need_id)
     await handle(role_of(), city, message, case)
 
@@ -139,6 +143,28 @@ async def handle(role: str, city: City, message: Message, chat: list[Message]) -
     if street and _asks_address(message):
         await city.say(message.sender, f"address={street}")
         return
+    _note_lang(message)  # X-30
+    if message.sender.startswith("citizen:"):
+        # X-41: a red flag is sent to 112 by EVERY role, not only the GP.
+        if role != "gp" and _red_flag(message):
+            await _escalate(city, message, chat)
+            return
+        # X-40: clinical question -> a polite line, then the normal path.
+        if clinical(message.text) and not _we(chat, city.agent_id, "", to=message.sender, word="scope.note"):
+            en = _lang([*chat, message]) != "it"
+            await city.say(
+                message.sender,
+                "scope.note "
+                + (
+                    "I understand your question. On that I cannot answer myself: the doctor will "
+                    "explain it at the visit. Meanwhile I am taking care of your next step now."
+                    if en
+                    else "Capisco la sua domanda. Su questo non posso risponderle io: glielo "
+                    "spiegherà il medico durante la visita. Intanto mi occupo subito del suo percorso."
+                ),
+            )
+    if all(row.msg_id != message.msg_id for row in chat):
+        chat = [*chat, message]  # BK-15: the case history can miss the inbound message (all roles)
     if role == "gp":
         await _gp(city, message, chat)
     elif role == "booking_centre":

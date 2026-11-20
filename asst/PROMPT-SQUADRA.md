@@ -1,3 +1,5 @@
+> **Dal 20/11 22:10: la squadra NON scrive codice.** Scrivete i casi in [PROPOSTE.md](../PROPOSTE.md) (modello dentro il file). Filippo e Claude implementano. Le regole sotto valgono solo se Filippo vi chiede codice.
+
 # Messaggio da incollare nella propria AI (Claude Code, Cursor, Copilot…)
 
 Copia tutto il blocco qui sotto nella tua AI prima di iniziare.

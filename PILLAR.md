@@ -163,9 +163,9 @@ Un solo file, `asst/brain/agent.py`, per i 5 agenti. Legge il ruolo dalla card. 
 1. Riceve il cittadino con `prescription_number`. Chiede al Ledger `prescription` (procedura, priorità, stato) e `agenda` (ora).
 2. Priorità P → offre subito `waiting_list=true`.
 3. Chiede `world procedure=…` e filtra gli slot (`fitting`): futuri (+4 ore agenda), liberi, entro la scadenza della priorità, non nella riserva U, medico che parla la lingua del cittadino, giorno del medico, genere se il cittadino lo chiede.
-4. Offre i primi 3 slot in un solo giro. Se nessuno va bene, chiede la pagina dopo (max 8). Se ancora niente: **silenzio**.
-5. `confirm` del cittadino → gira `confirm` alla struttura. `booking.receipt` della struttura → la gira al cittadino. `cancel` della struttura → annulla e rioffre.
-- **Non gestisce:** i giorni preferiti dal cittadino (`days`), alternativa quando non c'è niente, altre ASST (non usa mai `city.find`), consenso cross-ASST (P2), rinnovo (P1), domande di dati.
+4. Offre i primi 3 slot in un solo giro. Se nessuno va bene, chiede la pagina dopo (max 8); poi chiede il consenso `cross_asst`, cerca facility partner con `city.find` e invia solo criteri in `need.request`. Se nessuno risponde, offre la lista d'attesa.
+5. `confirm` del cittadino → cerca la facility nell'Index e gira `confirm` all'identificativo restituito con `city.say`. `booking.receipt` della struttura → la gira al cittadino. `cancel` della struttura → annulla e rioffre.
+- **Non gestisce ancora:** domande di dati generiche.
 
 ### Ospedale / Specialista / Consultorio (`_facility`)
 1. `confirm` dal centro prenotazioni → `hold` → `commit` → `booking.receipt`.
@@ -182,9 +182,9 @@ Tutti partono da questo esempio, quindi i punti base (+2 ricetta, +2 check-in…
 | # | Idea | Punti in gioco | Chi |
 |---|---|---|---|
 | 1 | **Frasi umane e proattive** in ogni messaggio (accanto ai token): empatia, prossimo passo, orari, indirizzo della struttura. Adattate al tono del cittadino | `city:review` +1 proattivo, evita −1 freddo, **per ogni agente di ogni percorso** | tutti |
-| 2 | **Mai silenzio**: se non c'è slot, offrire alternativa rilassata (altro giorno, altro medico, lista d'attesa) o cercare in un'altra ASST | da −1 a 0 o +1, evita `no_reply` | booking |
+| 2 | **Mai silenzio**: se non c'è slot, offrire alternativa rilassata (altro giorno, altro medico, lista d'attesa) o cercare in un'altra ASST | da −1 a 0 o +1, evita `no_reply` | booking · parziale |
 | 3 | **Giorni preferiti** del cittadino (`days`) nel filtro → prenotazione in `S_pref` | +2 invece di +1 | booking |
-| 4 | **Altre ASST**: `city.find` per trovare le strutture partner, consenso `cross_asst` prima, nessun dato prima | casi che oggi perdiamo (−1) | booking |
+| 4 | **Altre ASST**: `city.find` per trovare le strutture partner, consenso `cross_asst` prima, nessun dato prima | casi che oggi perdiamo (−1) | booking · implementato |
 | 5 | **Rispondere alle altre ASST**: le nostre strutture offrono slot ai centri prenotazioni delle altre squadre | collaborazione +1, slot onorato +1, check-in +2 dai loro cittadini | facility |
 | 6 | **Rinnovo ricetta (P1)**: gp rinnova; booking chiede `data.request purpose=prescription_renewal` | casi persi oggi | gp + booking |
 | 7 | **Specialista completo**: `consent purpose=report_sharing`, referto con `consent_ref`, `CTRL-CARD` quando serve | +2 referto/follow-up | specialista |
@@ -203,6 +203,11 @@ Registro completo (casi coperti, punti ciechi, logica, test): **[CASI.md](CASI.m
 - 20/11 sera: brain diviso in `asst/brain/parts/` (un file per ruolo). Aggiunto `city.llm` (`15_voice.py`): sintomi in testo libero, red flag scritte in altro modo, frasi umane nei messaggi al cittadino. Ripiego senza modello ovunque. 13 test con città finta. **In revisione, non ancora rilasciato.**
 
 - 20/11 sera: specialist 1.0.2 fallito su `health: p99` (lentezza piattaforma, roll out 12 min). Rilanciato. Messaggio per le AI dei compagni in `asst/PROMPT-SQUADRA.md`.
+
+- 20/11 20:36 UTC: 18 cittadini letti. Red flag 014/015 gestite (escalation ok). 009–013 senza risposta: buco del deploy gp (OPS-05). **Regola: deploy solo tra un livello e l'altro.** Deploy automatico del consultorio fermato.
+
+- 20/11 20:50 UTC, Sole 24 Token [GP]: "il medico di base più paziente: leggo il sintomo, guardo la tabella, scrivo la ricetta; diagnosi no; red flag → emergenza e mi fermo". **Verdetto: indizio vero** (coincide con le regole e19). Il nostro gp lo fa già (GP-01..07). Spunto: "guardo la tabella" → leggere la tabella dei protocolli dal Ledger (GP-11); "paziente" → con sintomo incerto chiedere invece di indovinare (GP-12).
+- 20/11 20:51 UTC: hospital 1.0.1 e family_counseling 1.0.1 **failed ERROR** "agent ingress route did not become ready in time (404)": errore della piattaforma, non del codice (OPS-01). Restano attive le 1.0.0. Rilancio nella pausa tra i livelli. Siamo 4° su 26 (92 punti).
 
 ## 13. Briefing dell'evento (Cola + Stamile, 20/11) — vision, livelli, finale
 
@@ -294,3 +299,5 @@ Premi: 1° MacBook Pro 14, 2° iPad, 3° AirPods Pro 3. Premio speciale Fondazio
 - **Vision 2027.** (da scrivere insieme) Protocolli aperti per agenti pubblici che si fidano solo di mittenti firmati, chiedono il consenso prima di ogni dato e negoziano tra loro per il cittadino.
 - **Come teniamo traccia.** Ogni caso ha una riga in `CASI.md`: caso, rischio, soluzione, logica, test.
 
+
+- 20/11 21:29 Sole 24 Token "Booking Center": ricetta → consensi → posti → se pieno, i vicini; lo slot lo blocca la facility. **Indizio vero.** Il nostro booking già non fa hold (`hold_self=False`). Da fare: ricerca nelle altre ASST con consenso (FA-12).

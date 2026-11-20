@@ -59,6 +59,46 @@ def fields_of(text: str) -> dict[str, str]:
     return found
 
 
+# X-27: our five agents. We write only to a peer that city.find returns AND that is one of ours,
+# so a message never goes to another team's agent.
+_OUR_AGENTS = {
+    "booking_centre": "agent:fn64xfq2jft4",
+    "gp": "agent:fddgaqmp6kb0",
+    "hospital": "agent:jdj692g4145e",
+    "specialist": "agent:jmjfst55vgjz",
+    "family_counseling": "agent:mm18nddkfc5w",
+}
+_PEERS: dict[str, str] = {}
+# X-29: where our facilities are (their own card addresses) - mobility and accessibility.
+_FACILITY_WHERE = {
+    "agent:jdj692g4145e": "al nostro ospedale in Via Arganini Gerolamo 38 (accessibile in sedia a rotelle)",
+    "agent:jmjfst55vgjz": "dal nostro specialista in Viale Ca' Granda 28",
+    "agent:mm18nddkfc5w": "al nostro consultorio in Via Giolli Raffaello 23",
+}
+_FACILITY_WHERE_EN = {
+    "agent:jdj692g4145e": "to our hospital at Via Arganini Gerolamo 38 (wheelchair accessible)",
+    "agent:jmjfst55vgjz": "to our specialist at Viale Ca' Granda 28",
+    "agent:mm18nddkfc5w": "to our family counselling centre at Via Giolli Raffaello 23",
+}
+
+
+async def _peer(city: City, family: str, query: str) -> str | None:
+    """Our agent of that family, as the Index returns it. None if the Index does not show it."""
+
+    if family in _PEERS:
+        return _PEERS[family]
+    wanted = _OUR_AGENTS.get(family)
+    try:
+        peers = await asyncio.wait_for(city.find(query), timeout=5.0)
+    except Exception:  # Index down or slow: no collaboration message, the journey goes on
+        return None
+    for peer in peers:
+        if peer.agent_id == wanted:
+            _PEERS[family] = peer.agent_id
+            return peer.agent_id
+    return None
+
+
 def _line_fields(text: str, token: str) -> dict[str, str]:
     """Fields of the one line that carries ``token``. BK-14: one message holds several offers."""
 
@@ -140,11 +180,19 @@ async def _until(
             fresh = await city.history(need_id=need_id)
         except CapError:
             fresh = chat
+        fresh = _keep(fresh, chat)
         if ready(fresh):
             return fresh
         if attempt + 1 < _PULL_TRIES:
             await asyncio.sleep(_PULL_PAUSE)
     return fresh
+
+
+def _keep(fresh: list[Message], chat: list[Message]) -> list[Message]:
+    """BK-15: a re-read of the case must not drop rows we already had (the inbound message)."""
+
+    seen = {row.msg_id for row in fresh}
+    return list(fresh) + [row for row in chat if row.msg_id not in seen]
 
 
 async def _await_line(
@@ -165,6 +213,7 @@ async def _await_line(
             fresh = await city.history(need_id=need_id)
         except CapError:
             fresh = chat
+        fresh = _keep(fresh, chat)  # simulator bug 3: keep booking's confirm under BK-15
         hit = _latest(fresh, head, token)
         if hit is not None:
             return hit, fresh
@@ -183,8 +232,10 @@ def _has_agenda(chat: list[Message]) -> bool:
     return _when("" if agenda is None else agenda.get("agenda_now", "")) is not None
 
 
-def _has_procedure(chat: list[Message]) -> bool:
+def _has_procedure(chat: list[Message], number: str | None = None) -> bool:
     reply = _ledger(chat, "prescription")
+    if number and reply is not None and reply.get("prescription_number") not in (None, number):
+        return False
     return reply is not None and bool(reply.get("procedure"))
 
 
@@ -214,10 +265,11 @@ def fitting(
     priority: str | None,
     lang: str,
     gender: str | None = None,
+    days: frozenset[str] | None = None,
     facility: str | None = None,
     procedure: str | None = None,
 ) -> list[dict[str, str]]:
-    """Slots a citizen can accept: future, free, in the priority window, spoken language."""
+    """Slots a citizen can accept, preferring the citizen's requested agenda days."""
 
     if priority == "U":
         horizon: datetime | None = now.replace(hour=23, minute=59, second=59, microsecond=0)
@@ -226,7 +278,7 @@ def fitting(
     else:
         horizon = now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14))
     earliest = now + _LEAD
-    chosen: list[tuple[datetime, dict[str, str]]] = []
+    chosen: list[tuple[int, datetime, dict[str, str]]] = []
     for line in lines:
         slot = fields_of(line)
         slot_id = slot.get("slot_id")
@@ -256,8 +308,9 @@ def fitting(
             continue
         if gender and spec[1] != gender:
             continue
-        chosen.append((at, slot))
-    chosen.sort(key=lambda item: (item[0], item[1].get("slot_id", "")))
-    return [slot for _, slot in chosen]
+        preferred = 0 if days and day in days else 1
+        chosen.append((preferred, at, slot))
+    chosen.sort(key=lambda item: (item[0], item[1], item[2].get("slot_id", "")))
+    return [slot for _, _, slot in chosen]
 
 
