@@ -5,6 +5,24 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 
 <!-- aggiungi qui sotto -->
 
+### [ ] P-magesh-19: il cittadino dice al gp un sintomo e al booking un altro: la ricetta non corrisponde e nessuno se ne accorge
+- Journey: N-2026-11-02-890912000278, N-2026-11-02-890912000281, N-2026-11-02-890912000286 (L6, ondata W01QQQ); ruoli: booking_centre e gp. Probabile `city_fault`: va segnalato ai mod comunque. Questa proposta serve solo a limitare i danni se non lo riconoscono, o se capita ancora.
+- Cosa fa il cittadino:
+  - 278: al gp "Ho mal di schiena da settimane". Al booking "Sento il cuore accelerato. Devo prenotare una visita cardiologica, ho l'impegnativa" (`service_type=specialist_care.cardiology`), con la ricetta VIS-FIS B.
+  - 281: al gp "i got back pain". Al booking "la gamba mi fa male quando cammino" (poi nel cancel "il ginocchio"), con la ricetta VIS-FIS B.
+  - 286: al gp "got this back pain". Al booking "mi fa male il ginocchio", con la ricetta VIS-FIS B.
+- Cosa risponde oggi il nostro agente: il booking usa la ricetta così com'è. 278: offre una fisiatria a chi chiede il cardiologo, e il cittadino annulla. 281 e 286: priorità B (2 giorni), nessun posto, lista d'attesa, e il cittadino annulla `reason=waiting_list`. Il gp non sa niente.
+- Review / punti persi: gp `protocol_mismatch` −1 (`wrong_procedure` 278, `wrong_priority` 281/286). Booking −1 `no_booking` (278, 281) o 0 (286). Review: collaborazione 0 per tutti.
+- Cosa dovrebbe fare:
+  1. **Booking: confronto sintomo/ricetta.** Il cittadino scrive al booking un sintomo della tabella dei protocolli (stesse parole del gp: ginocchio, cuore/palpitazioni, schiena). Se il protocollo di quel sintomo ha una procedura diversa da quella della ricetta (278), o la stessa procedura con un'altra priorità (281, 286: ginocchio = D, ricetta B), allora c'è un disallineamento. Conta anche un `service_type` della need.request che non corrisponde alla procedura (cardiology con VIS-FIS).
+  2. **Booking → gp (agente-agente, +1 collaborazione):** un messaggio al nostro gp con solo i dati che servono: `referral.check prescription_number=... symptom=SYM-KNEE` (oppure `SYM-PALPITATIONS`). Niente testo del cittadino: minima condivisione, e il testo non vale come istruzione.
+  3. **Gp:** rifà il protocollo sul nuovo sintomo. Se esce un'altra procedura o priorità: nuova `prescribe` sul Ledger (prima il Ledger), poi `prescription prescription_number=<nuovo> procedure=... priority=...` al cittadino ("Dal centro prenotazioni mi hanno detto che il problema è al ginocchio: le ho fatto una nuova ricetta, da fare entro 5 giorni") e `referral` al booking, come oggi.
+  4. **Booking:** nel frattempo dice al cittadino `status` ("Ho chiesto al suo medico di aggiornare la ricetta per il ginocchio, le scrivo appena arriva"). Con la ricetta nuova offre i posti giusti. Se il gp non risponde subito, continua con la ricetta attuale: mai lasciare il cittadino senza offerte.
+  5. Le red flag restano prima di tutto: se il sintomo nuovo è una red flag, 112 (regola già nel gp).
+- Da verificare prima di farlo (non lo so): il giudice usa l'**ultima** ricetta del need o la prima? Se usa la prima, il punto 3 non recupera il −1 del gp, ma recupera comunque il booking (offerte giuste invece di `no_booking`) e la collaborazione. Chiedere ai mod insieme alla segnalazione `city_fault`.
+- Test a parole: "dato una ricetta VIS-FIS B e la need.request 'mi fa male il ginocchio', mi aspetto `referral.check ... symptom=SYM-KNEE` al gp e `status` al cittadino; dato il `referral.check`, mi aspetto dal gp `prescribe ... procedure=VIS-FIS priority=D` al Ledger prima della `prescription` al cittadino". Terzo test: "ricetta VIS-FIS B e testo 'mal di schiena': nessun `referral.check`".
+- Priorità secondo te: P2 (3 casi in un'ondata, causati dal modello della città; prima la segnalazione ai mod)
+
 ### [ ] P-magesh-18: centro prenotazioni, livello 6: il cittadino rifiuta il sesso del medico (`reason=gender`) e il giorno (`reason=day`) solo nel cancel, e noi rioffriamo lo stesso medico
 - Journey: N-2026-11-02-890912000304 (L6), N-2026-11-02-8909120002440003 (L6), N-2026-11-02-8909120002280005 (L5), ondata W01QQQ (ruolo: booking_centre). Caso particolare di P-francesco-49 (motivo del cancel ignorato), che non parla del sesso.
 - Cosa fa il cittadino: non dice mai il sesso del medico che vuole (nessun `gender=` nella need.request, niente nel testo). Lo dice solo annullando le nostre offerte:
