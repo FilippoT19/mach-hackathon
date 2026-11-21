@@ -130,7 +130,9 @@ async def main(need: Need, city: City) -> None:
             fields_of(message.text).get("offer_id", ""), _lang([message]) != "it")))
         _EARLY_ACK[message.msg_id] = early_ack
     try:
+        _remember_ledger([message], city.agent_id)  # BK-67: a Ledger push is kept before anything else
         case = await city.history(need_id=message.need_id)
+        _remember_ledger(case, city.agent_id)
         await handle(role_of(), city, message, case)
     finally:
         if early is not None and _EARLY_LLM.pop(message.msg_id, None) is not None:
@@ -391,6 +393,30 @@ def _when(value: str) -> datetime | None:
     return parsed
 
 
+def _agenda_add(start: datetime, delta: timedelta) -> datetime:
+    """``start + delta`` on the agenda clock. BK-68: the agenda has no Saturday or Sunday (e19: "una
+    settimana di gara dura 120 minuti reali, non 168"); after Friday 24:00 comes Monday 00:00. A
+    B prescription of Friday afternoon is due on Tuesday, not on Sunday; four real minutes after
+    Friday 22:00 it is Monday 02:00. ``delta`` may be negative. A weekend ``start`` counts as the
+    Monday after it."""
+    day = timedelta(days=1)
+    base = start.replace(hour=0, minute=0, second=0, microsecond=0)
+    if base.weekday() >= 5:
+        base += day * (7 - base.weekday())
+        offset = timedelta(0)
+    else:
+        offset = start - base
+    monday = base - day * base.weekday()
+    weeks, rest = divmod(day * base.weekday() + offset + delta, 5 * day)
+    days, time_of_day = divmod(rest, day)
+    return monday + weeks * 7 * day + days * day + time_of_day
+
+
+def _when_agenda(value: str) -> datetime | None:
+    """An agenda time another team wrote, with or without a time zone (MACH-1.3 writes none)."""
+    return _when(value) or _when(value + "Z")
+
+
 def _citizen(chat: list[Message]) -> str | None:
     for row in chat:
         if row.sender.startswith("citizen:"):
@@ -456,6 +482,7 @@ async def _until(
         except CapError:
             fresh = chat
         fresh = _keep(fresh, chat)
+        _remember_ledger(fresh, city.agent_id)  # BK-67: every Ledger line read feeds the process memory
         if ready(fresh):
             return fresh
         if time.monotonic() - started >= _PULL_SECONDS:  # BK-54: slow history() calls
@@ -564,7 +591,7 @@ def fitting(
     elif priority == "P":
         horizon = None
     else:
-        horizon = now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14))
+        horizon = _agenda_add(now, timedelta(days=_DEADLINE_DAYS.get(priority or "", 14)))  # BK-68
     earliest = now + (_LEAD if priority == "U" else _LEAD_BOOK)
     chosen: list[tuple[int, datetime, dict[str, str]]] = []
     for line in lines:
@@ -5443,6 +5470,166 @@ def _latest_slots(chat: list[Message]) -> str | None:
     return found
 
 
+# BK-67 (16 journeys of wave W01QQQ, 21/11 04:45-05:26Z): every case asked the Ledger for the
+# same agenda and the same catalogue and waited ~14 minutes for the answer; the first offer left
+# 32 minutes after the prescription. The Ledger's ``agenda`` and ``slots`` lines are the same for
+# every citizen of one procedure, so the process keeps the latest ones and every case reads them.
+_WORLD: dict[str, dict[int, tuple[Message, float]]] = {}  # procedure -> page -> (row, real time it was true)
+_AGENDA_ROW: list[tuple[Message, float]] = []  # empty, or the latest agenda line
+_ASKED_AT: dict[str, float] = {}  # "agenda", "world:<procedure>", "warm" -> real time of our last question
+_WORLD_TTL = timedelta(minutes=30)
+_WORLD_PAGES = 4
+_WORLD_PROCEDURES = 8
+_WORLD_MAX_PAGES = 20
+_REFRESH_EVERY = 120.0
+_WARM_SECONDS = 4.0
+_MEMORY_ON = True  # the tests of other cases switch it off, so that one test never feeds another
+
+
+def _row_procedure(text: str) -> str | None:
+    """The procedure of a ``slots`` page: the one on its first slot line (None: an empty page)."""
+    for line in text.splitlines()[1:]:
+        if "slot_id=" in line:
+            return fields_of(line).get("procedure") or None
+    return None
+
+
+def _row_time(row: Message, now: float) -> float | None:
+    """The real time a Ledger line was true: its ``sent_at`` when that is a sane past time (None: unknown)."""
+    sent = _when(row.sent_at or "")
+    if sent is not None:
+        at = sent.timestamp()
+        if now - 86400.0 <= at <= now:
+            return at
+    return None
+
+
+def _note_asked(key: str, now: float) -> None:
+    _ASKED_AT[key] = now
+    while len(_ASKED_AT) > 4 * _WORLD_PROCEDURES:
+        del _ASKED_AT[next(iter(_ASKED_AT))]
+
+
+def _remember_ledger(rows, agent: str) -> None:
+    """Keep the Ledger's agenda and catalogue lines addressed to us. Only the Ledger is believed."""
+    now = time.time()
+    for row in rows:
+        if row.sender != LEDGER or (row.recipient and row.recipient != agent):
+            continue
+        head = first_word(row.text)
+        if head == "agenda":
+            if _when(fields_of(row.text).get("agenda_now", "")) is None:
+                continue
+            at = _row_time(row, now)
+            # A line with no readable time is new only when we hold none: re-reading an old case
+            # must not stamp its old agenda as fresh.
+            if not _AGENDA_ROW:
+                _AGENDA_ROW[:] = [(row, now if at is None else at)]
+            elif at is not None and _AGENDA_ROW[0][0].msg_id != row.msg_id and at >= _AGENDA_ROW[0][1]:
+                _AGENDA_ROW[:] = [(row, at)]
+        elif head == "slots":
+            procedure = _row_procedure(row.text)
+            if not procedure:
+                continue
+            page = _page(row.text)[0]
+            pages = _WORLD.get(procedure)
+            if pages is None:
+                while len(_WORLD) >= _WORLD_PROCEDURES:
+                    del _WORLD[next(iter(_WORLD))]
+                pages = _WORLD[procedure] = {}
+            had = pages.get(page)
+            at = _row_time(row, now)
+            if had is not None and (had[0].msg_id == row.msg_id or at is None or at < had[1]):
+                continue
+            if had is None and len(pages) >= _WORLD_MAX_PAGES:
+                continue
+            pages[page] = (row, now if at is None else at)
+
+
+def _memory_rows(procedure: str, *, at: float | None = None) -> list[Message]:
+    """The fresh agenda line, then the fresh catalogue pages of ``procedure`` in page order."""
+    now = time.time() if at is None else at
+    rows: list[Message] = []
+    if not _MEMORY_ON:
+        return rows
+    if _AGENDA_ROW and now - _AGENDA_ROW[0][1] <= _AGENDA_REAL_MAX.total_seconds():
+        rows.append(_AGENDA_ROW[0][0])
+    pages = _WORLD.get(procedure) or {}
+    n = 1
+    # Pages 1..k with no gap: the refresh asks several pages at once and they arrive one by one; a
+    # later page alone would make the search skip the earlier ones (the nearest slots).
+    while n in pages and now - pages[n][1] <= _WORLD_TTL.total_seconds():
+        rows.append(pages[n][0])
+        n += 1
+    return rows
+
+
+def _case_pages(chat: list[Message], procedure: str) -> dict[int, Message]:
+    """page -> the latest ``slots`` row of ``procedure`` in the case."""
+    found: dict[int, Message] = {}
+    for row in chat:
+        if row.sender == LEDGER and first_word(row.text) == "slots" and _row_procedure(row.text) == procedure:
+            found[_page(row.text)[0]] = row
+    return found
+
+
+def _with_memory(chat: list[Message], procedure: str) -> list[Message]:
+    """``chat`` plus the remembered Ledger lines this case lacks: the agenda when the case has none,
+    the catalogue pages when the case has none. The search then reads them as its own."""
+    if not procedure:
+        return chat
+    need_agenda = _ledger(chat, "agenda") is None
+    have = _case_pages(chat, procedure)
+    seen = {row.msg_id for row in chat}
+    extra = [
+        row for row in _memory_rows(procedure)
+        if row.msg_id not in seen
+        and (need_agenda if first_word(row.text) == "agenda" else _page(row.text)[0] not in have)
+    ]
+    if not extra:
+        return chat
+    # Remembered pages go before the case's own rows: the latest ``slots`` row stays the case's.
+    return [*extra, *chat] if have else [*chat, *extra]
+
+
+async def _refresh_memory(city: City, message: Message, procedure: str | None) -> None:
+    """Ask the Ledger again for the agenda and the first catalogue pages, at most once every
+    ``_REFRESH_EVERY`` seconds, without waiting: the answers come back through ``_remember_ledger``.
+    The questions are not an answer to anyone: the turn is not marked as having spoken (BK-33)."""
+    now = time.time()
+    asks: list[str] = []
+    if now - _ASKED_AT.get("agenda", 0.0) >= _REFRESH_EVERY:
+        _note_asked("agenda", now)
+        asks.append("agenda")
+    if procedure and now - _ASKED_AT.get(f"world:{procedure}", 0.0) >= _REFRESH_EVERY:
+        _note_asked(f"world:{procedure}", now)
+        asks.extend(f"world procedure={procedure} page={n}" for n in range(1, _WORLD_PAGES + 1))
+    if not asks:
+        return
+    said = _SAID.get()
+    had = said is not None and LEDGER in said
+    try:
+        await _ledger_asks(city, message, asks)
+    except Exception:  # noqa: BLE001 - a refresh never breaks the turn
+        _LOG.exception("booking.refresh_failed need_id=%s", message.need_id)
+    if said is not None and not had:
+        said.discard(LEDGER)
+
+
+async def _warm_memory(city: City) -> None:
+    """Empty memory: one read of our Ledger lines of every case fills it. Bounded in time, at most
+    once every ``_REFRESH_EVERY`` seconds; a slow or failed read changes nothing."""
+    now = time.time()
+    if now - _ASKED_AT.get("warm", 0.0) < _REFRESH_EVERY:
+        return
+    _note_asked("warm", now)
+    try:
+        rows = await asyncio.wait_for(city.history(LEDGER), timeout=_WARM_SECONDS)
+    except Exception:  # noqa: BLE001 - CapError, timeout: the search goes on as before
+        return
+    _remember_ledger(rows[-400:], city.agent_id)
+
+
 def _page(text: str) -> tuple[int, int]:
     raw = fields_of(text.splitlines()[0] if text else "").get("page", "")
     left, _, right = raw.partition("/")
@@ -5783,7 +5970,7 @@ def _before_rx_deadline(slot: dict[str, str], reply: dict[str, str] | None, prio
     for key in _RX_DATE_KEYS:
         issued = _when(reply.get(key, ""))
         if issued is not None:
-            return at <= issued + timedelta(days=days)
+            return at <= _agenda_add(issued, timedelta(days=days))  # BK-68: agenda days, no weekend
     return True
 
 
@@ -5886,7 +6073,7 @@ def _rx_deadline(
     for key in _RX_DATE_KEYS:
         issued = _when((reply or {}).get(key, ""))
         if issued is not None:
-            return issued + timedelta(days=days)
+            return _agenda_add(issued, timedelta(days=days))  # BK-68
     anchor = next((row for row in reversed(chat) if row.sender == LEDGER and first_word(row.text) == "agenda"), None)
     if anchor is None:
         return None
@@ -5901,8 +6088,11 @@ def _rx_deadline(
     ]
     if agenda_now is None or read_at is None or not firsts:
         return None
-    elapsed = max(timedelta(0), read_at - min(firsts))
-    return agenda_now - elapsed * _AGENDA_SPEED + timedelta(days=days) - _DEADLINE_MARGIN
+    # BK-67: a remembered agenda line was read before this case began; then the case began later
+    # on the agenda than that line says (a negative ``elapsed``), within the life of the memory.
+    elapsed = max(-_AGENDA_REAL_MAX, read_at - min(firsts))
+    born = _agenda_add(agenda_now, -(elapsed * _AGENDA_SPEED))  # BK-68: the agenda skips the weekend
+    return _agenda_add(born, timedelta(days=days)) - _DEADLINE_MARGIN
 
 
 def _agenda_now(chat: list[Message], message: Message) -> datetime | None:
@@ -5924,7 +6114,7 @@ def _agenda_now(chat: list[Message], message: Message) -> datetime | None:
     real = datetime.now(read_at.tzinfo) - read_at
     if elapsed < real <= _AGENDA_REAL_MAX:
         elapsed = real
-    return now + elapsed * _AGENDA_SPEED
+    return _agenda_add(now, elapsed * _AGENDA_SPEED)  # BK-68: Friday night + minutes = Monday
 
 
 _AGENDA_REAL_MAX = timedelta(minutes=45)  # older than a citizen's whole wait: not this run's clock
@@ -5958,7 +6148,7 @@ def _search_limit(now: datetime, priority: str | None, deadline: datetime | None
     elif priority == "P":
         horizon = None
     else:
-        horizon = now + timedelta(days=days if days is not None else 14)
+        horizon = _agenda_add(now, timedelta(days=days if days is not None else 14))  # BK-68
     if deadline is not None and (horizon is None or deadline < horizon):
         return deadline
     return horizon
@@ -6023,13 +6213,17 @@ def _cross_consent(chat: list[Message], agent: str) -> tuple[bool | None, str]:
             continue
         if fields.get("purpose") not in (None, "cross_asst") or head in {"confirm", "cancel"}:
             continue
-        if head == "need.request":
+        if head == "need.request" or "need.request" in words(row.text):
             # The same request sent again is not an answer: the second question follows (BK-33).
+            # BK-66 (0002120005): the act word can come after plain words ("Hello. ... need.request").
             if asks >= _CROSS_ASKS + 1:
                 decision = (False, "")
             continue
         if _WHICH_REF.search(row.text) and not _CROSS_NO.match(row.text.strip().lower()):
-            continue  # BK-58: the citizen asks which reference; the next question carries it
+            # BK-58: the citizen asks which reference; the next question carries it. BK-66: that
+            # question is one more turn, not a refusal: the count starts again from one ask.
+            asks = 1
+            continue
         if head == "consent" or _CROSS_NO.match(row.text.strip().lower()) or asks >= _CROSS_ASKS:
             decision = (False, "")
     return decision
@@ -6731,6 +6925,40 @@ async def _still_here(city: City, message: Message, chat: list[Message], *, fixe
             "Le ho già mandato i posti liberi: mi risponda con quello che preferisce e lo blocco, "
             "oppure mi dica se nessuno le va bene e cerco ancora."
         )
+        # BK-67 (000351, 0003100002, 0002660003): to this status, which names no offer, the citizen
+        # answered "Which offer_id, slot_id?". The open offers go out again, line by line.
+        still = _open_offers(chat, agent, citizen)
+        again: dict[str, str] = {}
+        ids = [row.msg_id for row in chat]
+        asked_at = _when(message.sent_at or "")
+        for row in chat:
+            if row.sender != agent or row.recipient != citizen or first_word(row.text) != "offer":
+                continue
+            if not any(o in still and not o.startswith("wl-") for o in (f.get("offer_id", "") for f in _offer_rows(row.text))):
+                continue
+            offered_at = _when(row.sent_at or "")
+            after = (offered_at >= asked_at if offered_at is not None and asked_at is not None
+                     else message.msg_id in ids and ids.index(row.msg_id) > ids.index(message.msg_id))
+            if after:
+                # Another turn of this case (the Ledger's push) sent the offers while this one was
+                # waiting: they are the answer to this message. A second copy is noise (BK-46).
+                _mark_answered(message.msg_id)
+                _trace("still_here", message, state="offers_just_sent", lang="en" if en else "it")
+                return
+            for line in row.text.splitlines():
+                offer_id = fields_of(line).get("offer_id", "") if line.startswith("offer ") else ""
+                if offer_id in still and not offer_id.startswith("wl-"):
+                    again[offer_id] = line
+        if again:
+            tail = (
+                "Here are the appointments still open for you: reply with the one you prefer and I "
+                "will lock it at once."
+                if en else
+                "Le rimando i posti ancora liberi per lei: mi risponda con quello che preferisce e lo "
+                "blocco subito."
+            )
+            text = "\n".join(_fit(list(again.values()), tail) + [tail])
+            _sent(message.need_id or message.msg_id).notes.add("again")  # BK-22: the route does not resend too
     elif fixed is None and _number(chat) is None and not any(
         "prescription_number=" in row.text for row in chat if row.sender != agent
     ):
@@ -6863,6 +7091,9 @@ async def _on_referral(city: City, message: Message, chat: list[Message]) -> Non
         message.sender,
         " ".join(parts) + " Ricevuto: quando il cittadino ci contatta gli proponiamo subito i posti liberi.",
     )
+    # BK-67: the citizen writes to us minutes after this referral. Agenda and catalogue are asked
+    # now, so they are in memory (and in this case's history) when the citizen's request arrives.
+    await _refresh_memory(city, message, procedure or None)
 
 
 @asynccontextmanager
@@ -6900,6 +7131,13 @@ async def _advance(
             sent.steps += 1
         sent.pending_page = None
         await _advance_alone(city, message, chat, key, fixed=fixed, replacing=replacing)
+        for note in [n for n in sent.notes if n.startswith("memory:")]:
+            # BK-67: this turn answered from memory. After its answer has left, the Ledger is asked
+            # again (at most once every two minutes) so the memory stays warm for the next citizen.
+            # Once per case: the Ledger's replies open turns of this case and must not ask again.
+            sent.notes.discard(note)
+            if message.sender.startswith("citizen:"):
+                await _refresh_memory(city, message, note.partition(":")[2])
         # BK-45: a Ledger reply often lands only in the history and opens no turn. Whoever asked
         # for a catalogue page reads it here, in the same turn, until the search has an outcome
         # (offers, another ASST, waiting list). A push that also opens a turn finds it done.
@@ -6934,14 +7172,17 @@ async def _advance(
                     await _widen_stop(city, message, chat, key, sent, fixed)
                     break
                 citizen = _citizen(chat)
-                if message.sender.startswith("citizen:") and citizen and "page_lost" not in sent.notes:
-                    # BK-39: the next page never came. Never leave the citizen silent: waiting list
-                    # now. (The page's own push, if it comes, can still bring real offers.)
+                if message.sender.startswith("citizen:") and citizen:
+                    # BK-39: the next page never came. Never leave the citizen silent. BK-68 (seven
+                    # waiting lists of 21/11 05:17-05:20Z while 130-286 slots were acceptable; MACH-1.3
+                    # R2): the answer set is the whole city, so the other ASSTs are asked before the
+                    # waiting list. (The page's own push, if it comes, can still bring real offers.)
+                    # Every citizen turn that still finds the page missing goes on from where the
+                    # case stands (consent asked, partners asked, waiting list): never a dead end.
+                    if "page_lost" not in sent.notes:
+                        _LOG.warning("booking.page_lost need_id=%s page=%s", message.need_id, page)
                     sent.notes.add("page_lost")
-                    _LOG.warning("booking.page_lost need_id=%s page=%s", message.need_id, page)
-                    number = _number(chat)
-                    rx = _prescription_reply(chat, number) or {}
-                    await _relaxed(city, message, chat, key, citizen, fixed or rx.get("procedure"), number, rx.get("priority"))
+                    await _after_local(city, message, chat, key, fixed=fixed, replacing=False)
                 break
             await _advance_alone(city, reply, chat, key, fixed=fixed, replacing=False)
 
@@ -7085,6 +7326,14 @@ async def _advance_alone(
                     "più valida). Scriva al suo medico di base con questo numero: gliene prepara una "
                     "nuova e io le tengo pronti i posti liberi."))
             return
+        # BK-67: agenda and catalogue the process already has, instead of a Ledger round.
+        if _latest_slots(chat) is None and not any(first_word(row.text) == "slots" for row in _memory_rows(procedure)):
+            await _warm_memory(city)
+        with_memory = _with_memory(chat, procedure)
+        if _latest_slots(chat) is None and _latest_slots(with_memory) is not None:
+            _sent(key).notes.update({"memory", f"memory:{procedure}"})
+            _trace("memory", message, procedure=procedure, rows=len(with_memory) - len(chat))
+        chat = with_memory
         agenda = _ledger(chat, "agenda")
         now = _when("" if agenda is None else agenda.get("agenda_now", ""))
         replacement_reply = (
@@ -7147,6 +7396,17 @@ async def _advance_alone(
             sent.citizen_replacement = message.sender == citizen and _citizen_cancels(message.text)
     elif message.sender == LEDGER and first_word(message.text) == "slots":
         replacing = sent.replacement_page == _page(message.text)[0] == page
+    last_page_lines = [line for line in world.splitlines() if "slot_id=" in line]
+    if not replacing:
+        # BK-67: pages asked together (refresh) or taken from memory are not in page order in the
+        # case. The search has read pages 1..k with no gap; a later page alone does not count.
+        have = _case_pages(chat, procedure)
+        k = 0
+        while k + 1 in have:
+            k += 1
+        if k:
+            page = k
+            last_page_lines = [line for line in have[k].text.splitlines() if "slot_id=" in line]
     if replacing and sent.citizen_replacement:
         # BK-46: the citizen refused these one by one, each for a reason: none is offered again.
         taken = _offered(chat, agent) | _slot_ids(sent.offers)
@@ -7158,8 +7418,10 @@ async def _advance_alone(
     deadline = _rx_deadline(chat, reply, priority, number)
     learned = _cancel_learned(chat)
     lines = [line for line in world.splitlines() if "slot_id=" in line]
-    if "widen" in sent.notes and not replacing:
-        lines = _all_slot_lines(chat, agent)  # BK-61: the pages read before offering count together
+    if not replacing:
+        # BK-61: the pages read before offering count together. BK-67: so do the remembered pages
+        # and the pages the referral asked in advance, in whatever order they arrived.
+        lines = _all_slot_lines(chat, agent)
     elif replacing and not replacement_reply:
         # BK-63: new offers after a cancel come first from the pages already read (no Ledger round:
         # the verdict came five minutes after the cancels). The next page is asked only if none fits.
@@ -7256,7 +7518,7 @@ async def _advance_alone(
     # BK-45: the catalogue is in time order. Once a whole page lies after the citizen's deadline,
     # no later page can fit: stop reading (each page costs seconds of the citizen's window).
     limit = _search_limit(now, priority, deadline)
-    times = [at for at in (_when(fields_of(line).get("at", "")) for line in lines) if at is not None]
+    times = [at for at in (_when(fields_of(line).get("at", "")) for line in last_page_lines) if at is not None]
     beyond = page >= 2 and limit is not None and bool(times) and min(times) >= limit
     if page < pages and page < _MAX_PAGE and not beyond:
         if replacing:
@@ -9045,13 +9307,23 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
         _PARTNER_DONE.add(request_id)
         await _say(city, message.sender, f"cancel reason=no_availability request_id={request_id} Manca procedure=.")
         return
-    if not _exact(chat, agent, "agenda"):
-        await _say(city, LEDGER, "agenda")
-    await _say(city, LEDGER, f"world procedure={procedure} facility={agent} page=1")
-    chat = await _until(city, message.need_id, chat, lambda rows: _has_agenda(rows) and _latest_slots(rows) is not None)
+    # BK-67 / MACH-1.3 R1: a partner is answered within seconds. Agenda and catalogue the process
+    # already has are used at once; the Ledger is asked again (at most once every two minutes)
+    # only to keep them fresh, and nobody waits for that answer.
+    chat = _with_memory(chat, procedure)
+    known = _has_agenda(chat) and _latest_slots(chat) is not None
+    now_real = time.time()
+    if not known or now_real - _ASKED_AT.get(f"facility:{procedure}", 0.0) >= _REFRESH_EVERY:
+        _note_asked(f"facility:{procedure}", now_real)
+        if not _exact(chat, agent, "agenda"):
+            await _say(city, LEDGER, "agenda")
+        await _say(city, LEDGER, f"world procedure={procedure} facility={agent} page=1")
+    if not known:
+        chat = await _until(city, message.need_id, chat, lambda rows: _has_agenda(rows) and _latest_slots(rows) is not None)
     agenda = _ledger(chat, "agenda")
     now = _when("" if agenda is None else agenda.get("agenda_now", ""))
-    world = _latest_slots(chat)
+    now = _agenda_now(chat, message) or now  # BK-67: a remembered agenda line is minutes (agenda hours) old
+    world = "\n".join(_all_slot_lines(chat, agent)) if known else _latest_slots(chat)
     _PARTNER_DONE.add(request_id)
     picks = []
     if now is not None and world is not None:
@@ -9060,9 +9332,14 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
             now=now, priority=priority, lang=fields.get("lang", "it"),
             gender=fields.get("gender_preference") or fields.get("gender") or None, facility=agent, procedure=procedure,
         )
-        limit = _when(fields.get("deadline", ""))  # MACH-1.2 (2): never a slot after the asker's deadline
+        # MACH-1.2 (2): never a slot after the asker's deadline. BK-68 / MACH-1.3 R4: the asker's
+        # times may come without a time zone, and ``after`` (or ``earliest``) opens the window.
+        limit = _when_agenda(fields.get("deadline", ""))
         if limit is not None:
             picks = [slot for slot in picks if (_when(slot.get("at", "")) or limit) <= limit]
+        first = _when_agenda(fields.get("after", "") or fields.get("earliest", ""))
+        if first is not None:
+            picks = [slot for slot in picks if (_when(slot.get("at", "")) or first) >= first]
         picks = picks[:_OFFER_MAX]  # BK-55: every fitting slot in one answer
     if not picks:
         await _say(city, message.sender, f"cancel reason=no_availability request_id={request_id} Al momento non abbiamo posti adatti per {procedure}.")
