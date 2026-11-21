@@ -778,15 +778,14 @@ async def _escalate(city: City, message: Message, chat: list[Message]) -> None:
             message.sender,
             "escalate.emergency reason=red_flag " + (
             "I understand, this needs "
-            "attention right now. Call 112 or go to the nearest emergency room. Do not drive: if "
-            "you can, ask someone to go with you. The nearest emergency room in our area is our "
-            f"hospital at Via Arganini Gerolamo 38 (wheelchair accessible): {told_en}"
+            "attention right now. Call 112 or go to the emergency room nearest to you. Do not "
+            "drive: if you can, ask someone to go with you. About the emergency room of "
+            f"our hospital (Via Arganini Gerolamo 38, wheelchair accessible): {told_en}"
             if en else
             "Capisco, quello che mi descrive va preso sul serio subito. Chiami subito il 112 o "
-            "vada al pronto soccorso più vicino. Non si metta alla guida: se può, si faccia "
-            "accompagnare e non resti da solo. Il pronto soccorso più vicino nella nostra zona è "
-            "il nostro ospedale in Via Arganini Gerolamo 38 (accessibile in sedia a rotelle): "
-            f"{told_it}"
+            "vada al pronto soccorso più vicino a lei. Non si metta alla guida: se può, si faccia "
+            "accompagnare e non resti da solo. Il pronto soccorso del nostro ospedale (Via "
+            f"Arganini Gerolamo 38, accessibile in sedia a rotelle): {told_it}"
             ) + (" " + near.strip() if near else ""),
         )
     else:
@@ -997,8 +996,13 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
             assessed = await early if early is not None else await _llm_symptom(city, message.text, emergency_only=code is not None)
         except Exception:
             assessed = None
-        emergency = assessed == "RED_FLAG"
-        code = code or assessed
+        # GP-15 (journey 183): "sento il cuore che batte un po' troppo" matched SYM-PALPITATIONS
+        # by keyword, then the model said RED_FLAG and the citizen got 112 instead of a visit
+        # (no_booking -1). Heart racing alone is the VIS-CARD B protocol; its real red flags
+        # (chest pain, fainting, no breath) are keywords. Back pain keeps the model check
+        # (P-francesco-19: "non riesco più a stare in piedi").
+        emergency = assessed == "RED_FLAG" and code not in ("SYM-PALPITATIONS", "SYM-FOLLOWUP")
+        code = code or (assessed if assessed != "RED_FLAG" else None)
     if emergency:
         await _escalate(city, message, chat)  # X-42: one path for all roles (112, notice, nearest ER)
         return

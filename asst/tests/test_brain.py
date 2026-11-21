@@ -576,6 +576,9 @@ async def main() -> int:
     c = await run_gp("da ieri sento il cuore a mille, tipo tamburo", model("SYM-PALPITATIONS"))
     check("testo libero + modello -> VIS-CARD B", any("procedure=VIS-CARD priority=B" in t for t in to(c, LEDGER)), c.sent)
 
+    # GP-15 (journey 183): a known symptom by keyword is never turned into 112 by the model.
+    c = await run_gp("raga, tipo ultimamente sento il cuore che batte un po' troppo, lowkey vorrei un check, boh", model("RED_FLAG"))
+    check("GP-15 palpitazioni + modello RED_FLAG -> ricetta VIS-CARD B, niente 112", any("procedure=VIS-CARD priority=B" in t for t in to(c, LEDGER)) and not any(t.startswith("escalate.emergency") for t in to(c, CITIZEN)), c.sent)
     # 3. Model says RED_FLAG -> escalation, nothing else.
     c = await run_gp("ho una stretta fortissima qui in mezzo al torace", model("RED_FLAG"))
     check("red flag dal modello -> escalate.emergency", to(c, CITIZEN) and to(c, CITIZEN)[0].startswith("escalate.emergency reason=red_flag"), c.sent)
