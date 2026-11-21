@@ -448,11 +448,15 @@ async def _on_refused(
     held = _HELD_FOR.get(slot)
     if held and held[0] == (message.need_id or message.msg_id):
         _HELD_FOR.pop(slot, None)  # BK-63: our hold is gone, the slot is not ours to keep back
-    await _cancel_booking(city, chat, slot, reason=reason, hold_id=hold_id if commit_refused else "")
-    desk = agent == _OUR_AGENTS["booking_centre"]  # BK-57: the booking centre now holds our slots
+    desk = agent == _OUR_AGENTS["booking_centre"]  # BK-57: the booking centre held our slots
     if desk and any(w in reason or w in message.text.lower() for w in _PERMISSION_WORDS):
         _DESK_HOLDS[0] = False
         _LOG.info("bk57.desk_holds_off reason=%s", reason[:40])
+        # BK-75: the slot is not gone, only our grant cannot hold it. No cancel to the citizen:
+        # the confirm goes to the facility now.
+        if slot and not commit_refused and await _desk_forward(city, chat, slot):
+            return False
+    await _cancel_booking(city, chat, slot, reason=reason, hold_id=hold_id if commit_refused else "")
     if slot and (hold_self or desk):
         # P-magesh-9: the cancel just sent is not in ``chat`` yet, so the refused slot looked free
         # and went out again with the next offers. Remember it: it is never offered again.
