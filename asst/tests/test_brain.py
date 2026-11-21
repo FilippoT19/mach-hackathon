@@ -775,6 +775,14 @@ async def main() -> int:
     check("BK-58 'cancel' dentro una frase non annulla", not brain._citizen_cancels("I would like to book, can I cancel later if needed?") and not brain._citizen_cancels("Non voglio cancellare niente, vorrei prenotare"), None)
     check("BK-58 il vero cancel resta", brain._citizen_cancels("No grazie. cancel offer_id=of-1 reason=past") and brain._citizen_cancels("cancel booking_id=B-1"), None)
 
+    # P-magesh-13: negated days, the GP symptom story, "any day".
+    GPID = "agent:fddgaqmp6kb0"
+    check("P-magesh-13 'non posso il lunedì' esclude il lunedì", brain._days([row(CITIZEN, BK, "Non posso il lunedì, va bene qualsiasi altro giorno", 600)]) == frozenset({"tue", "wed", "thu", "fri"}), None)
+    check("P-magesh-13 'any day except Friday'", brain._days([row(CITIZEN, BK, "I can come any day except Friday", 601)]) == frozenset({"mon", "tue", "wed", "thu"}), None)
+    check("P-magesh-13 il giorno detto al gp non conta", brain._days([row(CITIZEN, GPID, "Il dolore al ginocchio è iniziato lunedì scorso", 602), row(CITIZEN, BK, "vorrei prenotare", 603)]) is None, None)
+    check("P-magesh-13 BK-56 resta valido", brain._days([row(CITIZEN, BK, "Posso venire solo lunedì o mercoledì", 604)]) == frozenset({"mon", "wed"}), None)
+    check("P-magesh-13 virgola chiude la negazione", brain._days([row(CITIZEN, BK, "not on monday please, tuesday or wednesday is fine", 605)]) == frozenset({"tue", "wed"}), None)
+
     # 17. X-28: red flag -> acknowledge the person, 112, safety, and warn OUR hospital (no id).
     HO = "agent:jdj692g4145e"
     brain._PEERS.clear()
