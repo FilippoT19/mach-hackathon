@@ -1,7 +1,8 @@
 # PASSAGGIO — tutto il contesto per continuare il lavoro
 
-Scritto il 21/11/2026 (mattina, dopo il commit `REGISTRO: G21` su main). Serve a chi riparte in una chat nuova,
-persona o AI, senza aver seguito le sessioni di prima.
+Scritto il 21/11/2026 mattina; **aggiornato il 21/11 alle ~10:00 UTC** (dopo BK-66/67/68 e GP-17 su main,
+commit `eb38ae9`). Serve a chi riparte in una chat nuova, persona o AI, senza aver seguito le sessioni di prima.
+Le novità dell'aggiornamento sono in 2.3, 2.10, 5, 6, 7, 8.3, 8.6, 11, 12, 13 e 14.1.
 
 Tre file vanno letti insieme:
 
@@ -63,6 +64,8 @@ da `CASI.md` e `REGISTRO.md`, non da un controllo diretto sulla piattaforma.
 - Ambulatori aperti 08:00–18:00 di agenda. Check-in nella mezza giornata dello slot (08–13 o 13–18).
 - Priorità della ricetta: **U** stesso giorno, **B** entro 2 giorni, **D** entro 5, **P** più avanti (lista d'attesa).
   La finestra si conta **dall'emissione della ricetta**, non da adesso.
+- **Sabato e domenica di agenda non esistono** (e19, ADR-124): dopo venerdì 18:00 viene lunedì. Una settimana
+  di agenda = 120 minuti reali. Dal BK-68 tutta l'aritmetica di agenda passa da `_agenda_add` (`10_shared.py`).
 - Il cittadino aspetta **16 minuti reali** per messaggio, poi rimanda lo stesso contenuto (fino a 3 invii).
   Dopo circa 48 minuti il percorso chiude `no_reply`.
 - L'agenda **può saltare in avanti al cambio di livello** (visto alle 03:18 UTC: circa 3 giorni, caso BK-59).
@@ -162,6 +165,17 @@ polemico, remissivo o con un italiano semplice da non madrelingua. Il tono cambi
 - Ogni ASST ha gli stessi medici. La lingua rara di h3 cambia per ASST (Niguarda: vietnamita).
 - Capacità 1 per slot. Solo l'ospedale è accessibile in sedia a rotelle.
 
+### 2.10 MACH-1.3 (proposta tra squadre, 21/11)
+
+Pagina condivisa: https://claude.ai/artifact/TotYPTDHZwb6k8Fm3ipby9. È una proposta tra squadre, compatibile
+con 1.2, **non** una regola degli organizzatori: dove tocca il punteggio vale `e19-rules.md`.
+
+- R1: la struttura risponde a ogni `need.request` entro 10 s → fatto in BK-67 (memoria del catalogo in `_partner_request`).
+- R2: niente lista d'attesa prima del giro tra le ASST → fatto in BK-68 (`page_lost` passa da `_after_local`).
+- R5: scadenze dalla nascita del need; R6: lease 480 s (max 900); token `mach=1.3 after= deadline= lease_s=
+  next_free=`, date senza fuso → solo `after=`/`deadline=` letti lato struttura. **Non implementati**: lease,
+  `mach=1.3`, consenso cross-ASST chiesto solo al confirm, max 6 slot per offerta, `cancel reason=past` con offerte nuove.
+
 ---
 
 ## 3. Regole di lavoro della squadra
@@ -238,7 +252,7 @@ python seats.py --brain && python seats.py --check
 |---|---|
 | `test_brain.py` | Un controllo per caso, con una città finta (`FakeCity`): nessuna rete, nessuna AI. Ogni caso nuovo aggiunge i suoi controlli (cercare l'ID, es. `BK-61`) |
 | `test_journey.py` | Percorso completo con i 5 agenti, un Ledger e un cittadino finti. 6 percorsi × 2 modalità |
-| `test_replay.py` | 18 journey veri rigiocati (r01…r18) con orari reali, partner, Ledger che risponde solo in history o anche con push |
+| `test_replay.py` | 20 journey veri rigiocati (r01…r20) con orari reali, partner, Ledger che risponde solo in history o anche con push |
 | `bench_booking.py` | Quanto dura un turno del booking se ogni chiamata remota costa 1 secondo. Stampa la sequenza delle chiamate |
 
 Nei test compare la riga `RuntimeError: ledger down`: è voluta, non è un errore.
@@ -257,11 +271,20 @@ Nei test compare la riga `RuntimeError: ledger down`: è voluta, non è un error
 
 ## 5. Come raccogliamo i dati
 
-- **Non abbiamo i log degli agenti** in forma utile. Non esiste `city logs`. L'unica vista è la console.
-  Il booking scrive una riga di log per ogni passo (`_trace`, caso OPS-07: `booking.<passo> need_id=…`), pensata
-  per la ricerca "Cerca nei log" della console.
-- **La fonte vera sono i journey**: Console → Journeys → scarica JSON. Finiscono in `~/Downloads`
-  (`journey-N-….json`). **Non sono salvati nel repo.**
+- **Non abbiamo i log degli agenti** in forma utile. Non esiste `city logs`. La console mostra solo le **ultime
+  ~150 righe** per agente (quasi tutte `GET /health`): per i casi passati non servono.
+  Il booking scrive una riga di log per ogni passo (`_trace`, caso OPS-07: `booking.<passo> need_id=…`).
+- **La fonte vera sono i journey**: Console → Percorsi dei cittadini → Scarica JSON (in `~/Downloads`,
+  `journey-N-….json`), **non salvati nel repo**.
+- **Lettura diretta dalla console (21/11)**: con l'utente loggato su https://projectnandaitaly.ai/team in Chrome
+  (estensione Claude in Chrome; il pannello browser interno non ha il login), un `fetch` dalla pagina legge:
+  - `GET /v1/team/journeys` → `{rubric, journeys:[{need_id, wave_id, level, state, score}]}` (solo la wave corrente, 200 righe);
+  - `GET /v1/team/journeys/<need_id>` → lo stesso JSON del pulsante "Scarica JSON";
+  - `GET /v1/logs?agent_id=agent%3A<id>&q=<testo>` → `{lines:[{time, level, message}]}`;
+  - `GET /v1/scoreboard` (classifica), `/v1/agents`, `/v1/team/wave`, `/v1/team/reputation`.
+  Lo strumento JavaScript restituisce al massimo ~1.500 caratteri e blocca le uscite con `=`/`&`/`?`: riassumere
+  nella pagina (conteggi, righe corte, `=` sostituito da spazio). **Filippo vuole che si prenda dal sito il
+  minimo**: chat e JSON dei cittadini, log, messaggi della classifica. Niente altro.
 - Un journey JSON contiene:
   - `journey`: `need_id`, `level`, `state` (`booked`, `done`, `failed`, `open`), `score`.
   - `messages`: ogni messaggio **tra cittadino e agenti** con `from`, `to`, `sent_at` (ora reale UTC), testo.
@@ -284,6 +307,9 @@ Nei test compare la riga `RuntimeError: ledger down`: è voluta, non è un error
    chiama `main(need, city)`.
 2. `main()` (in `00_core.py`):
    - scarta i messaggi di altri agenti senza nessun `chiave=valore` (OPS-08: sono sonde della conformance);
+   - **red flag nel testo del cittadino → `escalate.emergency` + 112 subito, prima della storia** (GP-17), una
+     volta per need (`_EARLY_112`), da qualunque ruolo;
+   - salva in memoria le righe del Ledger del messaggio e poi della storia (`_remember_ledger`, BK-67);
    - per il **gp** fa partire subito l'AI sul testo del cittadino, in parallelo (OPS-09);
    - per il **booking**, se il messaggio è un cancel di un'offerta, manda subito il `cancel.ack` (BK-61);
    - legge la storia del caso con `city.history(need_id=…)`;
@@ -312,7 +338,8 @@ Nei test compare la riga `RuntimeError: ledger down`: è voluta, non è un error
 | `_HELD_FOR` | Slot che stiamo bloccando per un caso (BK-63) |
 | `_RECEIPTS`, `_RECEIPT_SENT`, `_BOOKED_AT`, `_WHERE_OF`, `_ANSWERED_WHERE` | Ricevute mandate, struttura prenotata, indirizzo del cittadino |
 | `_PEERS`, `_DOORS`, `_ZONES` | Risultati dell'Index (agenti, porte, centro dei distretti) |
-| `_EARLY_LLM`, `_EARLY_ACK` | Chiamate partite in `main()` prima della lettura della storia |
+| `_EARLY_LLM`, `_EARLY_ACK`, `_EARLY_112` | Chiamate partite in `main()` prima della lettura della storia (AI, cancel.ack, 112) |
+| `_WORLD`, `_AGENDA_ROW`, `_ASKED_AT` | **BK-67, catalogo in memoria**: pagine `slots` per procedura (valide 30 min), ultima riga `agenda` (45 min), ora dell'ultima domanda (rinfresco ogni 120 s). Usate dal booking e dalle strutture al posto di un giro di Ledger. Nei test sono spente (`_MEMORY_ON = False`) |
 | `_DESK_HOLDS` | Diventa falso se il Ledger rifiuta un hold del booking per permessi |
 
 ### 6.2 Parlare e aspettare
@@ -352,9 +379,15 @@ Ordine delle decisioni in `_gp`:
    - **GP-15:** con "cuore che batte forte" l'AI diceva `RED_FLAG` e mandava al 112 chi aveva solo
      palpitazioni (11 percorsi persi su 14). Ora per palpitazioni e controllo del cuore il `RED_FLAG` dell'AI
      è ignorato: le loro vere red flag sono parole chiave.
-7. **Emergenza** → `_escalate`: `escalate.emergency reason=red_flag` + frase con 112; avviso
-   `emergency.notice` al nostro ospedale (id fisso, X-56: la ricerca nell'Index andava in timeout); pronto
-   soccorso più vicino; poi `data.request purpose=emergency fields=address`.
+7. **Emergenza** → `_escalate`: `escalate.emergency reason=red_flag` + frase con 112 (`_escalate_text`) e
+   pronto soccorso adatto al sintomo (`_er_kind`: petto → cardiologia, gambe → neurologia/stroke unit,
+   gravidanza → ostetricia); avviso `emergency.notice` al nostro ospedale (id fisso, X-56); pronto soccorso più
+   vicino; poi `data.request purpose=emergency fields=address`.
+   - **GP-17 (21/11):** su 12 percorsi L1 della wave W01QQQ, 8 con `emergency.no_escalation −2`: 6 senza
+     risposta, 2 con il 112 dopo 278 s. Ora, con una red flag a parole chiave, il 112 parte da `main()` prima
+     della storia; `_escalate` dopo aggiunge avviso e PS più vicino dentro la domanda "dove si trova".
+   - **Decisione di Filippo:** il 112 resta **subito**. Chiedere prima dove abita e dare il 112 alla fine è
+     stato scartato: il giudice conta solo `escalate.emergency` e il percorso si chiude lì (X-42b).
 8. **Sintomo non capito**: prima volta chiede di descriverlo; poi `_gp_again` propone le quattro scelte
    (`gp.choices`), poi una frase di sicurezza. Mai silenzio (P-magesh-10).
 9. **Ricetta**:
@@ -401,6 +434,13 @@ Ordine delle decisioni in `_gp`:
 `_advance` tiene il lucchetto del caso e richiama `_advance_alone` finché c'è una pagina del catalogo in attesa
 (BK-45), con un tetto di 40 secondi per turno (BK-54).
 
+**BK-67, catalogo in memoria (online dalle ~09:00 UTC, booking 1.0.30).** Prima ogni caso aspettava il
+Ledger (~14 minuti sotto carico). Ora `_advance_alone` aggiunge alla storia, con `_with_memory`, l'agenda e le
+pagine del catalogo già in memoria; se la memoria è vuota legge una volta `city.history(LEDGER)` (4 s,
+`_warm_memory`). Dopo la risposta, `_refresh_memory` chiede `agenda` + `world page=1..4` (al massimo ogni 120 s),
+anche al `referral` del gp. Misurato dopo il deploy: prima offerta o consenso **25–115 s** dopo il cittadino
+(prima: 82 casi su 82 tra 07 e 09 UTC senza offerte).
+
 `_advance_alone`, passo per passo:
 
 1. **Ricetta scaduta?** → `_ask_renewal`: `data.request purpose=prescription_renewal` (regola P1).
@@ -414,7 +454,9 @@ Ordine delle decisioni in `_gp`:
 7. **Ora di agenda** (`_agenda_now`): riga `agenda` del Ledger + minuti reali passati × 60. Dal BK-62 si usa
    l'orologio reale da quando il Ledger ha scritto la riga (entro 45 minuti). Se la riga è vecchia e l'orologio
    reale non è utilizzabile, si rilegge (BK-61).
-8. **Scadenza** (`_rx_deadline`): finestra della priorità contata dalla ricetta (BK-27, BK-48), meno 30 minuti.
+8. **Scadenza** (`_rx_deadline`): finestra della priorità contata dalla ricetta (BK-27, BK-48), meno 30 minuti,
+   in giorni feriali (BK-68). **Sospetto aperto (BK-69):** dopo il deploy 25 ricette B su 25 non hanno avuto
+   offerte locali (vedi 12).
 9. **Filtro** (`fitting`, in `10_shared.py`): procedura, struttura, posti liberi, riserva urgente, **margine**
    (5 ore di agenda; 4 per U: MACH-1.2), lingua del medico, giorno in cui il medico lavora.
    Giorni e genere **ordinano, non filtrano** (P-francesco-31, BK-60b).
@@ -454,7 +496,11 @@ I giorni detti a parole si leggono con `_days` (BK-56): "solo lunedì o mercoled
 ### 8.6 Altre ASST (`_after_local`, `_cross_asst`, `_partner_round`)
 
 1. Domanda di consenso: `consent purpose=cross_asst …` (regola P2: nessun dato esce prima).
-   Al massimo 2 volte (BK-49). Formato della domanda cambiato più volte: BK-58, BK-64; **BK-66 in PR** (vedi 12).
+   Al massimo 2 volte (BK-49). Formato della domanda cambiato più volte: BK-58, BK-64, BK-66 (online). La
+   prima domanda è **senza** `consent_ref` (BK-64); il riferimento arriva solo dopo "Which consent_ref?".
+   Pagina del catalogo persa (`page_lost`) → si passa comunque da qui prima della lista d'attesa (BK-68, R2).
+   Il consenso esce anche quando la lettura del catalogo dà una lista vuota in agenda: i cittadini di questi
+   giorni spesso non rispondono alla domanda (25 B falliti, vedi 12).
 2. Sì → `city.find` delle strutture di altre ASST; per una lingua rara prima l'ASST che la parla (X-51).
 3. `need.request service_type=… procedure=… request_id=cross-<need> priority=… deadline=…` a **tutte**, insieme.
    Solo criteri, nessun dato del cittadino (X-44, MACH-1.2).
@@ -548,6 +594,11 @@ Fa da solo hold e commit.
 | 03–04 UTC | Journey 000304 e altri 14: una sola pagina, un solo giorno, un solo medico; cancel senza risposta; `stale_fence` | BK-60, BK-60b, BK-61, BK-62, BK-63, MACH-1.2 |
 | 04:22 UTC | Deploy con `max_inflight: 16` e silenzio del booking | OPS-12 tolto |
 | dalle 04:24 UTC | **Tutti i nostri agenti senza messaggi** (anche quelli non rilasciati) | G19: probabile fermo della piattaforma |
+| 04:45–05:26 UTC | 16 journey falliti (wave W01QQQ): prima offerta ~32 min dopo la ricetta (attesa del Ledger), liste d'attesa con S 130–286, offerte tutte lo stesso giorno, status senza offerte | BK-67 (memoria), status che ripete le offerte |
+| 03:18 / 05:18 UTC | "Salto" dell'agenda = fine settimana di agenda (ogni 120 min reali) | BK-68 (`_agenda_add`) |
+| ~09:00 UTC | Rilascio BK-66 + BK-67 + BK-68 (PR #141) | booking 1.0.30, strutture, consultorio |
+| 09:08–09:20 UTC | B: 25/25 al consenso cross-ASST senza offerte locali, `no_booking` con S 208–390; D: 6/8 falliti, prima offerta tutta con un medico (h1), cancel `gender`/`day` | **BK-69 da fare** (vedi 12) |
+| wave W01QQQ, L1 | Red flag: 6 senza risposta, 2 con il 112 dopo 278 s → `no_escalation −2` | GP-17, gp 1.0.17 (~09:50 UTC) |
 
 ---
 
@@ -555,19 +606,33 @@ Fa da solo hold e commit.
 
 | Cosa | Stato |
 |---|---|
-| Codice su main | Tutto fino a BK-65 e MACH-1.2 |
-| Online secondo `CASI.md` | booking 1.0.29 (04:41 UTC), consultorio (03:55 UTC), strutture (~04:15 UTC), gp (03:40 UTC) |
-| In PR, non rilasciato | **BK-66** (dopo "Which consent_ref?" la domanda con il riferimento non riparte, G21) |
-| Da analizzare | GP-16; G20 (confirm persi nei riavvii) |
-| Piattaforma | G19: dalle 04:24–04:32 UTC nessun messaggio ai nostri agenti. Un'altra squadra parlava di ripresa "alle 10". **Da verificare prima di tutto** |
+| Codice su main | Tutto fino a BK-68 e GP-17 (`eb38ae9`) |
+| Online | booking 1.0.30 (~09:00 UTC, BK-66/67/68); **gp 1.0.17 (~09:50 UTC, GP-17)**. Specialist, hospital, family_counseling e booking con GP-17: rilascio in corso dalle ~09:55 UTC, uno ogni 5,5 min (controllare con `city status`) |
+| PR aperte | #142 (CASI.md: BK-66/67/68 "online"), #138 (questo documento) |
+| Punteggi in console (~09:30 UTC) | gp +4883, booking **−745**, hospital +101, specialist +130, consultorio +116. Wave W01QQQ: 200 percorsi, 116 falliti, 16 conclusi, 10 urgenza |
+| Piattaforma | Ripartita: la wave W01QQQ arriva a ondate (ultima nascita vista 09:25 UTC), livelli 1–8 |
 
-**Quasi niente di quello che è stato scritto dal 03:00 UTC in poi è stato verificato su un journey**:
-BK-59, BK-60, BK-60b, BK-61 (tranne "pagina 2": verificata), BK-62, BK-63, BK-64, BK-65, FA-21, MACH-1.2
-sono tutti "online, da verificare".
+**Da fare subito (BK-69, analisi del 21/11 ~09:30 UTC sui journey nati dopo il deploy):**
+
+1. **Ricette B: 25 su 25 fallite.** Il booking manda lo status, poi dopo ~25 s il consenso cross-ASST senza
+   nessuna offerta locale; il cittadino chiede "Which consent_ref?" o tace → `no_booking`, S = 208–390.
+   Ipotesi: la finestra B di `_rx_deadline` è quasi vuota. Contiamo 2 giorni di agenda dal `referral` del gp,
+   che arriva ~33 min reali (= 33 ore di agenda) prima del cittadino, con il fine settimana saltato e 30 min di
+   margine; il giudice calcola S quando nasce il need e ne trova centinaia. Proposta: se la finestra è vuota,
+   offrire comunque i posti locali dei 2 giorni di agenda successivi prima del consenso. **Da confermare con
+   l'agenda vera prima di scrivere codice.**
+2. **Ricette D: 6 su 8 fallite.** Prima offerta di 4 posti tutti dello stesso medico (h1); il cittadino li
+   annulla per `gender`, la seconda offerta (h2/h3) per `day`. Cancel visti: day 23, gender 20, deadline 3.
+   Proposta: la prima offerta deve avere almeno due medici e due giorni; se la memoria non li ha, leggere altre
+   pagine prima di offrire. Probabile causa: le pagine in memoria sono le prime e contengono un solo medico.
+
+**Verifiche aperte:** BK-66/67/68 risultano attivi (offerte in 25–115 s, nessun silenzio), ma i percorsi
+falliscono per i due motivi sopra. GP-17 va verificato sui primi percorsi L1 con red flag nati dopo ~09:50 UTC
+(il 112 deve arrivare in pochi secondi, nessun `no_escalation`).
 
 ### Cose che non sappiamo
 
-1. Se la gara è ripartita e a che livello siamo.
+1. Come il giudice conta la finestra B (da quando, con o senza fine settimana): decide BK-69.
 2. Perché il Ledger risponde `stale_fence` al commit (BK-62 riprova senza fence: è un tentativo).
 3. Quanto è veloce e affidabile `city.llm` sotto carico, e quanto costa.
 4. Se dopo aver annullato tutte le offerte il cittadino accetta ancora un secondo messaggio (la regola dice di no; i
@@ -580,6 +645,8 @@ sono tutti "online, da verificare".
 ### Difetti noti non corretti
 
 - `_index_facility` non ha memoria: una ricerca nell'Index a ogni confirm verso un partner.
+- BK-67: la memoria accetta righe del Ledger con destinatario vuoto; un confirm del consultorio oltre 8 s riceve
+  l'elenco delle offerte invece della conferma.
 - La memoria nel processo si perde a ogni riavvio (offerte mandate, cancel già risposti, slot bloccati).
 - `_TRUSTED_PARTNERS` vuoto: nessun tetto ai messaggi accettati da un agente esterno.
 - La riga di offerta è lunga (~280 caratteri): in un messaggio ne entrano 5–7, non 12.
@@ -604,6 +671,10 @@ sono tutti "online, da verificare".
 7. **`answer_set.size = 0` non è colpa nostra.** Va separato dai `no_booking` veri prima di contare.
 8. **Le preferenze ordinano, non filtrano.** Filtrare ha tolto slot che erano in `S`.
 9. **Le voci vanno verificate sui dati.** Vedi 2.8.
+10. **Velocità non basta.** Dopo BK-67 il booking risponde in secondi, ma una finestra sbagliata o una prima
+    offerta con un solo medico fanno fallire lo stesso. Dopo ogni deploy contare per priorità (B/D/P) cosa parte
+    per primo: offerta, consenso o lista d'attesa.
+11. **Red flag: il 112 subito, poi il resto.** Ogni attesa prima di `escalate.emergency` (storia, Index, AI) è un −2.
 
 ---
 
@@ -611,7 +682,7 @@ sono tutti "online, da verificare".
 
 ### 14.1 Prima di scrivere altro codice
 
-1. **Capire se la piattaforma è ripartita** (G19). Senza messaggi in arrivo nessuna modifica vale.
+1. **BK-69** (paragrafo 12): finestra B e varietà della prima offerta D. Sono i punti persi più grandi oggi.
 2. **Un solo deploy, poi misurare.** Scaricare tutti i journey nati dopo quel deploy.
 3. **Classificare per punti persi**, non per numero di casi: una tabella causa → journey → punti persi →
    dipende da noi o dalla piattaforma. Lavorare solo sulla prima riga.
@@ -698,8 +769,10 @@ Vincoli: modifica solo asst/brain/parts/, poi `python seats.py --brain` e `--che
 devono passare; ogni modifica ha una riga in CASI.md; PR verso main con la tabella caso → soluzione →
 logica → test in italiano. NON fare merge, deploy, scale o retire.
 
-Primo compito: ti do i journey scaricati dopo l'ultimo deploy. Classificali per causa e per punti persi,
-separando quello che dipende da noi da quello che dipende dalla piattaforma, e dimmi quali fix "online, da
-verificare" (paragrafo 12 del PASSAGGIO) risultano verificati e quali no. Non scrivere codice prima di
-avermi mostrato la tabella.
+Stato e priorità sono nel paragrafo 12 del PASSAGGIO (aggiornato 21/11 ~10:00 UTC): BK-69 (ricette B senza
+offerte locali, prima offerta D con un solo medico) e verifica di GP-17 (112 subito sulle red flag).
+Dal sito (console di squadra) prendi solo il minimo: chat e JSON dei cittadini, log, messaggi della classifica.
+
+Primo compito: leggi i journey nati dopo l'ultimo deploy (paragrafo 5 per come leggerli). Dimmi con una tabella
+se le cause di BK-69 sono confermate e se GP-17 funziona. Non scrivere codice prima di avermi mostrato la tabella.
 ```

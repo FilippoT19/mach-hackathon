@@ -7,19 +7,19 @@ Generato da `asst/tools/indici.py`. Non modificare a mano: rilanciare lo script.
 Per ogni funzione: riga, prima frase della docstring (se c'è) e gli ID dei casi citati nel suo codice.
 Gli ID si cercano in `CASI.md` (indice B qui sotto) o in `proposte/<nome>.md` (ID `P-…`).
 
-### `00_core.py` — Avvio e smistamento (229 righe, 5 funzioni)
+### `00_core.py` — Avvio e smistamento (246 righe, 5 funzioni)
 
 | Funzione | Riga | Cosa fa (docstring) | Casi citati |
 |---|---|---|---|
-| `role_of` | 85 | The role this process serves, from ``CITY_ROLE`` or the card next to the brain. | — |
-| `async main` | 101 | (commento) X-40: a clinical question (dose, diagnosis) is never a silent refusal: handle() answers it in words and goes on with the journey (red flag first). | BK-61, OPS-08, OPS-09, X-40 |
-| `_asks_address` | 144 | True when this turn is a ``data.request`` that names the field ``address``. | — |
-| `_own_street` | 170 | This agent's door: the city value, else the street shipped beside the brain. | P-magesh-4 |
-| `async handle` | 189 | (commento) X-41: a red flag is sent to 112 by EVERY role, not only the GP. | BK-15, X-30, X-40, X-41 |
+| `role_of` | 86 | The role this process serves, from ``CITY_ROLE`` or the card next to the brain. | — |
+| `async main` | 102 | (commento) X-40: a clinical question (dose, diagnosis) is never a silent refusal: handle() answers it in words and goes on with the journey (red flag first). | BK-61, BK-67, GP-17, OPS-08, OPS-09, X-40 |
+| `_asks_address` | 161 | True when this turn is a ``data.request`` that names the field ``address``. | — |
+| `_own_street` | 187 | This agent's door: the city value, else the street shipped beside the brain. | P-magesh-4 |
+| `async handle` | 206 | (commento) X-41: a red flag is sent to 112 by EVERY role, not only the GP. | BK-15, X-30, X-40, X-41 |
 
-Costanti e memorie di modulo: `ROLES` (r. 29), `_MAX_PAGE` (r. 30), `_LEAD` (r. 33), `_LEAD_BOOK` (r. 36), `_DOCTORS` (r. 39), `_PROTOCOLS` (r. 47), `_KEYWORDS` (r. 53), `_RED_FLAGS` (r. 59), `_DEADLINE_DAYS` (r. 65), `_EMERGENCY_NEEDS` (r. 66), `_EARLY_ACK` (r. 67), `_EARLY_LLM` (r. 68), `_RED_FLAGS_MORE` (r. 69), `_RX` (r. 70), `_LOG` (r. 71), `_PULL_TRIES` (r. 74), `_PULL_PAUSE` (r. 75), `_PULL_SECONDS` (r. 78), `_TURN_SECONDS` (r. 80), `_SENT_NEEDS` (r. 82)
+Costanti e memorie di modulo: `ROLES` (r. 29), `_MAX_PAGE` (r. 30), `_LEAD` (r. 33), `_LEAD_BOOK` (r. 36), `_DOCTORS` (r. 39), `_PROTOCOLS` (r. 47), `_KEYWORDS` (r. 53), `_RED_FLAGS` (r. 59), `_DEADLINE_DAYS` (r. 65), `_EMERGENCY_NEEDS` (r. 66), `_EARLY_ACK` (r. 67), `_EARLY_LLM` (r. 68), `_EARLY_112` (r. 69), `_RED_FLAGS_MORE` (r. 70), `_RX` (r. 71), `_LOG` (r. 72), `_PULL_TRIES` (r. 75), `_PULL_PAUSE` (r. 76), `_PULL_SECONDS` (r. 79), `_TURN_SECONDS` (r. 81), `_SENT_NEEDS` (r. 83)
 
-### `10_shared.py` — Funzioni comuni (379 righe, 23 funzioni)
+### `10_shared.py` — Funzioni comuni (404 righe, 25 funzioni)
 
 | Funzione | Riga | Cosa fa (docstring) | Casi citati |
 |---|---|---|---|
@@ -33,21 +33,23 @@ Costanti e memorie di modulo: `ROLES` (r. 29), `_MAX_PAGE` (r. 30), `_LEAD` (r. 
 | `_line_fields` | 144 | Fields of the one line that carries ``token``. BK-14: one message holds several offers. | BK-14 |
 | `_offer_rows` | 153 | Every offer line of one message (``offer_id=`` on each line). | — |
 | `_when` | 159 | — | — |
-| `_citizen` | 169 | — | — |
-| `_we` | 182 | — | — |
-| `_exact` | 191 | — | — |
-| `async _say` | 199 | — | — |
-| `_latest` | 210 | — | — |
-| `async _until` | 218 | Re-read the case until ``ready`` or the short wait ends. The push may never arrive. | BK-54 |
-| `_keep` | 243 | BK-15: a re-read of the case must not drop rows we already had (the inbound message). | BK-15 |
-| `async _await_line` | 250 | The ledger line for ``token``, or a refusal of ``op`` that was not already in ``chat``. | BK-15, BK-54, FA-21 |
-| `_has_agenda` | 289 | — | — |
-| `_has_procedure` | 294 | — | — |
-| `_rx` | 301 | — | — |
-| `_speaks` | 313 | — | — |
-| `fitting` | 324 | Slots a citizen can accept, preferring the citizen's requested agenda days. | P-francesco-31 |
+| `_agenda_add` | 169 | ``start + delta`` on the agenda clock. BK-68: the agenda has no Saturday or Sunday (e19: "una settimana di gara dura 120 minuti reali, non 168"); after Friday 24:00 comes Monday 00:00. A B prescription of Friday afternoon is due o | BK-68 |
+| `_when_agenda` | 188 | An agenda time another team wrote, with or without a time zone (MACH-1.3 writes none). | MACH-1.3 |
+| `_citizen` | 193 | — | — |
+| `_we` | 206 | — | — |
+| `_exact` | 215 | — | — |
+| `async _say` | 223 | — | — |
+| `_latest` | 234 | — | — |
+| `async _until` | 242 | Re-read the case until ``ready`` or the short wait ends. The push may never arrive. | BK-54, BK-67 |
+| `_keep` | 268 | BK-15: a re-read of the case must not drop rows we already had (the inbound message). | BK-15 |
+| `async _await_line` | 275 | The ledger line for ``token``, or a refusal of ``op`` that was not already in ``chat``. | BK-15, BK-54, FA-21 |
+| `_has_agenda` | 314 | — | — |
+| `_has_procedure` | 319 | — | — |
+| `_rx` | 326 | — | — |
+| `_speaks` | 338 | — | — |
+| `fitting` | 349 | Slots a citizen can accept, preferring the citizen's requested agenda days. | BK-68, P-francesco-31 |
 
-Costanti e memorie di modulo: `_OUR_AGENTS` (r. 64), `_PEERS` (r. 71), `_TRUSTED_PARTNERS` (r. 74), `_KNOWN_PARTNERS` (r. 77), `_RARE_LANG_BY_ASST` (r. 100), `_FACILITY_WHERE` (r. 115), `_FACILITY_WHERE_EN` (r. 120), `_SAID` (r. 196), `_RARE_LANG` (r. 310)
+Costanti e memorie di modulo: `_OUR_AGENTS` (r. 64), `_PEERS` (r. 71), `_TRUSTED_PARTNERS` (r. 74), `_KNOWN_PARTNERS` (r. 77), `_RARE_LANG_BY_ASST` (r. 100), `_FACILITY_WHERE` (r. 115), `_FACILITY_WHERE_EN` (r. 120), `_SAID` (r. 220), `_RARE_LANG` (r. 335)
 
 ### `15_voice.py` — AI (city.llm) e frasi (132 righe, 5 funzioni)
 
@@ -61,32 +63,34 @@ Costanti e memorie di modulo: `_OUR_AGENTS` (r. 64), `_PEERS` (r. 71), `_TRUSTED
 
 Costanti e memorie di modulo: `_LLM_TIMEOUT` (r. 9), `_ACT_WORDS` (r. 10), `_LANG_NAMES` (r. 17), `_SYMPTOM_HINTS` (r. 18), `_VOICE_MODEL` (r. 93)
 
-### `20_gp.py` — Medico di base (528 righe, 14 funzioni)
+### `20_gp.py` — Medico di base (557 righe, 16 funzioni)
 
 | Funzione | Riga | Cosa fa (docstring) | Casi citati |
 |---|---|---|---|
 | `_emergency` | 6 | (commento) P-magesh-11: red flags in other words never depend on the model (slow or down). | CO-10, P-magesh-11, P-magesh-16, P-magesh-6 |
 | `async _gp_again` | 50 | P-magesh-10: a later citizen message the table still does not match is never left without an answer (no_reply). After a prescription: repeat it with the next step. Before: one closed question with the protocol choices, then a shor | P-magesh-10 |
 | `_red_flag` | 80 | — | — |
-| `async _escalate` | 84 | X-41: 112 + notice to our hospital, from any role. | X-41, X-42, X-45, X-55, X-56 |
-| `_symptom` | 141 | — | — |
-| `_our_rx` | 152 | — | — |
-| `_rx_line` | 189 | GP-13 + X-28: a fixed, instant sentence (the model is too slow before the ledger push). Review asks: acknowledge the person specifically, a professional next step, and more than the ordinary step (proactivity): booking already tol | GP-13, X-28 |
-| `_renewal_source` | 219 | — | — |
-| `async _renew_prescription` | 229 | (commento) A predecessor always maps to the same renewal, even on replay with incomplete history. | — |
-| `async _gp` | 281 | (commento) G5: the booking tells us the visit is booked; we close the loop for the follow-up. | GP-15, OPS-09, P-francesco-19, P-francesco-37, P-francesco-43, X-27, X-42 |
-| `async _announce` | 433 | — | — |
-| `_prefs` | 468 | — | — |
-| `_prefs_line` | 480 | — | — |
-| `async _on_emergency_where` | 498 | X-42: the citizen tells us where they are after a red flag -> nearest emergency room. | X-42, X-55, X-56 |
+| `async _escalate` | 84 | X-41: 112 + notice to our hospital, from any role. | GP-17, X-41, X-42, X-45, X-55, X-56 |
+| `_er_kind` | 132 | GP-17: the emergency room that suits the red flag, named for the 112 call. | GP-17 |
+| `_escalate_text` | 151 | GP-17: the 112 message, the same with or without the history (``told``: the notice to our hospital already left, will leave now, or there is no hospital to notice). | GP-17 |
+| `_symptom` | 170 | — | — |
+| `_our_rx` | 181 | — | — |
+| `_rx_line` | 218 | GP-13 + X-28: a fixed, instant sentence (the model is too slow before the ledger push). Review asks: acknowledge the person specifically, a professional next step, and more than the ordinary step (proactivity): booking already tol | GP-13, X-28 |
+| `_renewal_source` | 248 | — | — |
+| `async _renew_prescription` | 258 | (commento) A predecessor always maps to the same renewal, even on replay with incomplete history. | — |
+| `async _gp` | 310 | (commento) G5: the booking tells us the visit is booked; we close the loop for the follow-up. | GP-15, OPS-09, P-francesco-19, P-francesco-37, P-francesco-43, X-27, X-42 |
+| `async _announce` | 462 | — | — |
+| `_prefs` | 497 | — | — |
+| `_prefs_line` | 509 | — | — |
+| `async _on_emergency_where` | 527 | X-42: the citizen tells us where they are after a red flag -> nearest emergency room. | X-42, X-55, X-56 |
 
-Costanti e memorie di modulo: `_RF_PREGNANT` (r. 27), `_RF_CHEST` (r. 36), `_RF_LEGS` (r. 42), `_VISIT` (r. 160), `_SYMPTOM_NAME` (r. 166), `_WHERE` (r. 173), `_WHEN` (r. 181), `_PREF_LANG` (r. 461), `_PREF_F` (r. 464), `_PREF_M` (r. 465), `_ANSWERED_ER` (r. 495)
+Costanti e memorie di modulo: `_RF_PREGNANT` (r. 27), `_RF_CHEST` (r. 36), `_RF_LEGS` (r. 42), `_VISIT` (r. 189), `_SYMPTOM_NAME` (r. 195), `_WHERE` (r. 202), `_WHEN` (r. 210), `_PREF_LANG` (r. 490), `_PREF_F` (r. 493), `_PREF_M` (r. 494), `_ANSWERED_ER` (r. 524)
 
 ### `25_streets.py` — Tabella delle vie di Milano (4104 righe, 4 funzioni)
 
 Solo dati: via → coordinate, per calcolare la distanza dal cittadino (X-54). `_street_norm`, `_street_bare`, `_streets`, `_street_point`
 
-### `30_booking.py` — Centro prenotazioni (2997 righe, 115 funzioni)
+### `30_booking.py` — Centro prenotazioni (3232 righe, 124 funzioni)
 
 | Funzione | Riga | Cosa fa (docstring) | Casi citati |
 |---|---|---|---|
@@ -95,120 +99,129 @@ Solo dati: via → coordinate, per calcolare la distanza dal cittadino (X-54). `
 | `_expired_prescription` | 31 | — | — |
 | `async _ask_renewal` | 50 | — | — |
 | `_latest_slots` | 77 | — | — |
-| `_page` | 85 | — | — |
-| `_slots_page` | 93 | — | — |
-| `_asked` | 99 | — | — |
-| `_offered` | 108 | — | — |
-| `_withdrawn` | 119 | Slots we cancelled. The citizen drops the rest, so those are offered again. | — |
-| `_number` | 146 | — | — |
-| `_guess_lang` | 161 | — | — |
-| `_note_lang` | 170 | Remember the citizen's language for the need, for later turns whose history misses it. | — |
-| `_lang` | 182 | (commento) BK-33 (000113): before the citizen writes to us, the GP referral already told us the language (X-33). Without this the cross_asst consent went out in Italian to an English citizen. | BK-33, X-33 |
-| `_rx_pref` | 209 | X-33: a preference the GP passed in the referral for this prescription. | X-33 |
-| `_gender` | 219 | — | BK-60 |
-| `_doctor_gender` | 231 | — | — |
-| `_slot_day` | 239 | — | — |
-| `_cancel_learned` | 247 | BK-60 (journey 890912000304): what the citizen's cancels tell us. ``S`` is built from constraints the citizen has not said yet; a cancel names the one the offer broke with ``reason=``. Five offers with the same doctor came back `` | BK-60 |
-| `_learned_out` | 291 | BK-60: True for a slot (catalogue line or offer) that a cancel already ruled out. | BK-60 |
-| `_best_tier` | 302 | BK-60: the slots that match every preference (days, doctor gender) come first. "Posso solo lunedì o mercoledì": a Tuesday is not a choice to add for variety (P-francesco-48 spreads days and doctors only inside this tier). With no  | BK-60, BK-60b, P-francesco-48 |
-| `_gender_said` | 315 | — | — |
-| `_days` | 357 | The citizen's days. BK-56 (journey 249): the citizen may write them only in words ("Posso venire solo lunedì o mercoledì"), with no ``days=`` token, and may tell the GP other days than the booking centre. The latest citizen messag | BK-56, BK-60, P-magesh-13 |
-| `_before_rx_deadline` | 407 | BK-27: the priority window counts from the prescription, not from today. A slot after the citizen's deadline is refused (no_booking -1), so it is never offered. | BK-27 |
-| `_service_procedure` | 436 | — | — |
-| `_local_doctor` | 445 | True when one of our doctors for this procedure speaks ``lang`` (unknown procedure: True). | — |
-| `_fit` | 459 | BK-55: as many offer lines as fit in one message with ``tail`` (at least one line). | BK-55 |
-| `_diverse` | 467 | P-francesco-48: ``count`` offers that differ. The first three by date are often the same day and doctor, so one hidden constraint of the citizen ("not that day") drops them all together. The best slot stays first; each next pick i | P-francesco-48 |
-| `_refused_slots` | 484 | P-magesh-9: slots whose hold or commit the Ledger refused to us. Never offered again. | P-magesh-9 |
-| `_slot_ids` | 496 | Slot ids among the offers this process remembers (not the waiting-list offer id). | — |
-| `_rx_deadline` | 507 | The agenda time after which the citizen refuses a slot (``reason=deadline``). | — |
-| `_agenda_now` | 547 | The agenda time of this turn. The Ledger's ``agenda`` line is read once per case; a turn that opens minutes later (the citizen writes again after 16 minutes) is that many agenda hours ahead, and a slot that was free then is in the | BK-62 |
-| `_agenda_stale` | 573 | True when this citizen turn opened more than two real minutes after our agenda reading. | BK-59, BK-62, BK-63 |
-| `_within` | 586 | — | — |
-| `_search_limit` | 591 | The latest slot time worth reading the catalogue for (None: no limit, priority P). | — |
-| `_peer_value` | 615 | — | — |
-| `_peer_id` | 621 | — | — |
-| `_cross_consent` | 637 | Return (accepted/refused/unknown, consent_ref) for the latest cross-ASST request. | BK-33, BK-36, BK-49, BK-58 |
-| `_cross_asks` | 677 | — | — |
-| `_cross_replies` | 682 | — | — |
-| `_offer_line` | 691 | — | — |
-| `_our_offer` | 710 | — | — |
-| `class _Gate` | 718 | One need's lock and how many turns hold it or wait for it. | — |
-| `class _Sent` | 728 | Offers this process sent for one need, which the case history may not show yet. | BK-33, BK-45, BK-47, BK-61 |
-| `_trace` | 764 | OPS-07: one log line per booking step, with the need_id in the text, so the console search ("Cerca nei log") finds the whole case. No citizen text and no personal data. | OPS-07 |
-| `_who` | 778 | — | — |
-| `async _ledger_ask` | 784 | — | — |
-| `async _ledger_asks` | 789 | OPS-11: independent Ledger questions of one step go out together (each costs seconds). | OPS-11 |
-| `_citizen_dropped` | 797 | — | — |
-| `_offer_speaks` | 810 | BK-35 (000113): a partner offer must have a doctor who speaks the citizen's language. | BK-35, X-44 |
-| `_sent` | 835 | — | — |
-| `_rare_hospital` | 858 | — | — |
-| `_cx_head` | 864 | BK-58 (journey 0002040003): the citizen answered our cross-ASST question twice with "Which consent_ref?" and went to the waiting list (no_booking -1). The question now carries the reference the citizen can answer with, as the loca | BK-58, BK-64, P-magesh-22 |
-| `_cross_question` | 880 | (commento) BK-49: a plain question, as in the kit ("consent purpose=report_sharing Posso ...?"). Asking for "the consent reference" made the citizen answer "Which consent_ref?" (000172). | BK-49 |
-| `async _cross_asst` | 897 | Ask for cross-ASST consent, then request criteria-only offers from Index peers. | BK-33, BK-47, BK-61, MACH-1.2, OPS-11, P-francesco-34, X-44, X-51 |
-| `_search_line` | 1047 | — | — |
-| `async _index_facility` | 1054 | Resolve a facility through the Index before sending it a booking message. | BK-61 |
-| `_expected_offer` | 1087 | — | — |
-| `_expected_confirm_reply` | 1096 | — | — |
-| `_open_offers` | 1114 | offer_id -> slot_id of the offers the citizen still holds: sent by us, and cancelled neither by the citizen nor by us (a facility's cancel that we passed on). | — |
-| `_cross_offered` | 1133 | Every partner offer_id that already went to the citizen (history and this process). | — |
-| `_partner_pool` | 1143 | BK-47: every partner offer in the case that the citizen can accept, best first. | BK-35, BK-47, BK-60, P-francesco-31 |
-| `async _partner_round` | 1191 | Send the next (at most three) partner offers in ONE message. False: nothing left to send. | — |
-| `async _partner_offer` | 1244 | A partner's offers arrived. True when the citizen has (or now gets) partner offers. | BK-47 |
-| `async _partner_reply` | 1261 | (commento) Include replies that arrived while the original search held the lock. | — |
-| `_mark_answered` | 1298 | — | — |
-| `async _desk` | 1305 | BK-33: every citizen message gets an answer. The route below decides what to say; if the turn ends without a word to anyone, a short line tells the citizen where the case stands. | BK-33, P-magesh-17 |
-| `async _still_here` | 1349 | (commento) P-magesh-14: only offers still open count (not the waiting list, not a cancelled one). | P-magesh-14 |
-| `async _desk_route` | 1397 | (commento) BK-15: the case history can miss the message that opened this turn. Without it the desk finds no citizen and stays silent, so the inbound message always joins the case. | BK-15, BK-28, BK-57, BK-61, FA-21 |
-| `_citizen_cancels` | 1475 | BK-58: "cancel" inside a sentence ("can I cancel later?", "I don't want to cancel") is not a cancel. The act is the first word, or the word with the offer/slot/booking it drops. | BK-58 |
-| `async _on_referral` | 1484 | X-27: the gp tells us a prescription is coming. Answer at once (clock +1), once per need. | BK-61, X-27, X-33 |
-| `async _need_gate` | 1508 | — | — |
-| `async _advance` | 1520 | (commento) BK-61 (journey 000304): the citizen cancels every offer in the same second and each cancel opens a turn. They all saw "no offer left"; only the first takes the next step (new offers, other ASSTs, waiting list). Three offer message | BK-39, BK-45, BK-54, BK-61 |
-| `_widening` | 1596 | — | — |
-| `async _widen_stop` | 1600 | The extra page did not come in time: offer what the pages read so far hold. | — |
-| `_one_sided` | 1608 | (commento) BK-62 (nine journeys of 21/11, 03:37-03:48): five offers, all on Tuesday 1 December. The citizens had said "only on some days" without naming them and cancelled with reason=day. Slots of one calendar day are one-sided too. | BK-62 |
-| `_all_slot_lines` | 1622 | Slot lines of every catalogue page the Ledger sent us in this case, once per slot. | — |
-| `async _advance_alone` | 1637 | (commento) Ask, then read the reply from history: the push of a ledger message does not open a turn. | BK-14, BK-21, BK-22, BK-28, BK-30, BK-33, BK-37, BK-45, BK-46, BK-48, BK-50, BK-59, BK-60, BK-61, BK-63, CO-20, OPS-11, P-magesh-15, P-magesh-9 |
-| `async _after_local` | 1925 | The local catalogue has nothing (more) that fits: another ASST, else the waiting list. | BK-10, BK-61 |
-| `async _relaxed` | 1953 | — | — |
-| `async _on_confirm` | 1987 | (commento) A purpose-only response belongs to the latest booking consent question. | BK-51, BK-57, BK-63, FA-01, OPS-11, P-francesco-5, P-magesh-15, P-magesh-9, X-49 |
-| `_held_elsewhere` | 2150 | — | — |
-| `async _receipt_turn` | 2160 | (commento) OPS-11: ``chat`` was read moments ago in this turn. Read the case again only when another turn of this need held the gate (it may have written the receipt meanwhile). | OPS-11 |
-| `_remember_receipt` | 2178 | — | — |
-| `async _forward_receipt` | 2184 | (commento) OPS-11: the ack to the facility and the receipt to the citizen go to different parties; the ack does not wait for the GP notice and the route. | OPS-11 |
-| `async _send_forwarded_receipt` | 2206 | (commento) G5 / G10 collaboration: tell the GP first, then say it in the receipt (the review reads only the citizen chat, so the agent-to-agent step must be visible there). OPS-11: the route (Index doors) does not depend on the GP notice: bo | BK-61, OPS-11, X-31, X-49 |
-| `async _ask_where` | 2272 | X-31/X-49: one data.request per case for address, assistance and car, with its purpose. | X-31, X-49 |
-| `async _where_route` | 2299 | X-49: the receipt's route from the citizen's own answer, else from their district (X-45). | OPS-11, X-45, X-49 |
-| `async _partner_cancel` | 2315 | (commento) BK-35: never a bare token line; the citizen reads one sentence in their language. | BK-32, BK-35, P-francesco-26 |
-| `_stop_near` | 2503 | X-50: nearest metro stop (name, lines, km) from the city open data, or None. | X-50 |
-| `_stop_text` | 2517 | — | — |
-| `_asked_where` | 2523 | True when our last word to this citizen was the X-31 data.request, still unanswered. | X-31, X-49 |
-| `async _door` | 2542 | (commento) BK-53: a facility of another ASST. Its door is on its own Index card. | BK-53 |
-| `_km` | 2566 | — | — |
-| `_citizen_point` | 2572 | — | X-54 |
-| `_route_line` | 2590 | How to get to the visit. BK-53: ``exact`` False means the distance is from the citizen's district, not from an address with coordinates, and the sentence says so; ``ours`` False is a facility of another ASST, whose accessibility w | BK-53 |
-| `_zone_words` | 2602 | — | — |
-| `_route_text` | 2609 | — | — |
-| `async _on_where` | 2668 | (commento) X-49: the slot is still being locked. Keep the answer for the receipt's route. | BK-53, BK-61, OPS-11, X-45, X-49 |
-| `async _nearest_hospital` | 2730 | X-32 / X-55: the nearest hospital in the whole city (any ASST), from the Index doors: (agent_id, door label, km). | X-32, X-55 |
-| `_nearest_words` | 2750 | — | — |
-| `async _nothing` | 2758 | — | — |
-| `async _nearest_line` | 2762 | X-32: the nearest hospital in the whole city (any ASST), from the Index doors. | X-32 |
-| `_cancel_ack_text` | 2767 | — | — |
-| `_early_cancel` | 2772 | BK-61: a citizen cancel of one offer that can be acknowledged before the case is read: nothing else in the message asks for another road (confirm, red flag, clinical question). | BK-61 |
-| `async _citizen_cancel` | 2789 | X-34 / BK-46: the citizen drops one offer. Every cancel gets its short answer at once. | BK-46, BK-59, BK-61, BK-65, OPS-11, P-francesco-60, X-34 |
-| `async _window_over` | 2845 | BK-65: True when the prescription is really expired: the Ledger said so, else a fresh agenda reading is past the prescription window. A renewal already asked is never asked twice. | BK-65 |
-| `_clock_jumped` | 2863 | BK-59: our clock put the refused slot inside the prescription window, the citizen says it is past the deadline. So the agenda ran ahead of our reading and the window is really over. | BK-59 |
-| `_cancel_reason` | 2875 | True when the citizen cancelled an offer with ``reason`` after our latest agenda reading. | — |
-| `async _fresh_agenda` | 2885 | BK-59 (0308): the citizen says a slot is in the past, so our agenda clock is behind (the agenda jumps at a level change). Read the agenda again before the next offers. | BK-59 |
-| `async _cancel_next` | 2894 | The next step after a citizen cancel, inside its gate. True: done (no new search). | BK-29 |
-| `_prep_line` | 2938 | P-02: what to bring and when to arrive, before the citizen asks. | — |
-| `_citizen_district` | 2955 | — | — |
-| `async _zone_point` | 2964 | Centre of the citizen's district: the mean of the Index doors in that district. | — |
-| `async _zone_route` | 2989 | X-45: how to get there, inside the receipt (the review reads it), from the citizen's zone. | OPS-11, X-45 |
+| `_row_procedure` | 101 | The procedure of a ``slots`` page: the one on its first slot line (None: an empty page). | — |
+| `_row_time` | 109 | The real time a Ledger line was true: its ``sent_at`` when that is a sane past time (None: unknown). | — |
+| `_note_asked` | 119 | — | — |
+| `_remember_ledger` | 125 | Keep the Ledger's agenda and catalogue lines addressed to us. Only the Ledger is believed. | — |
+| `_memory_rows` | 161 | The fresh agenda line, then the fresh catalogue pages of ``procedure`` in page order. | — |
+| `_case_pages` | 179 | page -> the latest ``slots`` row of ``procedure`` in the case. | — |
+| `_with_memory` | 188 | ``chat`` plus the remembered Ledger lines this case lacks: the agenda when the case has none, the catalogue pages when the case has none. The search then reads them as its own. | — |
+| `async _refresh_memory` | 207 | Ask the Ledger again for the agenda and the first catalogue pages, at most once every ``_REFRESH_EVERY`` seconds, without waiting: the answers come back through ``_remember_ledger``. The questions are not an answer to anyone: the  | BK-33 |
+| `async _warm_memory` | 231 | Empty memory: one read of our Ledger lines of every case fills it. Bounded in time, at most once every ``_REFRESH_EVERY`` seconds; a slow or failed read changes nothing. | — |
+| `_page` | 245 | — | — |
+| `_slots_page` | 253 | — | — |
+| `_asked` | 259 | — | — |
+| `_offered` | 268 | — | — |
+| `_withdrawn` | 279 | Slots we cancelled. The citizen drops the rest, so those are offered again. | — |
+| `_number` | 306 | — | — |
+| `_guess_lang` | 321 | — | — |
+| `_note_lang` | 330 | Remember the citizen's language for the need, for later turns whose history misses it. | — |
+| `_lang` | 342 | (commento) BK-33 (000113): before the citizen writes to us, the GP referral already told us the language (X-33). Without this the cross_asst consent went out in Italian to an English citizen. | BK-33, X-33 |
+| `_rx_pref` | 369 | X-33: a preference the GP passed in the referral for this prescription. | X-33 |
+| `_gender` | 379 | — | BK-60 |
+| `_doctor_gender` | 391 | — | — |
+| `_slot_day` | 399 | — | — |
+| `_cancel_learned` | 407 | BK-60 (journey 890912000304): what the citizen's cancels tell us. ``S`` is built from constraints the citizen has not said yet; a cancel names the one the offer broke with ``reason=``. Five offers with the same doctor came back `` | BK-60 |
+| `_learned_out` | 451 | BK-60: True for a slot (catalogue line or offer) that a cancel already ruled out. | BK-60 |
+| `_best_tier` | 462 | BK-60: the slots that match every preference (days, doctor gender) come first. "Posso solo lunedì o mercoledì": a Tuesday is not a choice to add for variety (P-francesco-48 spreads days and doctors only inside this tier). With no  | BK-60, BK-60b, P-francesco-48 |
+| `_gender_said` | 475 | — | — |
+| `_days` | 517 | The citizen's days. BK-56 (journey 249): the citizen may write them only in words ("Posso venire solo lunedì o mercoledì"), with no ``days=`` token, and may tell the GP other days than the booking centre. The latest citizen messag | BK-56, BK-60, P-magesh-13 |
+| `_before_rx_deadline` | 567 | BK-27: the priority window counts from the prescription, not from today. A slot after the citizen's deadline is refused (no_booking -1), so it is never offered. | BK-27, BK-68 |
+| `_service_procedure` | 596 | — | — |
+| `_local_doctor` | 605 | True when one of our doctors for this procedure speaks ``lang`` (unknown procedure: True). | — |
+| `_fit` | 619 | BK-55: as many offer lines as fit in one message with ``tail`` (at least one line). | BK-55 |
+| `_diverse` | 627 | P-francesco-48: ``count`` offers that differ. The first three by date are often the same day and doctor, so one hidden constraint of the citizen ("not that day") drops them all together. The best slot stays first; each next pick i | P-francesco-48 |
+| `_refused_slots` | 644 | P-magesh-9: slots whose hold or commit the Ledger refused to us. Never offered again. | P-magesh-9 |
+| `_slot_ids` | 656 | Slot ids among the offers this process remembers (not the waiting-list offer id). | — |
+| `_rx_deadline` | 667 | The agenda time after which the citizen refuses a slot (``reason=deadline``). | BK-67, BK-68 |
+| `_agenda_now` | 710 | The agenda time of this turn. The Ledger's ``agenda`` line is read once per case; a turn that opens minutes later (the citizen writes again after 16 minutes) is that many agenda hours ahead, and a slot that was free then is in the | BK-62, BK-68 |
+| `_agenda_stale` | 736 | True when this citizen turn opened more than two real minutes after our agenda reading. | BK-59, BK-62, BK-63 |
+| `_within` | 749 | — | — |
+| `_search_limit` | 754 | The latest slot time worth reading the catalogue for (None: no limit, priority P). | BK-68 |
+| `_peer_value` | 778 | — | — |
+| `_peer_id` | 784 | — | — |
+| `_cross_consent` | 800 | Return (accepted/refused/unknown, consent_ref) for the latest cross-ASST request. | BK-33, BK-36, BK-49, BK-58, BK-66 |
+| `_cross_asks` | 844 | — | — |
+| `_cross_replies` | 849 | — | — |
+| `_offer_line` | 858 | — | — |
+| `_our_offer` | 877 | — | — |
+| `class _Gate` | 885 | One need's lock and how many turns hold it or wait for it. | — |
+| `class _Sent` | 895 | Offers this process sent for one need, which the case history may not show yet. | BK-33, BK-45, BK-47, BK-61 |
+| `_trace` | 931 | OPS-07: one log line per booking step, with the need_id in the text, so the console search ("Cerca nei log") finds the whole case. No citizen text and no personal data. | OPS-07 |
+| `_who` | 945 | — | — |
+| `async _ledger_ask` | 951 | — | — |
+| `async _ledger_asks` | 956 | OPS-11: independent Ledger questions of one step go out together (each costs seconds). | OPS-11 |
+| `_citizen_dropped` | 964 | — | — |
+| `_offer_speaks` | 977 | BK-35 (000113): a partner offer must have a doctor who speaks the citizen's language. | BK-35, X-44 |
+| `_sent` | 1002 | — | — |
+| `_rare_hospital` | 1025 | — | — |
+| `_cx_head` | 1031 | BK-58 (journey 0002040003): the citizen answered our cross-ASST question twice with "Which consent_ref?" and went to the waiting list (no_booking -1). The question now carries the reference the citizen can answer with, as the loca | BK-58, BK-64, P-magesh-22 |
+| `_cross_question` | 1047 | (commento) BK-49: a plain question, as in the kit ("consent purpose=report_sharing Posso ...?"). Asking for "the consent reference" made the citizen answer "Which consent_ref?" (000172). | BK-49 |
+| `async _cross_asst` | 1064 | Ask for cross-ASST consent, then request criteria-only offers from Index peers. | BK-33, BK-47, BK-61, MACH-1.2, OPS-11, P-francesco-34, X-44, X-51 |
+| `_search_line` | 1214 | — | — |
+| `async _index_facility` | 1221 | Resolve a facility through the Index before sending it a booking message. | BK-61 |
+| `_expected_offer` | 1254 | — | — |
+| `_expected_confirm_reply` | 1263 | — | — |
+| `_open_offers` | 1281 | offer_id -> slot_id of the offers the citizen still holds: sent by us, and cancelled neither by the citizen nor by us (a facility's cancel that we passed on). | — |
+| `_cross_offered` | 1300 | Every partner offer_id that already went to the citizen (history and this process). | — |
+| `_partner_pool` | 1310 | BK-47: every partner offer in the case that the citizen can accept, best first. | BK-35, BK-47, BK-60, P-francesco-31 |
+| `async _partner_round` | 1358 | Send the next (at most three) partner offers in ONE message. False: nothing left to send. | — |
+| `async _partner_offer` | 1411 | A partner's offers arrived. True when the citizen has (or now gets) partner offers. | BK-47 |
+| `async _partner_reply` | 1428 | (commento) Include replies that arrived while the original search held the lock. | — |
+| `_mark_answered` | 1465 | — | — |
+| `async _desk` | 1472 | BK-33: every citizen message gets an answer. The route below decides what to say; if the turn ends without a word to anyone, a short line tells the citizen where the case stands. | BK-33, P-magesh-17 |
+| `async _still_here` | 1516 | (commento) P-magesh-14: only offers still open count (not the waiting list, not a cancelled one). | BK-22, BK-46, BK-67, P-magesh-14 |
+| `async _desk_route` | 1598 | (commento) BK-15: the case history can miss the message that opened this turn. Without it the desk finds no citizen and stays silent, so the inbound message always joins the case. | BK-15, BK-28, BK-57, BK-61, FA-21 |
+| `_citizen_cancels` | 1676 | BK-58: "cancel" inside a sentence ("can I cancel later?", "I don't want to cancel") is not a cancel. The act is the first word, or the word with the offer/slot/booking it drops. | BK-58 |
+| `async _on_referral` | 1685 | X-27: the gp tells us a prescription is coming. Answer at once (clock +1), once per need. | BK-61, BK-67, X-27, X-33 |
+| `async _need_gate` | 1712 | — | — |
+| `async _advance` | 1724 | (commento) BK-61 (journey 000304): the citizen cancels every offer in the same second and each cancel opens a turn. They all saw "no offer left"; only the first takes the next step (new offers, other ASSTs, waiting list). Three offer message | BK-39, BK-45, BK-54, BK-61, BK-67, BK-68, MACH-1.3 |
+| `_widening` | 1810 | — | — |
+| `async _widen_stop` | 1814 | The extra page did not come in time: offer what the pages read so far hold. | — |
+| `_one_sided` | 1822 | (commento) BK-62 (nine journeys of 21/11, 03:37-03:48): five offers, all on Tuesday 1 December. The citizens had said "only on some days" without naming them and cancelled with reason=day. Slots of one calendar day are one-sided too. | BK-62 |
+| `_all_slot_lines` | 1836 | Slot lines of every catalogue page the Ledger sent us in this case, once per slot. | — |
+| `async _advance_alone` | 1851 | (commento) Ask, then read the reply from history: the push of a ledger message does not open a turn. | BK-14, BK-21, BK-22, BK-28, BK-30, BK-33, BK-37, BK-45, BK-46, BK-48, BK-50, BK-59, BK-60, BK-61, BK-63, BK-67, CO-20, OPS-11, P-magesh-15, P-magesh-9 |
+| `async _after_local` | 2160 | The local catalogue has nothing (more) that fits: another ASST, else the waiting list. | BK-10, BK-61 |
+| `async _relaxed` | 2188 | — | — |
+| `async _on_confirm` | 2222 | (commento) A purpose-only response belongs to the latest booking consent question. | BK-51, BK-57, BK-63, FA-01, OPS-11, P-francesco-5, P-magesh-15, P-magesh-9, X-49 |
+| `_held_elsewhere` | 2385 | — | — |
+| `async _receipt_turn` | 2395 | (commento) OPS-11: ``chat`` was read moments ago in this turn. Read the case again only when another turn of this need held the gate (it may have written the receipt meanwhile). | OPS-11 |
+| `_remember_receipt` | 2413 | — | — |
+| `async _forward_receipt` | 2419 | (commento) OPS-11: the ack to the facility and the receipt to the citizen go to different parties; the ack does not wait for the GP notice and the route. | OPS-11 |
+| `async _send_forwarded_receipt` | 2441 | (commento) G5 / G10 collaboration: tell the GP first, then say it in the receipt (the review reads only the citizen chat, so the agent-to-agent step must be visible there). OPS-11: the route (Index doors) does not depend on the GP notice: bo | BK-61, OPS-11, X-31, X-49 |
+| `async _ask_where` | 2507 | X-31/X-49: one data.request per case for address, assistance and car, with its purpose. | X-31, X-49 |
+| `async _where_route` | 2534 | X-49: the receipt's route from the citizen's own answer, else from their district (X-45). | OPS-11, X-45, X-49 |
+| `async _partner_cancel` | 2550 | (commento) BK-35: never a bare token line; the citizen reads one sentence in their language. | BK-32, BK-35, P-francesco-26 |
+| `_stop_near` | 2738 | X-50: nearest metro stop (name, lines, km) from the city open data, or None. | X-50 |
+| `_stop_text` | 2752 | — | — |
+| `_asked_where` | 2758 | True when our last word to this citizen was the X-31 data.request, still unanswered. | X-31, X-49 |
+| `async _door` | 2777 | (commento) BK-53: a facility of another ASST. Its door is on its own Index card. | BK-53 |
+| `_km` | 2801 | — | — |
+| `_citizen_point` | 2807 | — | X-54 |
+| `_route_line` | 2825 | How to get to the visit. BK-53: ``exact`` False means the distance is from the citizen's district, not from an address with coordinates, and the sentence says so; ``ours`` False is a facility of another ASST, whose accessibility w | BK-53 |
+| `_zone_words` | 2837 | — | — |
+| `_route_text` | 2844 | — | — |
+| `async _on_where` | 2903 | (commento) X-49: the slot is still being locked. Keep the answer for the receipt's route. | BK-53, BK-61, OPS-11, X-45, X-49 |
+| `async _nearest_hospital` | 2965 | X-32 / X-55: the nearest hospital in the whole city (any ASST), from the Index doors: (agent_id, door label, km). | X-32, X-55 |
+| `_nearest_words` | 2985 | — | — |
+| `async _nothing` | 2993 | — | — |
+| `async _nearest_line` | 2997 | X-32: the nearest hospital in the whole city (any ASST), from the Index doors. | X-32 |
+| `_cancel_ack_text` | 3002 | — | — |
+| `_early_cancel` | 3007 | BK-61: a citizen cancel of one offer that can be acknowledged before the case is read: nothing else in the message asks for another road (confirm, red flag, clinical question). | BK-61 |
+| `async _citizen_cancel` | 3024 | X-34 / BK-46: the citizen drops one offer. Every cancel gets its short answer at once. | BK-46, BK-59, BK-61, BK-65, OPS-11, P-francesco-60, X-34 |
+| `async _window_over` | 3080 | BK-65: True when the prescription is really expired: the Ledger said so, else a fresh agenda reading is past the prescription window. A renewal already asked is never asked twice. | BK-65 |
+| `_clock_jumped` | 3098 | BK-59: our clock put the refused slot inside the prescription window, the citizen says it is past the deadline. So the agenda ran ahead of our reading and the window is really over. | BK-59 |
+| `_cancel_reason` | 3110 | True when the citizen cancelled an offer with ``reason`` after our latest agenda reading. | — |
+| `async _fresh_agenda` | 3120 | BK-59 (0308): the citizen says a slot is in the past, so our agenda clock is behind (the agenda jumps at a level change). Read the agenda again before the next offers. | BK-59 |
+| `async _cancel_next` | 3129 | The next step after a citizen cancel, inside its gate. True: done (no new search). | BK-29 |
+| `_prep_line` | 3173 | P-02: what to bring and when to arrive, before the citizen asks. | — |
+| `_citizen_district` | 3190 | — | — |
+| `async _zone_point` | 3199 | Centre of the citizen's district: the mean of the Index doors in that district. | — |
+| `async _zone_route` | 3224 | X-45: how to get there, inside the receipt (the review reads it), from the citizen's zone. | OPS-11, X-45 |
 
-Costanti e memorie di modulo: `_IT_WORDS` (r. 156), `_EN_WORDS` (r. 157), `_LANG_OF` (r. 158), `_PREF_BY_RX` (r. 206), `_WEEKDAYS` (r. 227), `_DAY_REASONS` (r. 228), `_DAY_ALIASES` (r. 325), `_DAY_WORDS` (r. 349), `_NOT_DAY` (r. 353), `_ANY_DAY` (r. 354), `_RX_DATE_KEYS` (r. 403), `_RX_LIMIT_KEYS` (r. 404), `_PROC_DOCTORS` (r. 429), `_SERVICE_PROCEDURE` (r. 433), `_OFFER_MAX` (r. 455), `_TEXT_MAX` (r. 456), `_AGENDA_SPEED` (r. 503), `_DEADLINE_MARGIN` (r. 504), `_AGENDA_REAL_MAX` (r. 569), `_AGENDA_STALE` (r. 570), `_FACILITY_ROLES` (r. 606), `_CROSS_SERVICE_TYPES` (r. 607), `_CROSS_NO` (r. 630), `_CROSS_ASKS` (r. 634), `_GATES` (r. 760), `_SENT` (r. 761), `_LANG_KEYS` (r. 807), `_RARE_LANG_HOSPITAL` (r. 847), `_WHICH_REF` (r. 877), `_PARTNER_OFFER_FIELDS` (r. 1083), `_PARTNER_BATCH` (r. 1109), `_PARTNER_ROUNDS` (r. 1110), `_PARTNER_LEAD` (r. 1111), `_ANSWERED` (r. 1292), `_EARLY_STATUS` (r. 1295), `_WIDEN_PAGES` (r. 1593), `_HELD_FOR` (r. 2146), `_HELD_SECONDS` (r. 2147), `_RECEIPT_GATES` (r. 2155), `_RECEIPTS` (r. 2156), `_WHERE_FIELDS` (r. 2353), `_BOOKED_AT` (r. 2354), `_DOORS` (r. 2355), `_ANSWERED_WHERE` (r. 2356), `_WHERE_OF` (r. 2358), `_RECEIPT_SENT` (r. 2359), `_DOOR_FALLBACK` (r. 2361), `_NUM` (r. 2366), `_METRO_STOPS` (r. 2369), `_DESK_HOLDS` (r. 2726), `_PERMISSION_WORDS` (r. 2727), `_PREP` (r. 2930), `_DISTRICT_RE` (r. 2951), `_ZONES` (r. 2952)
+Costanti e memorie di modulo: `_WORLD` (r. 89), `_AGENDA_ROW` (r. 90), `_ASKED_AT` (r. 91), `_WORLD_TTL` (r. 92), `_WORLD_PAGES` (r. 93), `_WORLD_PROCEDURES` (r. 94), `_WORLD_MAX_PAGES` (r. 95), `_REFRESH_EVERY` (r. 96), `_WARM_SECONDS` (r. 97), `_MEMORY_ON` (r. 98), `_IT_WORDS` (r. 316), `_EN_WORDS` (r. 317), `_LANG_OF` (r. 318), `_PREF_BY_RX` (r. 366), `_WEEKDAYS` (r. 387), `_DAY_REASONS` (r. 388), `_DAY_ALIASES` (r. 485), `_DAY_WORDS` (r. 509), `_NOT_DAY` (r. 513), `_ANY_DAY` (r. 514), `_RX_DATE_KEYS` (r. 563), `_RX_LIMIT_KEYS` (r. 564), `_PROC_DOCTORS` (r. 589), `_SERVICE_PROCEDURE` (r. 593), `_OFFER_MAX` (r. 615), `_TEXT_MAX` (r. 616), `_AGENDA_SPEED` (r. 663), `_DEADLINE_MARGIN` (r. 664), `_AGENDA_REAL_MAX` (r. 732), `_AGENDA_STALE` (r. 733), `_FACILITY_ROLES` (r. 769), `_CROSS_SERVICE_TYPES` (r. 770), `_CROSS_NO` (r. 793), `_CROSS_ASKS` (r. 797), `_GATES` (r. 927), `_SENT` (r. 928), `_LANG_KEYS` (r. 974), `_RARE_LANG_HOSPITAL` (r. 1014), `_WHICH_REF` (r. 1044), `_PARTNER_OFFER_FIELDS` (r. 1250), `_PARTNER_BATCH` (r. 1276), `_PARTNER_ROUNDS` (r. 1277), `_PARTNER_LEAD` (r. 1278), `_ANSWERED` (r. 1459), `_EARLY_STATUS` (r. 1462), `_WIDEN_PAGES` (r. 1807), `_HELD_FOR` (r. 2381), `_HELD_SECONDS` (r. 2382), `_RECEIPT_GATES` (r. 2390), `_RECEIPTS` (r. 2391), `_WHERE_FIELDS` (r. 2588), `_BOOKED_AT` (r. 2589), `_DOORS` (r. 2590), `_ANSWERED_WHERE` (r. 2591), `_WHERE_OF` (r. 2593), `_RECEIPT_SENT` (r. 2594), `_DOOR_FALLBACK` (r. 2596), `_NUM` (r. 2601), `_METRO_STOPS` (r. 2604), `_DESK_HOLDS` (r. 2961), `_PERMISSION_WORDS` (r. 2962), `_PREP` (r. 3165), `_DISTRICT_RE` (r. 3186), `_ZONES` (r. 3187)
 
-### `40_facility.py` — Strutture (ospedale, specialista, consultorio) (722 righe, 25 funzioni)
+### `40_facility.py` — Strutture (ospedale, specialista, consultorio) (737 righe, 25 funzioni)
 
 | Funzione | Riga | Cosa fa (docstring) | Casi citati |
 |---|---|---|---|
@@ -236,7 +249,7 @@ Costanti e memorie di modulo: `_IT_WORDS` (r. 156), `_EN_WORDS` (r. 157), `_LANG
 | `async _confirm_checkin` | 605 | — | — |
 | `async _on_checked_in` | 619 | — | — |
 | `async _on_reported` | 647 | (commento) G5 / SP-20 / G10: share the report with the citizen's GP first, then say so to the citizen. | SP-20 |
-| `async _partner_request` | 679 | Answer within seconds with our fitting slots, one per line; no citizen data needed. | BK-55, MACH-1.2 |
+| `async _partner_request` | 679 | Answer within seconds with our fitting slots, one per line; no citizen data needed. | BK-55, BK-67, BK-68, MACH-1.2, MACH-1.3 |
 
 Costanti e memorie di modulo: `_ARRIVED` (r. 97), `_RESCHEDULE` (r. 98), `_CHECKIN_HOURS` (r. 99), `_HOLD_WAIT` (r. 202), `_BOOKING_REQUESTS` (r. 283), `_BOOKING_REFUSALS` (r. 372), `_CHECKIN_LIMIT` (r. 440), `_LEDGER_REPLIES` (r. 441), `_CHECKIN_REQUESTS` (r. 445), `_CHECKIN_GATES` (r. 446), `_PARTNER_DONE` (r. 676)
 
@@ -390,3 +403,7 @@ Una riga per caso: ID, di cosa parla (inizio della riga), stato scritto nel regi
 | OPS-12 | booking (consegna) — Dopo le 04:00 il booking risponde al primo messaggio dopo ~235 s (p50), anche al `status` di P-17 che parte dopo 8 s: il ritardo è prima del nostro c | **tolto**: con 1.0.27 (04:22Z) il booking non ha più mandato niente ai cittadini (65 messaggi in arrivo, 0 ris |
 | BK-64 | booking (consenso cross-ASST) — P-magesh-22: dopo BK-58 la domanda cross-ASST porta già il nostro `consent_ref=cx-…` e nessun cittadino risponde più (L4: 7 percorsi su 9  | online (booking 1.0.28, 04:30Z) — da verificare: agenti senza messaggi dalle 04:32 |
 | BK-65 | P-francesco-60: dopo un `cancel reason=deadline` il booking chiedeva il rinnovo anche con la ricetta valida (`_clock_jumped` quasi sempre vero); il secondo giro era silen | online (booking 1.0.29, 04:41Z) — da verificare: agenti senza messaggi dalle 04:32 |
+| BK-67 | booking, strutture (catalogo in memoria) — 16 journey falliti della wave W01QQQ, 21/11 04:45–05:26Z (N-2026-11-02-8909120002150006, …0002020005, …0002140005, …0003250002, | in PR — da misurare prima del deploy: durata di `city.history(LEDGER)` senza `need_id` sotto carico |
+| BK-68 | booking, strutture (agenda senza fine settimana, lista d'attesa) | in PR — non verificato su un journey; dipende da BK-66 per la domanda di consenso |
+| GP-17 | gp e tutti (red flag) — Wave W01QQQ, livello 1: 8 percorsi su 12 con `emergency.no_escalation` −2. 6 cittadini con "forte dolore al petto" senza nessuna risposta del gp;  | in PR |
+| BK-66 | 0002120005 (L4): dopo due domande cross-ASST (una doppia) e «Which consent_ref?», il cittadino rimanda la richiesta in parole («Hello… need.request …»): contata come rifi | fix su branch (PR aperta, non rilasciato) |
