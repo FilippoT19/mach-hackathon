@@ -300,7 +300,11 @@ async def main() -> int:
     gp = FakeCity("agent:gp")
     issued = row("agent:gp", CITIZEN, "prescription prescription_number=prescription_number-N-1 procedure=VIS-FIS priority=B", 1)
     await brain._gp(gp, citizen_msg("Ho la ricetta prescription_number=prescription_number-N-1, cosa faccio?"), [issued])
-    check("P-F37 ricetta valida non si rinnova", not any(t.startswith("prescription ") or "data.request" in t for t in to(gp, LEDGER)) and any("prescription.valid" in t for t in to(gp, CITIZEN)), gp.sent)
+    gp2 = FakeCity("agent:gp")
+    exp = row(LEDGER, "agent:gp", "prescription prescription_number=prescription_number-N-1 procedure=VIS-FIS priority=B state=expired", 2)
+    await brain._gp(gp2, citizen_msg("prescription_number=prescription_number-N-1"), [issued, exp])
+    check("P-F43 ricetta scaduta (stato dal Ledger) si rinnova", not any("prescription.valid" in t for t in to(gp2, CITIZEN)), gp2.sent)
+    check("P-F37 ricetta valida non si rinnova", not any(t.startswith("prescribe") for t in to(gp, LEDGER)) and any("prescription.valid" in t for t in to(gp, CITIZEN)), gp.sent)
 
     # 1. Fixed phrase, no model: prescription with the fallback sentence.
     c = await run_gp("ho mal di schiena da tre giorni")
