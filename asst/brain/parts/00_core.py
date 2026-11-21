@@ -114,6 +114,14 @@ async def main(need: Need, city: City) -> None:
     # exchange (the deploy conformance probe "visit" is one). End the turn at once: the Relay's
     # custody.ack check waits ~5 s, and a slow remote history read made the turn miss it.
     text = (message.text or "").strip()
+    _TURN_NEED.set((message.need_id or message.msg_id or "-")[:64])  # OPS-13
+    if message.sender == LEDGER:
+        # OPS-13 (BK-72): what the Ledger answered, and how late, was the missing fact.
+        got = fields_of(text)
+        _event("ledger.in", role=role_of(), act=first_word(text)[:32],
+               op=next(iter(words(text) & {"hold", "commit", "checkin", "report"}), ""),
+               reason=got.get("reason") or got.get("code"), slot_id=got.get("slot_id"),
+               hold_id=got.get("hold_id") or got.get("booking_id"))
     if (not message.sender.startswith("citizen:") and message.sender != LEDGER
             and "=" not in text and text != "__error__"):
         _LOG.info("ops08.skip sender=%s", message.sender[:40])

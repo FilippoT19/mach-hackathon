@@ -312,6 +312,12 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     if message.sender == LEDGER:
         await _announce(city, message, chat, agent)
         return
+    if (message.sender.startswith("agent:") and not _trusted(message.sender)
+            and first_word(message.text) in {"report.notice", "booking.notice"}):
+        # MACH2-1 (R17) on the gp too: a notice from an agent outside the ring is not noted in the
+        # patient's file (impostor, level 8). One line back, never an instruction followed.
+        await _say(city, message.sender, f"{first_word(message.text)}.ack status=ignored reason=not_listed")
+        return
     if first_word(message.text) == "report.notice" and message.sender.startswith("agent:"):
         bid = fields_of(message.text).get("booking_id", "")
         if not _we(chat, agent, f"booking_id={bid}", to=message.sender, word="report.notice.ack"):
@@ -360,6 +366,7 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
             return
         await _renew_prescription(city, message, chat, number)
         return
+    assessed, keyword, asked = None, code, time.monotonic()  # OPS-13
     if not emergency:
         early = _EARLY_LLM.pop(message.msg_id, None)  # OPS-09: started in main() with the history read
         try:
@@ -373,6 +380,9 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
         # (P-francesco-19: "non riesco più a stare in piedi").
         emergency = assessed == "RED_FLAG" and code not in ("SYM-PALPITATIONS", "SYM-FOLLOWUP")
         code = code or (assessed if assessed != "RED_FLAG" else None)
+    _event("gp.triage", message.need_id, keyword=keyword or "none", llm=assessed or "none",
+           code=code or "none", emergency=str(bool(emergency)).lower(),
+           wait_ms=int((time.monotonic() - asked) * 1000))  # OPS-13
     if emergency:
         await _escalate(city, message, chat)  # X-42: one path for all roles (112, notice, nearest ER)
         return

@@ -264,10 +264,36 @@ def _exact(chat: list[Message], agent: str, text: str) -> bool:
 _SAID: contextvars.ContextVar[set[str] | None] = contextvars.ContextVar("_SAID", default=None)
 
 
+# OPS-13: the console keeps few log lines and the SDK fills them, so we log only decisions, one
+# line each, always with need_id= in the text (the console search finds the whole case). No
+# citizen text and no personal data: act words, codes, slot and hold ids, reasons, timings.
+_TURN_NEED: contextvars.ContextVar[str] = contextvars.ContextVar("_TURN_NEED", default="-")
+
+
+def _kind(agent_id: str) -> str:
+    if agent_id == LEDGER:
+        return "ledger"
+    for role, ours in _OUR_AGENTS.items():
+        if ours and ours == agent_id:
+            return role
+    return agent_id.split(":", 1)[0] or "?"
+
+
+def _event(event: str, need_id: str | None = None, /, **fields: object) -> None:
+    need = (need_id or _TURN_NEED.get())[:64]
+    tail = " ".join(f"{k}={str(v)[:80]}" for k, v in fields.items() if v not in (None, ""))
+    try:
+        _LOG.info(f"{event} need_id={need} {tail}".rstrip(), extra={"need_id": need})
+    except Exception:  # a log line must never break a turn
+        pass
+
+
 async def _say(city: City, to: str, text: str) -> bool:
     try:
         await city.say(to, text)
-    except CapError:
+    except CapError as error:
+        _event("say.fail", to=_kind(to), act=first_word(text)[:32], error=type(error).__name__,
+               detail=str(error).replace("\n", " ")[:80])
         return False
     said = _SAID.get()
     if said is not None:
