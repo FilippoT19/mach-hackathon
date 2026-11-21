@@ -856,14 +856,14 @@ async def main() -> int:
     # BK-58 (journey 0002040003): "Which consent_ref?" is a question, not a refusal; our
     # question carries the reference; a word "cancel" inside a sentence is not a cancel.
     first64 = brain._cx_head([citizen_msg("x")])
-    check("BK-64 la prima domanda cross-ASST non porta il nostro consent_ref",
-          first64 == "consent purpose=cross_asst " , first64)
+    check("BK-71 la prima domanda cross-ASST porta consent_ref (formato cons-<need>-cross_asst)",
+          first64 == "consent purpose=cross_asst consent_ref=cons-N-1-cross_asst ", first64)
     which = row(CITIZEN, BK, "Which consent_ref?", 581)
     ask58 = row(BK, CITIZEN, brain._cx_head([citizen_msg("x"), which]) + "May I ask the ASST Giambellino for you?", 580)
-    check("BK-58 dopo 'Which consent_ref?' la domanda porta consent_ref", "consent_ref=cx-" in ask58.text and ask58.text.startswith("consent purpose=cross_asst"), ask58.text)
+    check("BK-58 dopo 'Which consent_ref?' la domanda porta consent_ref", "consent_ref=cons-N-1-cross_asst" in ask58.text and ask58.text.startswith("consent purpose=cross_asst"), ask58.text)
     check("BK-58 'Which consent_ref?' non è un rifiuto", brain._cross_consent([ask58, which, ask58, which], BK)[0] is None, brain._cross_consent([ask58, which, ask58, which], BK))
-    yes = row(CITIZEN, BK, "consent consent_ref=cx-N-1 purpose=cross_asst", 582)
-    check("BK-58 il cittadino ripete il riferimento -> sì", brain._cross_consent([ask58, which, ask58, yes], BK) == (True, "cx-N-1"), brain._cross_consent([ask58, which, ask58, yes], BK))
+    yes = row(CITIZEN, BK, "consent consent_ref=cons-N-1-cross_asst purpose=cross_asst", 582)
+    check("BK-58 il cittadino ripete il riferimento -> sì", brain._cross_consent([ask58, which, ask58, yes], BK) == (True, "cons-N-1-cross_asst"), brain._cross_consent([ask58, which, ask58, yes], BK))
     check("BK-58 'no' resta un rifiuto", brain._cross_consent([ask58, row(CITIZEN, BK, "No, I refuse", 583)], BK)[0] is False, None)
     check("BK-58 'cancel' dentro una frase non annulla", not brain._citizen_cancels("I would like to book, can I cancel later if needed?") and not brain._citizen_cancels("Non voglio cancellare niente, vorrei prenotare"), None)
     check("BK-58 il vero cancel resta", brain._citizen_cancels("No grazie. cancel offer_id=of-1 reason=past") and brain._citizen_cancels("cancel booking_id=B-1"), None)

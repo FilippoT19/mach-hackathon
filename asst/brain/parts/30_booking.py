@@ -1109,10 +1109,11 @@ def _cx_head(chat: list[Message]) -> str:
     # BK-64 (P-magesh-22): with our consent_ref in every question, no citizen answered any more
     # (L4: 7 journeys of 9 without a booking). Before BK-58 they answered "data.response
     # purpose=cross_asst". The reference goes in only after the citizen asked which one.
-    if not any(row.sender.startswith("citizen:") and _WHICH_REF.search(row.text or "") for row in chat):
-        return "consent purpose=cross_asst "
+    # BK-71 (journey 0003520004): without the reference the citizen asked "Which consent_ref?"
+    # and the journey closed failed before our second question. The reference is in every
+    # question now, in the citizen's own format (cons-<need>-<purpose>, as in its booking confirm).
     need = next((row.need_id for row in chat if row.need_id), "") or "case"
-    return f"consent purpose=cross_asst consent_ref=cx-{need} "
+    return f"consent purpose=cross_asst consent_ref=cons-{need}-cross_asst "
 
 
 _WHICH_REF = re.compile(r"\b(?:which|what|quale|che)\b[^.!]{0,20}\bconsent", re.I)
