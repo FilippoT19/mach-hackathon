@@ -825,13 +825,17 @@ def _cross_consent(chat: list[Message], agent: str) -> tuple[bool | None, str]:
             continue
         if fields.get("purpose") not in (None, "cross_asst") or head in {"confirm", "cancel"}:
             continue
-        if head == "need.request":
+        if head == "need.request" or "need.request" in words(row.text):
             # The same request sent again is not an answer: the second question follows (BK-33).
+            # BK-66 (0002120005): the act word can come after plain words ("Hello. ... need.request").
             if asks >= _CROSS_ASKS + 1:
                 decision = (False, "")
             continue
         if _WHICH_REF.search(row.text) and not _CROSS_NO.match(row.text.strip().lower()):
-            continue  # BK-58: the citizen asks which reference; the next question carries it
+            # BK-58: the citizen asks which reference; the next question carries it. BK-66: that
+            # question is one more turn, not a refusal: the count starts again from one ask.
+            asks = 1
+            continue
         if head == "consent" or _CROSS_NO.match(row.text.strip().lower()) or asks >= _CROSS_ASKS:
             decision = (False, "")
     return decision
