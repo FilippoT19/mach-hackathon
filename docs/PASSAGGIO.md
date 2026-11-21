@@ -499,8 +499,7 @@ I giorni detti a parole si leggono con `_days` (BK-56): "solo lunedì o mercoled
    Al massimo 2 volte (BK-49). Formato della domanda cambiato più volte: BK-58, BK-64, BK-66 (online). La
    prima domanda è **senza** `consent_ref` (BK-64); il riferimento arriva solo dopo "Which consent_ref?".
    Pagina del catalogo persa (`page_lost`) → si passa comunque da qui prima della lista d'attesa (BK-68, R2).
-   Il consenso esce anche quando la lettura del catalogo dà una lista vuota in agenda: i cittadini di questi
-   giorni spesso non rispondono alla domanda (25 B falliti, vedi 12).
+   Oggi i cittadini spesso non rispondono a questa domanda: 25 ricette B fallite così (vedi 12).
 2. Sì → `city.find` delle strutture di altre ASST; per una lingua rara prima l'ASST che la parla (X-51).
 3. `need.request service_type=… procedure=… request_id=cross-<need> priority=… deadline=…` a **tutte**, insieme.
    Solo criteri, nessun dato del cittadino (X-44, MACH-1.2).
