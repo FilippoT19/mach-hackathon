@@ -538,6 +538,11 @@ async def main() -> int:
     check("X-52 bengalese -> ASST San Siro", brain._rare_hospital(bn, "VIS-FIS")[0] == "agent:k2nwktpp02xx"
           and "San Siro" in brain._cross_question(bn, "VIS-FIS"), brain._cross_question(bn, "VIS-FIS"))
 
+    # X-54: the citizen's street gives the point (no more district centre).
+    pt = brain._street_point("Via_Ornato_Luigi_65")
+    check("X-54 Via Ornato 65 -> Niguarda", pt is not None and 45.51 < pt[0] < 45.53 and 9.18 < pt[1] < 9.20, pt)
+    check("X-54 via sconosciuta -> None", brain._street_point("via inesistente 4") is None)
+    check("X-54 data.response address -> punto", brain._citizen_point("data.response address=viale_Monza_120 car=false") is not None)
     # P-francesco-37: a prescription number we issued, no renewal words -> no new prescription.
     gp = FakeCity("agent:gp")
     issued = row("agent:gp", CITIZEN, "prescription prescription_number=prescription_number-N-1 procedure=VIS-FIS priority=B", 1)
