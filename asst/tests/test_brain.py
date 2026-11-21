@@ -526,6 +526,25 @@ async def main() -> int:
         print(("PASS " if ok else "FAIL ") + name + ("" if ok else f"  -> {detail}"))
         failures += 0 if ok else 1
 
+    # BK-36: the citizen grants cross-ASST consent as "data.response purpose=cross_asst" (000175).
+    cc = [row("agent:bk", CITIZEN, "consent purpose=cross_asst Posso cercare?", 1),
+          row(CITIZEN, "agent:bk", "data.response purpose=cross_asst", 2)]
+    got = brain._cross_consent(cc, "agent:bk")
+    check("BK-36 data.response cross_asst = consenso", got[0] is True and bool(got[1]), got)
+    ka = [row(CITIZEN, "agent:bk", "need.request lang=ka mal di schiena", 1)]
+    check("X-51 georgiano -> ASST Giambellino", brain._rare_hospital(ka, "VIS-FIS")[0] == "agent:h6r1v45esk77"
+          and "Giambellino" in brain._cross_question(ka, "VIS-FIS"), brain._cross_question(ka, "VIS-FIS"))
+
+    # P-francesco-37: a prescription number we issued, no renewal words -> no new prescription.
+    gp = FakeCity("agent:gp")
+    issued = row("agent:gp", CITIZEN, "prescription prescription_number=prescription_number-N-1 procedure=VIS-FIS priority=B", 1)
+    await brain._gp(gp, citizen_msg("Ho la ricetta prescription_number=prescription_number-N-1, cosa faccio?"), [issued])
+    gp2 = FakeCity("agent:gp")
+    exp = row(LEDGER, "agent:gp", "prescription prescription_number=prescription_number-N-1 procedure=VIS-FIS priority=B state=expired", 2)
+    await brain._gp(gp2, citizen_msg("prescription_number=prescription_number-N-1"), [issued, exp])
+    check("P-F43 ricetta scaduta (stato dal Ledger) si rinnova", not any("prescription.valid" in t for t in to(gp2, CITIZEN)), gp2.sent)
+    check("P-F37 ricetta valida non si rinnova", not any(t.startswith("prescribe") for t in to(gp, LEDGER)) and any("prescription.valid" in t for t in to(gp, CITIZEN)), gp.sent)
+
     # 1. Fixed phrase, no model: prescription with the fallback sentence.
     c = await run_gp("ho mal di schiena da tre giorni")
     led, cit = to(c, LEDGER), to(c, CITIZEN)
@@ -678,7 +697,7 @@ async def main() -> int:
     check("X-27 gp avvisa il nostro booking", len(ref) == 1 and ref[0].startswith("referral ") and "prescription_number=" in ref[0], city.sent)
     check("X-27 niente messaggi al booking di un'altra squadra", not to(city, "agent:other-team-bk"), city.sent)
     check("X-27 nel referral nessun id del cittadino", ref and "citizen:" not in ref[0] and "patient=" not in ref[0], ref)
-    check("X-27 la ricetta al cittadino parte prima del referral", city.sent and [r for r, _ in city.sent].index(CITIZEN) < [r for r, _ in city.sent].index(BK), city.sent)
+    check("G10 referral prima, poi il cittadino lo legge", city.sent and [r for r, _ in city.sent].index(BK) < [r for r, _ in city.sent].index(CITIZEN) and any("Ho già passato io la sua ricetta" in t for t in to(city, CITIZEN)), city.sent)
     brain._PEERS.clear()
     city = FakeCity("agent:gp", peers=[Peer(agent_id="agent:other-team-bk", role="booking_centre")])
     await brain._gp(city, citizen_msg("ho mal di schiena da tre giorni"), [])
@@ -781,7 +800,7 @@ async def main() -> int:
     city4 = FakeCity("agent:bk")
     await brain._desk(city4, no, chat2 + [no], hold_self=False, fixed=None)
     out = to(city4, CITIZEN)
-    check("X-31 rifiuto: indicazioni generiche", out and out[0].startswith("Nessun problema.") and "M5" in out[0], out)
+    check("X-31 rifiuto: indicazioni generiche", out and out[0].startswith("Nessun problema.") and "metro M" in out[0], out)
     # 23. X-32: nearest hospital in the whole city from Index doors.
     from city_sdk.city import CivicAddress
     near = Peer(agent_id="agent:far1", role="hospital", address=CivicAddress(label="Via Vicina 1", lat=45.5191, lon=9.1901))
@@ -817,8 +836,8 @@ async def main() -> int:
     await brain._desk(c2, chat[-1], chat, hold_self=False, fixed=None)
     out = to(c2, CITIZEN)
     check("X-34 cancel del cittadino ha risposta", out and out[0].startswith("cancel.ack"), out)
-    # BK-37: the citizen still holds the other two offers of the message: the ack is all it gets.
-    check("BK-37 un annullo con altre offerte aperte: solo la risposta, nessuna nuova raffica",
+    # BK-46: the citizen still holds the other two offers of the message: the ack is all it gets.
+    check("BK-46 un annullo con altre offerte aperte: solo la risposta, nessuna nuova raffica",
           len(out) == 1 and not [t for r2, t in c2.sent if r2 == LEDGER], c2.sent)
     rest = [f["offer_id"] for f in brain._offer_rows(first[0]) if f["offer_id"] != oid]
     more = already + [("agent:bk", CITIZEN, out[0])] + [(CITIZEN, "agent:bk", f"cancel offer_id={o} reason=deadline") for o in rest]
@@ -901,7 +920,7 @@ async def main() -> int:
         if not initial:
             return
         original = row(booking, CITIZEN, initial[0], 4)
-        # BK-37 (real journeys 000141, 0001420002): the citizen cancels the offers of a message one by
+        # BK-46 (real journeys 000141, 0001420002): the citizen cancels the offers of a message one by
         # one. The other two stay valid in its hands: a cancel alone never sends them again.
         cancel = row(CITIZEN, booking, "cancel offer_id=of-S-1 reason=deadline", 5)
         await desk_turn(city, cancel, [*chat, original, cancel])

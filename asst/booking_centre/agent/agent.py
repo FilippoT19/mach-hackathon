@@ -24,7 +24,7 @@ from pathlib import Path
 from city_sdk.city import LEDGER, CapError, City, Message, Need, OutOfScope, clinical, understood
 
 ROLES = ("booking_centre", "gp", "hospital", "specialist_care", "family_counseling")
-_MAX_PAGE = 8
+_MAX_PAGE = 20  # BK-38 (P-magesh-8): read the whole local catalogue before going cross-ASST
 # Four agenda hours is about half a minute of real time at 480x, so a slot is still
 # ahead when the citizen decides. One hour was already past by then.
 _LEAD = timedelta(hours=4)
@@ -911,7 +911,34 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     emergency = _emergency(message)
     code = None if emergency else _symptom(message)
     if not emergency and code is None and "prescription_number" in fields:
-        await _renew_prescription(city, message, chat, fields["prescription_number"])
+        number = fields["prescription_number"]
+        wants = re.search(r"rinnov|scadut|renew|expired|nuova ricetta|new prescription", message.text.lower())
+        wants = wants or any(
+            row.sender == LEDGER and number in row.text
+            and re.search(r"expired|scadut|used|PRESCRIPTION_EXPIRED", row.text) for row in chat
+        )
+        ours = _we(chat, agent, f"prescription_number={number}", to=message.sender, word="prescription")
+        if ours and not wants:
+            # P-francesco-43: the official renewal message carries only the number. Ask the Ledger
+            # for the state before saying "valid"; expired or used means renew.
+            def _state(rows: list[Message]) -> bool:
+                return any(r.sender == LEDGER and number in r.text and first_word(r.text) == "prescription"
+                           and "state=" in r.text for r in rows)
+            if not _state(chat):
+                await _say(city, LEDGER, f"prescription prescription_number={number}")
+                chat = await _until(city, message.need_id, chat, _state)
+            wants = any(r.sender == LEDGER and number in r.text
+                        and re.search(r"state=(?!issued|valid|active)", r.text) for r in chat)
+        if ours and not wants:
+            # P-francesco-37: a valid prescription we just issued is not a renewal request.
+            if not _we(chat, agent, "", to=message.sender, word="prescription.valid"):
+                en = _lang([*chat, message]) != "it"
+                await _say(city, message.sender, f"prescription.valid prescription_number={number} " + (
+                    "Your prescription is valid: please use it with the booking centre to book your visit."
+                    if en else
+                    "La sua ricetta è valida: la usi con il centro prenotazioni per prenotare la visita."))
+            return
+        await _renew_prescription(city, message, chat, number)
         return
     if not emergency:
         assessed = await _llm_symptom(city, message.text, emergency_only=code is not None)
@@ -959,23 +986,33 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     line = _rx_line([*chat, message], procedure, priority, code)
     prefs = _prefs(message.text)
     note = _prefs_line(prefs, _lang([*chat, message]) != "it")
-    await _say(
-        city,
-        message.sender,
-        f"prescription {token} procedure={procedure} priority={priority} {line}{note}",
-    )
-    # X-27: after the citizen has the prescription, tell our booking centre it is coming.
-    # Review +1 collaboration; the booking answers within seconds (+1 clock). No citizen id.
+    # X-27 / G10: tell our booking centre first, then say it to the citizen. The review only
+    # reads the citizen chat, so the agent-to-agent step must be visible there (collaboration).
+    en = _lang([*chat, message]) != "it"
     booking = await _peer(city, "booking_centre", "centro prenotazioni booking_centre asst-niguarda")
     if booking and not _we(chat, agent, token, to=booking, word="referral"):
-        await _say(
+        if await _say(
             city,
             booking,
             f"referral {token} procedure={procedure} priority={priority} "
             + "".join(f"{k}={v} " for k, v in prefs.items())
             + "Ricetta emessa: il cittadino vi contatterà a breve con questo numero."
             + (" Preferenze del cittadino indicate nei campi." if prefs else ""),
-        )
+        ):
+            line = line.replace(
+                "I am telling the booking centre now: contact it",
+                "I have already sent your prescription" + (" and your preferences" if prefs else "")
+                + " to our booking centre myself: contact it",
+            ).replace(
+                "Avviso subito il centro prenotazioni: lo contatti",
+                "Ho già passato io la sua ricetta" + (" e le sue preferenze" if prefs else "")
+                + " al nostro centro prenotazioni: lo contatti",
+            )
+    await _say(
+        city,
+        message.sender,
+        f"prescription {token} procedure={procedure} priority={priority} {line}{note}",
+    )
 
 
 async def _announce(city: City, message: Message, chat: list[Message], agent: str) -> None:
@@ -1374,7 +1411,7 @@ def _slot_ids(offers: set[str]) -> set[str]:
     return {item for item in offers if not item.startswith("wl-")}
 
 
-# BK-39 (0001660002): one real second is one agenda minute (kit e19: the agenda runs 60x).
+# BK-48 (0001660002): one real second is one agenda minute (kit e19: the agenda runs 60x).
 _AGENDA_SPEED = 60
 _DEADLINE_MARGIN = timedelta(minutes=30)
 
@@ -1473,7 +1510,7 @@ _CROSS_ASKS = 2
 def _cross_consent(chat: list[Message], agent: str) -> tuple[bool | None, str]:
     """Return (accepted/refused/unknown, consent_ref) for the latest cross-ASST request.
 
-    BK-40 (000175): the question is asked at most ``_CROSS_ASKS`` times. Kit e19: a refusal comes
+    BK-49 (000175): the question is asked at most ``_CROSS_ASKS`` times. Kit e19: a refusal comes
     in plain words, without the act word and without the field we asked for. So after the second
     question any answer without a ``consent_ref`` is a refusal, and the waiting list follows."""
 
@@ -1487,6 +1524,10 @@ def _cross_consent(chat: list[Message], agent: str) -> tuple[bool | None, str]:
             decision = (None, "")
             continue
         if not asks or decision[0] is not None or not row.sender.startswith("citizen:"):
+            continue
+        if head == "data.response" and fields.get("purpose") == "cross_asst":
+            # BK-36: the citizen grants the cross-ASST consent as a data.response (000175).
+            decision = (True, fields.get("consent_ref") or f"cx-{row.need_id or row.msg_id}")
             continue
         consent = fields.get("consent_ref", "")
         if consent and fields.get("purpose") in (None, "cross_asst") and head not in {"confirm", "cancel"}:
@@ -1576,12 +1617,12 @@ class _Sent:
         self.cross_peers: set[str] = set()
         self.partner_offers: set[str] = set()
         self.reasked: set[str] = set()  # BK-33: citizen msg_ids answered while consent is pending
-        # BK-36: one-off notices ("wait", "again") live here, never among the offers: a notice
+        # BK-45: one-off notices ("wait", "again") live here, never among the offers: a notice
         # in ``offers`` made the desk believe an offer was open and stop without a word.
         self.notes: set[str] = set()
-        self.pending_page: int | None = None  # BK-36: catalogue page asked and not read yet
-        self.pool: dict[str, dict[str, str]] = {}  # BK-38: partner offers that fit, by offer_id
-        self.rounds = 0  # BK-38: partner offer messages sent to the citizen
+        self.pending_page: int | None = None  # BK-45: catalogue page asked and not read yet
+        self.pool: dict[str, dict[str, str]] = {}  # BK-47: partner offers that fit, by offer_id
+        self.rounds = 0  # BK-47: partner offer messages sent to the citizen
 
 
 # Every Ledger or citizen message opens its own turn, and turns of one need run at the same
@@ -1665,9 +1706,33 @@ def _sent(key: str) -> _Sent:
     return entry
 
 
-def _cross_question(chat: list[Message]) -> str:
-    # BK-40: a plain question, as in the kit ("consent purpose=report_sharing Posso ...?"). Asking
-    # for "the consent reference" made the citizen answer with an empty data.response (000175).
+# X-51: hospital of the ASST whose h3 physiatrist speaks a rare language (ids from the groups).
+_RARE_LANG_HOSPITAL = {
+    "ka": ("agent:h6r1v45esk77", "Giambellino", "georgiano", "Georgian"),
+    "ur": ("agent:gpr1zqe343gb", "Nord", "urdu", "Urdu"),
+    "fr": ("agent:x0vr9rbwpesr", "Corvetto", "francese", "French"),
+    "ja": ("agent:nanpr5mgm2py", "Lambrate", "giapponese", "Japanese"),
+    "si": ("agent:xtj1dk9x3qej", "Greco", "singalese", "Sinhala"),
+    "ti": ("agent:bb01ggxymm05", "Bicocca", "tigrino", "Tigrinya"),
+}
+
+
+def _rare_hospital(chat: list[Message], procedure: str | None) -> tuple[str, str, str, str] | None:
+    if procedure != "VIS-FIS":
+        return None
+    return _RARE_LANG_HOSPITAL.get(_lang(chat) or "")
+
+
+def _cross_question(chat: list[Message], procedure: str | None = None) -> str:
+    # BK-49: a plain question, as in the kit ("consent purpose=report_sharing Posso ...?"). Asking
+    # for "the consent reference" made the citizen answer "Which consent_ref?" (000172).
+    rare = _rare_hospital(chat, procedure)
+    if rare:
+        return (f"May I ask the ASST {rare[1]} for you? Their physiatrist speaks {rare[3]}. Only the search "
+                "criteria leave our centre; your data go there only if you say yes."
+                if _lang(chat) != "it" else
+                f"Posso chiedere per lei all'ASST {rare[1]}, dove il fisiatra parla {rare[2]}? Escono solo i "
+                "criteri di ricerca; i suoi dati vanno là solo se lei dice di sì.")
     return ("May I look for an appointment in another ASST of Milan? Only the search criteria leave "
             "our centre; your data go to the other ASST only if you say yes."
             if _lang(chat) != "it" else
@@ -1709,12 +1774,12 @@ async def _cross_asst(
                     "I have your request. There is no suitable appointment in your ASST. "
                     if _lang(chat) != "it" else
                     "Ho la sua richiesta. Nella sua ASST non ci sono posti adatti. "
-                ) + _cross_question(chat))
+                ) + _cross_question(chat, procedure))
                 _trace("cross", message, state="consent_reasked", lang=_lang(chat))
             else:
                 _trace("cross", message, state="consent_pending")
             return True
-        if await _say(city, citizen, "consent purpose=cross_asst " + _cross_question(chat)):
+        if await _say(city, citizen, "consent purpose=cross_asst " + _cross_question(chat, procedure)):
             sent.cross_asked = True
         _trace("cross", message, state="consent_asked", lang=_lang(chat))
         return True
@@ -1725,7 +1790,7 @@ async def _cross_asst(
         sent.cross_peers |= asked
         sent.cross_sent = True
     if sent.cross_sent:
-        # BK-38: the partners were asked once. From here on the case moves only on what they sent:
+        # BK-47: the partners were asked once. From here on the case moves only on what they sent:
         # an offer the citizen still holds, the next best offers, or the waiting list.
         if not fresh_batch and _open_offers(chat, city.agent_id, citizen):
             _trace("cross", message, state="partner_offer_held")
@@ -1752,14 +1817,17 @@ async def _cross_asst(
     except Exception:
         return False
     sent_any = False
-    for peer in peers or []:
-        target = _peer_id(peer)
+    rare = _rare_hospital(chat, procedure)
+    ordered: list[object] = [rare[0]] if rare else []  # X-51: the rare-language ASST first
+    for peer in [*ordered, *(peers or [])]:
+        target = peer if isinstance(peer, str) else _peer_id(peer)
         if not target or target == city.agent_id or _ours(target) or target in sent.cross_peers:
             continue
-        role = _peer_value(peer, "role")
-        capabilities = _peer_value(peer, "capabilities")
-        if role and role not in _FACILITY_ROLES and service_type not in str(capabilities):
-            continue
+        if not isinstance(peer, str):
+            role = _peer_value(peer, "role")
+            capabilities = _peer_value(peer, "capabilities")
+            if role and role not in _FACILITY_ROLES and service_type not in str(capabilities):
+                continue
         parts = [
             "need.request",
             f"service_type={service_type}",
@@ -1904,7 +1972,7 @@ def _partner_pool(
     chat: list[Message], agent: str, sent: _Sent, *, lang: str, gender: str | None,
     now: datetime | None, limit: datetime | None,
 ) -> list[dict[str, str]]:
-    """BK-38: every partner offer in the case that the citizen can accept, best first.
+    """BK-47: every partner offer in the case that the citizen can accept, best first.
 
     The citizen cancels one by one every offer outside its answer set (``reason=lang``,
     ``deadline``, ``past``): 48 cancels in journey 0001420002. So an offer goes out only if the
@@ -2011,7 +2079,7 @@ async def _partner_offer(city: City, replies: list[Message], chat: list[Message]
         return False
     sent = _sent(key)
     if _cross_offered(chat, city.agent_id, citizen, sent):
-        return True  # BK-38: one batch at a time; a late reply only joins the pool
+        return True  # BK-47: one batch at a time; a late reply only joins the pool
     seen = {row.msg_id for row in chat}
     chat = [*chat, *(row for row in replies if row.msg_id not in seen)]
     number = _number(chat)
@@ -2173,7 +2241,8 @@ async def _desk_route(
         )
         if purpose == "cross_asst" or cross_pending:
             if _cross_consent(chat, city.agent_id)[0] is None:
-                await _say(city, message.sender, "consent purpose=cross_asst " + _cross_question(chat))
+                await _say(city, message.sender, "consent purpose=cross_asst " + _cross_question(
+                    chat, (_prescription_reply(chat, _number(chat)) or {}).get("procedure")))
             else:
                 await _advance(city, message, chat, fixed=fixed, replacing=False)
             return
@@ -2256,7 +2325,7 @@ async def _advance(
         sent = _sent(key)
         sent.pending_page = None
         await _advance_alone(city, message, chat, key, fixed=fixed, replacing=replacing)
-        # BK-36: a Ledger reply often lands only in the history and opens no turn. Whoever asked
+        # BK-45: a Ledger reply often lands only in the history and opens no turn. Whoever asked
         # for a catalogue page reads it here, in the same turn, until the search has an outcome
         # (offers, another ASST, waiting list). A push that also opens a turn finds it done.
         for _ in range(_MAX_PAGE + 1):
@@ -2370,7 +2439,7 @@ async def _advance_alone(
         )
         world = message.text if replacement_reply else _latest_slots(chat)
         if world is None and fixed is None and not _local_doctor(procedure, _lang(chat)):
-            # BK-41 (0001420003, lang=am): none of our doctors for this visit speaks the citizen's
+            # BK-50 (0001420003, lang=am): none of our doctors for this visit speaks the citizen's
             # language. Reading eight catalogue pages only burns the citizen's window.
             world = "slots page=1/1"
         if now is not None and world is not None:
@@ -2408,7 +2477,7 @@ async def _advance_alone(
     elif message.sender == LEDGER and first_word(message.text) == "slots":
         replacing = sent.replacement_page == _page(message.text)[0] == page
     if replacing and sent.citizen_replacement:
-        # BK-37: the citizen refused these one by one, each for a reason: none is offered again.
+        # BK-46: the citizen refused these one by one, each for a reason: none is offered again.
         taken = _offered(chat, agent) | _slot_ids(sent.offers)
     elif replacing:
         taken = _withdrawn(chat, agent) | sent.again
@@ -2438,7 +2507,7 @@ async def _advance_alone(
     )
     unseen = _slot_ids(sent.offers) - _offered(chat, agent)
     if not replacing and (unseen or _open_offers(chat, agent, citizen)):
-        # BK-37: one open batch of offers per need. A later Ledger page (or its push) never adds a
+        # BK-46: one open batch of offers per need. A later Ledger page (or its push) never adds a
         # second batch; the citizen who writes again gets the same offers once (BK-22).
         if message.sender.startswith("citizen:") and "again" not in sent.notes:
             ids = [r.msg_id for r in chat]
@@ -2487,7 +2556,7 @@ async def _advance_alone(
                     sent.again.add(slot["slot_id"])
             _trace("offer", message, kind="slots", count=len(picks), doctors=",".join(s["doctor_id"] for s in picks))
         return
-    # BK-36: the catalogue is in time order. Once a whole page lies after the citizen's deadline,
+    # BK-45: the catalogue is in time order. Once a whole page lies after the citizen's deadline,
     # no later page can fit: stop reading (each page costs seconds of the citizen's window).
     limit = _search_limit(now, priority, deadline)
     times = [at for at in (_when(fields_of(line).get("at", "")) for line in lines) if at is not None]
@@ -2510,6 +2579,8 @@ async def _advance_alone(
                     else "Ho la sua richiesta e sto controllando tutti i posti liberi per lei; "
                     "le riscrivo tra un momento.",
                 )
+        # BK-37: the Ledger's next page may never open a turn. _advance reads it back in this
+        # same turn (``pending_page``) and goes on from there.
         return
     await _after_local(city, message, chat, key, fixed=fixed, replacing=replacing)
 
@@ -2657,7 +2728,7 @@ async def _on_confirm(
     # (Index roles are hospital/specialist_care/..., not 'facility').
     target = await _index_facility(city, procedure, preferred=facility) or facility
     if _we(chat, agent, f"slot_id={slot}", to=target, word="confirm"):
-        # BK-42 (000147, 0001160002): the citizen sent the confirm again while the facility has
+        # BK-51 (000147, 0001160002): the citizen sent the confirm again while the facility has
         # not answered. One confirm per slot goes to the facility; the citizen is never left
         # without an answer.
         if message.sender.startswith("citizen:") and not _we(chat, agent, "", to=citizen, word="booking.receipt"):
@@ -2754,6 +2825,17 @@ async def _send_forwarded_receipt(
         + " with this receipt and your health card for check-in. If you cannot come, write to "
         "us first: we will move the appointment and free the slot for another citizen.",
     )
+    # G5 / G10 collaboration: tell the GP first, then say it in the receipt (the review reads only
+    # the citizen chat, so the agent-to-agent step must be visible there).
+    gp = await _peer(city, "gp", "medico di base gp asst-niguarda")
+    if gp and gp != city.agent_id and not _we(chat, city.agent_id, token, to=gp, word="booking.notice"):
+        number = _number(chat) or ""
+        if await _say(city, gp, f"booking.notice {token} ledger_ref={ledger_ref} facility={message.sender} "
+                      + (f"prescription_number={number} " if number else "")
+                      + "Visita prenotata e confermata per il vostro paziente: vi avvisiamo per il controllo dopo il referto."):
+            line += (" I have also informed your GP about this booking myself, so they can follow up after the visit."
+                     if _lang(chat) != "it" else
+                     " Ho anche avvisato io il suo medico di base della prenotazione, così potrà seguirla dopo la visita.")
     if not await _say(
         city,
         citizen,
@@ -2768,13 +2850,6 @@ async def _send_forwarded_receipt(
         _RECEIPT_SENT[message.need_id] = None
         while len(_RECEIPT_SENT) > _SENT_NEEDS:
             _RECEIPT_SENT.popitem(last=False)
-    # G5 collaboration: tell the GP the visit is booked, so the GP can follow up after the report.
-    gp = await _peer(city, "gp", "medico di base gp asst-niguarda")
-    if gp and gp != city.agent_id and not _we(chat, city.agent_id, token, to=gp, word="booking.notice"):
-        number = _number(chat) or ""
-        await _say(city, gp, f"booking.notice {token} ledger_ref={ledger_ref} facility={message.sender} "
-                   + (f"prescription_number={number} " if number else "")
-                   + "Visita prenotata e confermata per il vostro paziente: vi avvisiamo per il controllo dopo il referto.")
     # X-31: proactive next step — ask where the citizen lives and how they move, then tell them
     # the best way to reach the facility (distance from the map, transit, access, Area B).
     if message.need_id:
@@ -2822,7 +2897,7 @@ async def _where_route(city: City, message: Message, chat: list[Message], facili
     km = _km(point, door[:2]) if point else None
     extra = await _nearest_line(city, point, en, facility) if point else ""
     exact = bool(fields.get("_exact"))
-    return _route_line(en, km, door, fields, ours=_ours(facility), exact=exact) + (extra if exact else _zone_words(extra)) + " "
+    return _route_line(en, km, door, fields, point, ours=_ours(facility), exact=exact) + (extra if exact else _zone_words(extra)) + " "
 
 
 async def _partner_cancel(
@@ -2872,11 +2947,165 @@ _WHERE_OF: OrderedDict[str, tuple[tuple[float, float] | None, dict[str, str]]] =
 _RECEIPT_SENT: OrderedDict[str, None] = OrderedDict()
 # Fallback doors (Index cards carry the exact coordinates; these are used only if find fails).
 _DOOR_FALLBACK = {
-    "agent:jdj692g4145e": (45.5155, 9.1835, "Via Arganini Gerolamo 38"),
-    "agent:jmjfst55vgjz": (45.5106, 9.1867, "Viale Ca' Granda 28"),
-    "agent:mm18nddkfc5w": (45.5080, 9.1950, "Via Giolli Raffaello 23"),
+    "agent:jdj692g4145e": (45.51774, 9.19626, "Via Arganini Gerolamo 38"),
+    "agent:jmjfst55vgjz": (45.50815, 9.19427, "Viale Ca' Granda 28"),
+    "agent:mm18nddkfc5w": (45.52628, 9.21068, "Via Giolli Raffaello 23"),
 }
 _NUM = re.compile(r"-?\d{1,2}\.\d{3,}")
+
+# Milan metro stops (Comune di Milano open data, ds535 ATM fermate metropolitane): lat, lon, name, lines.
+_METRO_STOPS: tuple[tuple[float, float, str, str], ...] = (
+    (45.40175, 9.14554, 'Assago Milanofiori Forum', '2'),
+    (45.40945, 9.15005, 'Assago Milanofiori Nord', '2'),
+    (45.42921, 9.25623, 'San Donato', '3'),
+    (45.42999, 9.17732, 'Abbiategrasso', '2'),
+    (45.43359, 9.23809, 'Rogoredo Fs', '3'),
+    (45.4369, 9.16801, 'Famagosta', '2'),
+    (45.43713, 9.23031, 'Porto Di Mare', '3'),
+    (45.44041, 9.22347, 'Corvetto', '3'),
+    (45.44236, 9.12977, 'San Cristoforo', '4'),
+    (45.44281, 9.21848, 'Brenta', '3'),
+    (45.44373, 9.16768, 'Romolo', '2'),
+    (45.44654, 9.13057, 'Segneri', '4'),
+    (45.44676, 9.21082, 'Lodi T.I.B.B.', '3'),
+    (45.44962, 9.13572, 'Gelsomini', '4'),
+    (45.45143, 9.2034, 'Porta Romana', '3'),
+    (45.45182, 9.14245, 'Frattini', '4'),
+    (45.45238, 9.16961, 'P.Ta Genova F.S.', '2'),
+    (45.4536, 9.14802, 'Tolstoj', '4'),
+    (45.45532, 9.15315, 'Bolivar', '4'),
+    (45.45538, 9.11293, 'Bisceglie', '1'),
+    (45.45627, 9.18818, 'Santa Sofia', '4'),
+    (45.45655, 9.1951, 'Crocetta', '3'),
+    (45.45713, 9.18232, 'Vetra', '4'),
+    (45.45755, 9.16006, 'California', '4'),
+    (45.45756, 9.12226, 'Inganni', '1'),
+    (45.45862, 9.16981, 'S.Agostino', '2'),
+    (45.45876, 9.178, 'De Amicis', '4'),
+    (45.45909, 9.16491, 'Coni Zugna', '4'),
+    (45.45941, 9.12926, 'Primaticcio', '1'),
+    (45.45972, 9.19547, 'Sforza-Policlinico', '4'),
+    (45.46011, 9.18903, 'Missori', '3'),
+    (45.4615, 9.13648, 'Bande Nere', '1'),
+    (45.46162, 9.17317, 'S.Ambrogio', '2'),
+    (45.46182, 9.17322, 'San Ambrogio', '4'),
+    (45.46201, 9.24039, 'Repetti', '4'),
+    (45.46285, 9.2779, 'Linate Aeroporto', '4'),
+    (45.4639, 9.18861, 'Duomo', '3'),
+    (45.46431, 9.23635, 'Stazione Forlanini', '4'),
+    (45.46462, 9.1896, 'Duomo', '1'),
+    (45.4649, 9.14303, 'Gambara', '1'),
+    (45.46553, 9.18624, 'Cordusio', '1'),
+    (45.46643, 9.14957, 'De Angeli', '1'),
+    (45.46652, 9.19753, 'San Babila', '1,4'),
+    (45.46753, 9.16649, 'Conciliazione', '1'),
+    (45.4679, 9.20777, 'Tricolore', '4'),
+    (45.46795, 9.15591, 'Wagner', '1'),
+    (45.46799, 9.21845, 'Dateo', '4'),
+    (45.46807, 9.22488, 'Susa', '4'),
+    (45.46813, 9.23196, 'Argonne', '4'),
+    (45.46816, 9.1771, 'Cadorna Fn', '2'),
+    (45.4682, 9.17643, 'Cadorna Fn', '1'),
+    (45.46828, 9.1611, 'Pagano', '1'),
+    (45.46837, 9.18203, 'Cairoli', '1'),
+    (45.47001, 9.19285, 'Montenapoleone', '3'),
+    (45.4704, 9.15529, 'Buonarroti', '1'),
+    (45.47143, 9.20195, 'Palestro', '1'),
+    (45.47223, 9.18255, 'Lanza', '2'),
+    (45.47368, 9.15097, 'Amendola', '1'),
+    (45.47442, 9.20505, 'P.Ta Venezia', '1'),
+    (45.47504, 9.19471, 'Turati', '3'),
+    (45.47621, 9.12901, 'San Siro Ippodromo', '5'),
+    (45.47626, 9.11832, 'San Siro Stadio', '5'),
+    (45.47636, 9.13789, 'Segesta', '5'),
+    (45.47744, 9.18448, 'Moscova', '2'),
+    (45.47814, 9.15668, 'Tre Torri', '5'),
+    (45.47915, 9.14375, 'Lotto Fieramilanocity', '1'),
+    (45.47978, 9.14367, 'Lotto', '5'),
+    (45.48009, 9.19886, 'Repubblica', '3'),
+    (45.48035, 9.21098, 'Lima', '1'),
+    (45.4808, 9.1515, 'Portello', '5'),
+    (45.48115, 9.22592, 'Piola', '2'),
+    (45.48162, 9.16226, 'Domodossola', '5'),
+    (45.48364, 9.18674, 'Garibaldi Fs', '2,5'),
+    (45.48425, 9.23483, 'Lambrate Fs', '2'),
+    (45.48444, 9.20261, 'Centrale Fs', '2,3'),
+    (45.48452, 9.16678, 'Gerusalemme', '5'),
+    (45.48459, 9.21517, 'Loreto', '2'),
+    (45.48481, 9.17979, 'Monumentale', '5'),
+    (45.4849, 9.19486, 'Gioia', '2'),
+    (45.48532, 9.20941, 'Caiazzo', '2'),
+    (45.48596, 9.13718, 'Qt8', '1'),
+    (45.48624, 9.21698, 'Loreto', '1'),
+    (45.48749, 9.17195, 'Cenisio', '5'),
+    (45.48761, 9.19126, 'Isola', '5'),
+    (45.4894, 9.12732, 'Lampugnano', '1'),
+    (45.48999, 9.20056, 'Sondrio', '3'),
+    (45.49107, 9.21818, 'Pasteur', '1'),
+    (45.4912, 9.237, 'Udine', '2'),
+    (45.49266, 9.1926, 'Zara', '3,5'),
+    (45.49372, 9.12055, 'Uruguay', '1'),
+    (45.49553, 9.21951, 'Rovereto', '1'),
+    (45.49615, 9.19482, 'Marche', '5'),
+    (45.497, 9.11015, 'Bonola', '1'),
+    (45.4977, 9.18504, 'Maciachini', '3'),
+    (45.50004, 9.24143, 'Cimiano', '2'),
+    (45.50045, 9.221, 'Turro', '1'),
+    (45.50116, 9.10148, 'S.Leonardo', '1'),
+    (45.50163, 9.19792, 'Istria', '5'),
+    (45.50521, 9.09297, 'Molino Dorino', '1'),
+    (45.50525, 9.24819, 'Crescenzago', '2'),
+    (45.50554, 9.1796, 'Dergano', '3'),
+    (45.50673, 9.22274, 'Gorla', '1'),
+    (45.50724, 9.20111, "Ca' Granda", '5'),
+    (45.5088, 9.08581, 'Pero', '1'),
+    (45.51144, 9.26051, 'Cascina Gobba', '2'),
+    (45.51203, 9.2245, 'Precotto', '1'),
+    (45.51355, 9.17398, 'Affori Centro', '3'),
+    (45.51473, 9.20537, 'Bicocca', '5'),
+    (45.51578, 9.28599, 'Vimodrone', '2'),
+    (45.51736, 9.29784, 'Cascina Burrona', '2'),
+    (45.51745, 9.22613, 'Villa S.G.', '1'),
+    (45.51984, 9.08711, 'Rho Fieramilano', '1'),
+    (45.52021, 9.27493, 'Cologno Sud', '2'),
+    (45.52074, 9.34597, 'Villa Fiorita', '2'),
+    (45.52107, 9.33138, 'Cernusco Sul Naviglio', '2'),
+    (45.52168, 9.16825, 'Affori Fn', '3'),
+    (45.52186, 9.36312, 'Cassina De Pecchi', '2'),
+    (45.52199, 9.20947, 'Ponale', '5'),
+    (45.52348, 9.22796, 'Sesto Marelli', '1'),
+    (45.5253, 9.3759, 'Bussero', '2'),
+    (45.52678, 9.21218, 'Bignami', '5'),
+    (45.52748, 9.28296, 'Cologno Centro', '2'),
+    (45.52785, 9.38497, 'Villa Pompea', '2'),
+    (45.52813, 9.16373, 'Comasina', '3'),
+    (45.53416, 9.23125, 'Sesto Rondo', '1'),
+    (45.5343, 9.29109, 'Cologno Nord', '2'),
+    (45.53674, 9.40345, 'Gorgonzola', '2'),
+    (45.54169, 9.23833, 'Sesto 1 Maggio Fs', '1'),
+    (45.54208, 9.4235, 'Cascina Antonietta', '2'),
+    (45.54529, 9.43663, 'Gessate', '2'),
+)
+
+
+def _stop_near(point: tuple[float, float] | None) -> tuple[str, str, float] | None:
+    """X-50: nearest metro stop (name, lines, km) from the city open data, or None."""
+
+    if not point:
+        return None
+    lat, lon = point[0], point[1]
+    best = min(_METRO_STOPS, key=lambda r: (r[0] - lat) ** 2 + ((r[1] - lon) * 0.7) ** 2)
+    dist = 6371 * 2 * math.asin(math.sqrt(
+        math.sin(math.radians(best[0] - lat) / 2) ** 2
+        + math.cos(math.radians(lat)) * math.cos(math.radians(best[0])) * math.sin(math.radians(best[1] - lon) / 2) ** 2
+    ))
+    return best[2], "/".join(f"M{x}" for x in best[3].split(",") if x), dist
+
+
+def _stop_text(en: bool, stop: tuple[str, str, float] | None) -> str:
+    if not stop:
+        return "ATM buses" if en else "bus ATM"
+    return (f"{stop[1]} metro, {stop[0]} stop" if en else f"metro {stop[1]}, fermata {stop[0]}")
 
 
 def _asked_where(chat: list[Message], agent: str, message: Message) -> bool:
@@ -2910,7 +3139,7 @@ async def _door(city: City, facility: str) -> tuple[float, float, str] | None:
         if addr is not None and getattr(addr, "lat", None) is not None:
             _DOORS[peer.agent_id] = (float(addr.lat), float(addr.lon), str(addr.label))
     if facility not in _DOORS and facility not in _DOOR_FALLBACK:
-        # BK-44: a facility of another ASST. Its door is on its own Index card.
+        # BK-53: a facility of another ASST. Its door is on its own Index card.
         try:
             peers = await asyncio.wait_for(city.find("ospedale specialista struttura sanitaria Milano"), timeout=4.0)
         except Exception:
@@ -2945,50 +3174,36 @@ def _citizen_point(text: str) -> tuple[float, float] | None:
 
 def _route_line(
     en: bool, km: float | None, door: tuple[float, float, str] | None, fields: dict[str, str],
-    *, ours: bool = True, exact: bool = True,
+    origin: tuple[float, float] | None = None, *, ours: bool = True, exact: bool = True,
 ) -> str:
-    """How to get to the visit. BK-44: ``ours`` False is a facility of another ASST (the M5
-    Ca' Granda stop is only near ours); ``exact`` False means the distance is from the citizen's
-    district, not from an address with coordinates, and the sentence says so."""
+    """How to get to the visit. BK-53: ``exact`` False means the distance is from the citizen's
+    district, not from an address with coordinates, and the sentence says so; ``ours`` False is a
+    facility of another ASST, whose accessibility we do not promise."""
 
-    line = _route_text(en, km, door, fields, ours)
+    line = _route_text(en, km, door, fields, origin, ours)
     return line if exact else _zone_words(line)
 
 
 def _zone_words(line: str) -> str:
-    return (line.replace("da lei", "dalla sua zona").replace("from you", "from your area")
+    return (line.replace("vicino a lei alla", "vicino alla sua zona alla").replace("near you to the", "near your area to the")
+            .replace("da lei", "dalla sua zona").replace("from you", "from your area")
             .replace("più vicino a lei", "più vicino alla sua zona")
             .replace("nearest hospital to you", "nearest hospital to your area"))
 
 
 def _route_text(
-    en: bool, km: float | None, door: tuple[float, float, str] | None, fields: dict[str, str], ours: bool,
+    en: bool, km: float | None, door: tuple[float, float, str] | None, fields: dict[str, str],
+    origin: tuple[float, float] | None, ours: bool,
 ) -> str:
     street = door[2] if door else ("the facility" if en else "la struttura")
     out: list[str] = []
-    if not ours:
-        if km is None:
-            out.append(
-                (f"The visit is at {street}, in another ASST of Milan" if door else "The visit is in another ASST of Milan")
-                + ": check the route on the ATM journey planner and allow some extra time."
-                if en else
-                (f"La visita è in {street}, in un'altra ASST di Milano" if door else "La visita è in un'altra ASST di Milano")
-                + ": guardi il percorso sul sito ATM e tenga un po' di margine."
-            )
-        else:
-            mins = round(10 + km * 4)
-            out.append(
-                f"{street} is in another ASST of Milan, about {km:.1f} km from you: by public transport "
-                f"it takes about {mins} minutes; please allow some extra time."
-                if en else
-                f"{street} è in un'altra ASST di Milano, a circa {km:.1f} km da lei: con i mezzi pubblici "
-                f"servono circa {mins} minuti; tenga un po' di margine."
-            )
-    elif km is None:
+    at_door = _stop_text(en, _stop_near(door[:2] if door else None))
+    mine = _stop_near(origin)
+    if km is None:
         out.append(
-            f"The visit is at {street}, near the M5 metro (Ca' Granda stop) and several ATM bus lines."
+            f"The visit is at {street}, near the {at_door} and several ATM bus lines."
             if en else
-            f"La visita è in {street}, vicino alla metro M5 (fermata Ca' Granda) e a diverse linee ATM."
+            f"La visita è in {street}, vicino alla {at_door} e a diverse linee ATM."
         )
     elif km < 1.2:
         mins = max(5, round(km * 13))
@@ -3000,11 +3215,13 @@ def _route_text(
     else:
         mins = round(10 + km * 4)
         out.append(
-            f"{street} is about {km:.1f} km from you: by public transport (M5 metro, Ca' Granda stop, "
-            f"or ATM buses) it takes about {mins} minutes; please allow some extra time."
+            f"{street} is about {km:.1f} km from you: by public transport "
+            + (f"(from the {_stop_text(True, mine)} near you to the {at_door}) " if mine and mine[2] < 1.5 else f"({at_door}, or ATM buses) ")
+            + f"it takes about {mins} minutes; please allow some extra time."
             if en else
-            f"{street} è a circa {km:.1f} km da lei: con i mezzi pubblici (metro M5, fermata Ca' Granda, "
-            f"o bus ATM) servono circa {mins} minuti; tenga un po' di margine."
+            f"{street} è a circa {km:.1f} km da lei: con i mezzi pubblici "
+            + (f"(dalla {_stop_text(False, mine)} vicino a lei alla {at_door}) " if mine and mine[2] < 1.5 else f"({at_door}, o bus ATM) ")
+            + f"servono circa {mins} minuti; tenga un po' di margine."
         )
     disability = fields.get("disability", "none").lower()
     if disability == "motor" and not ours:
@@ -3070,11 +3287,11 @@ async def _on_where(city: City, message: Message, chat: list[Message]) -> None:
     if km is None and "address" not in fields_of(message.text):
         head = "No problem." if en else "Nessun problema."
     extra = await _nearest_line(city, point, en, facility) if point else ""
-    # BK-44: the citizen's address is a street name without coordinates, so the distance is from
-    # the district: the sentence says "from your area", and names M5 only for our own facilities.
+    # BK-53: the citizen's address is a street name without coordinates, so the distance is from
+    # the district and the sentence says "from your area".
     exact = exact_point is not None
     await _say(city, message.sender, head + " " + _route_line(
-        en, km, door, fields_of(message.text), ours=_ours(facility), exact=exact,
+        en, km, door, fields_of(message.text), point, ours=_ours(facility), exact=exact,
     ) + (extra if exact else _zone_words(extra)))
 
 
@@ -3104,7 +3321,7 @@ async def _nearest_line(city: City, point: tuple[float, float], en: bool, booked
 async def _citizen_cancel(
     city: City, message: Message, chat: list[Message], *, fixed: str | None
 ) -> None:
-    """X-34 / BK-37: the citizen drops one offer. Every cancel gets its short answer at once.
+    """X-34 / BK-46: the citizen drops one offer. Every cancel gets its short answer at once.
 
     The citizen cancels the offers of a message one by one, often five in the same second, and
     may confirm another one of them in between (0001110003). So a cancel alone never opens a
@@ -3227,7 +3444,7 @@ async def _zone_route(city: City, chat: list[Message], facility: str) -> str:
     if not door:
         return ""
     km = _km(zone, door[:2]) if zone else None
-    line = _route_line(_lang(chat) != "it", km, door, {}, ours=_ours(facility), exact=False)
+    line = _route_line(_lang(chat) != "it", km, door, {}, zone, ours=_ours(facility), exact=False)
     return (line + " ") if line else ""
 # --- facility ----------------------------------------------------------------------------------
 
@@ -3828,12 +4045,15 @@ async def _on_reported(city: City, message: Message, chat: list[Message]) -> Non
         en="Your visit is complete and the report is filed. Your GP can read it and will tell "
         "you if a follow-up is needed. Thank you for trusting us.",
     )
-    await _say(city, citizen, f"report booking_id={booking_id} outcome_code=VISIT {line}")
-    # G5 / SP-20: share the report with the citizen's GP (inside our ASST) for the follow-up.
+    # G5 / SP-20 / G10: share the report with the citizen's GP first, then say so to the citizen.
     gp = await _peer(city, "gp", "medico di base gp asst-niguarda")
     if gp and gp != city.agent_id and not _we(chat, city.agent_id, token, to=gp, word="report.notice"):
-        await _say(city, gp, f"report.notice {token} outcome_code=VISIT Referto archiviato per il vostro "
-                   "paziente: potete leggerlo e decidere il controllo.")
+        if await _say(city, gp, f"report.notice {token} outcome_code=VISIT Referto archiviato per il vostro "
+                      "paziente: potete leggerlo e decidere il controllo."):
+            line += (" I have sent the report to your GP myself, so they can plan any follow-up with you."
+                     if _lang(chat) != "it" else
+                     " Ho inviato io il referto al suo medico di base, così potrà decidere con lei il controllo.")
+    await _say(city, citizen, f"report booking_id={booking_id} outcome_code=VISIT {line}")
 
 
 # --- FA-12: cross-ASST request from another booking centre (format agreed in the group) ------

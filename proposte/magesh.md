@@ -5,6 +5,30 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 
 <!-- aggiungi qui sotto -->
 
+### [~] P-magesh-8 (punto 1 fatto: BK-38; punti 2-3 a Giulia): dopo la contesa (`no_capacity`) il booking salta gli slot locali ancora liberi e chiede subito il consenso cross_asst
+- Journey: ID da aggiungere (journey del 21/11, 01:05–01:11, esito Fallito) — ruolo: booking_centre
+- Cosa fa il cittadino: riceve l'offerta `slot s2 gio 19 nov 15:30` (01:06:07) e la conferma con il consenso (01:06:28). Lo slot lo prende un'altra squadra: tutte le ASST ricevono lo stesso cittadino nello stesso momento
+- Cosa risponde oggi il nostro agente: `cancel reason=no_capacity` (01:07:19), poi "sto controllando tutti i posti liberi…" (01:07:21), poi, senza offrire altri slot, chiede il consenso `purpose=cross_asst` (01:08:41). Il resto del journey è il loop del consenso, già risolto con BK-36 (booking 1.0.11)
+- Review / punti persi: −1, "Nessuna prenotazione, anche se dopo la contesa restavano slot accettabili liberi". Il giudice dice che nella nostra ASST c'erano ancora slot validi
+- Causa probabile (**da confermare con il log del Centro prenotazioni**, Log → Scarica JSON):
+  1. **Limite di 8 pagine** (`_MAX_PAGE` in `00_core.py`, controllo a `30_booking.py:959`): arrivato alla pagina 8, il booking passa al cross-ASST anche se il catalogo ha altre pagine. Il commento subito sotto dice "solo dopo aver esaurito tutto il catalogo locale", ma con più di 8 pagine non è vero. Gli slot da pagina 9 in poi non vengono mai visti
+  2. **Pagina 1 vecchia**: la ricerca di sostituzione riparte dalla pagina 1 letta prima della contesa, non da una lettura nuova. Le altre squadre hanno appena preso slot, quindi rischiamo un altro `no_capacity`; e non vediamo gli slot liberati nel frattempo
+  3. **Filtri troppo stretti** in `fitting()` (`10_shared.py`), se il log mostra che sono state lette tutte le pagine: medico che manca nella tabella `_DOCTORS`, anticipo di 4 ore, giorni del medico, scadenza della ricetta. Il giudice li considera accettabili, noi no
+- Cosa dovrebbe fare: dopo un `no_capacity`, offrire al cittadino un altro slot locale accettabile prima di chiedere il consenso cross_asst.
+  1. Passare al cross-ASST solo quando sono state lette **tutte** le pagine (pagina corrente = ultima pagina). Se il limite di pagine resta per velocità, arrivarci vuol dire "continuo a leggere" o lista d'attesa, mai cross-ASST
+  2. Dopo `no_capacity`, chiedere di nuovo al Ledger `world … page=1` invece di riusare la lettura vecchia
+  3. (Prevenzione) Tra la conferma del cittadino (01:06:28) e il `no_capacity` (01:07:19) passano 51 s: è lì che perdiamo la gara. Mandare il `hold` al Ledger subito dopo la conferma, prima di ogni chiamata a `city.llm` o di altre letture
+  4. Se il log mostra un filtro troppo stretto: allinearlo alle regole (`docs/kit/e19-rules.md`)
+- Test a parole: "dato un catalogo di 10 pagine con un solo slot accettabile a pagina 1 (s2) e uno a pagina 9 (s9), il cittadino conferma s2 e il Ledger risponde `no_capacity`: mi aspetto un `offer` con `slot_id=s9` e nessun `consent purpose=cross_asst`" (oggi fallisce, passa con il punto 1); "dato lo stesso caso con catalogo di 3 pagine e nessun altro slot accettabile, mi aspetto il consenso cross_asst come oggi (nessuna regressione)"
+- Priorità secondo te: P1 (la contesa capita in ogni journey con più ASST: ogni slot perso senza sostituzione è −1)
+
+| Caso | Soluzione | Logica | Test |
+|---|---|---|---|
+| Slot perso nella contesa (`no_capacity`), altri slot locali liberi oltre pagina 8 | Cross-ASST solo con catalogo locale esaurito | La ricerca continua fino all'ultima pagina; il limite di pagine non porta mai al cross-ASST | 10 pagine, s9 a pagina 9 → `offer slot_id=s9`, nessun consenso cross_asst |
+| Pagina 1 vecchia dopo la contesa | Rileggere la pagina 1 dopo `no_capacity` | Gli slot presi dagli altri non vengono riofferti; quelli liberati sì | dopo `no_capacity`, il booking manda `world … page=1` al Ledger |
+| 51 s tra conferma e hold | `hold` subito dopo la conferma | Meno tempo = meno contese perse | la conferma produce il `hold` prima di ogni altro messaggio |
+
+
 ### [ ] P-magesh-7 (CO-20): "senza ricetta" al consultorio è nel codice ma non in CASI.md e non ha test
 - Journey: nessuno (lettura del codice su `main` 69870f8) — ruolo: family_counseling
 - Cosa fa il cittadino: chiede una visita al consultorio senza numero di ricetta, es. "vorrei una visita ginecologica"

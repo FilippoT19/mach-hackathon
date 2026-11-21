@@ -32,6 +32,7 @@ Un solo brain serve tutti e 5 gli agenti (legge il ruolo dalla card). Il brain √
    python seats.py --brain                                        # unisce le parti e copia nei 5 agenti
    python seats.py --check                                        # deve dire CHECK OK
    ~/.local/share/uv/tools/city-cli/bin/python tests/test_brain.py   # deve dire TUTTI I TEST OK
+   ~/.local/share/uv/tools/city-cli/bin/python tests/test_replay.py  # percorsi veri rigiocati: deve dire REPLAY OK
    ```
 4. Provate in locale, se volete: `city run gp` (chat come `citizen`, `agent` o `ledger`; non tocca la citt√†).
 5. Aprite una PR verso `main`, oppure mandate la proposta a Filippo. **Filippo** decide, la legge e la unisce.
