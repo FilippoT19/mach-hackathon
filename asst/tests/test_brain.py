@@ -143,7 +143,14 @@ async def test_x13_impostor(check) -> None:
 async def test_co10_pregnancy(check) -> None:
     for text, flag in (("sono incinta di 7 mesi e ho perdite di sangue", True),
                        ("I'm pregnant and have strong contractions", True),
-                       ("vorrei una visita ginecologica di controllo in gravidanza", False)):
+                       ("vorrei una visita ginecologica di controllo in gravidanza", False),
+                       # P-magesh-16: normal questions in pregnancy are not 112.
+                       ("sono incinta e vorrei fare gli esami del sangue", False),
+                       ("I'm pregnant and need a blood test", False),
+                       ("sono in gravidanza, ho delle perdite bianche, è normale?", False),
+                       ("incinta di 10 settimane, ho un dolore forte alla schiena", False),
+                       ("sono incinta e ho perso le acque", True),
+                       ("pregnant and bleeding a lot", True)):
         msg = Message(type="chat", sender=CITIZEN, msg_id="m-co", need_id="N-co", recipient="agent:mm18nddkfc5w", body={"text": text})
         city = FakeCity("agent:mm18nddkfc5w")
         await brain.handle("family_counseling", city, msg, [])
@@ -441,6 +448,32 @@ async def test_000113(check) -> None:
           and any(l.startswith("booking.slots need_id=N-1") for l in lines)
           and any(l.startswith("booking.offer need_id=N-1") and "waiting_list" in l for l in lines), lines)
     check("OPS-07 nessun testo del cittadino nei log", not any("English-speaking" in l for l in lines), lines)
+
+
+async def test_p17_never_silent(check) -> None:
+    """P-magesh-17: a slow or broken booking turn still sends the citizen a status line."""
+    real, early = brain._desk_route, brain._EARLY_STATUS
+
+    async def slow(city, message, chat, **kw):
+        await asyncio.sleep(0.3)
+        await brain._say(city, message.sender, "offer offer_id=o-1 slot_id=s-1 Posto libero")
+
+    async def broken(city, message, chat, **kw):
+        raise RuntimeError("ledger down")
+
+    try:
+        brain._EARLY_STATUS = 0.05
+        for name, route, want in (("lento", slow, ["status", "offer"]), ("errore", broken, ["status"])):
+            brain._desk_route = route
+            city = FakeCity("agent:fn64xfq2jft4")
+            msg = Message(type="chat", sender=CITIZEN, msg_id=f"m-p17-{name}", need_id=f"N-p17-{name}",
+                          recipient="agent:fn64xfq2jft4",
+                          body={"text": "need.request prescription_number=prescription_number-N-1 service_type=hospital.physiatry"})
+            await brain._desk(city, msg, [msg], hold_self=False, fixed=None)
+            got = [o.split()[0] for o in to(city, CITIZEN)]
+            check(f"P-magesh-17 turno {name}: il cittadino riceve {want}", got == want, to(city, CITIZEN))
+    finally:
+        brain._desk_route, brain._EARLY_STATUS = real, early
 
 
 async def test_x49(check) -> None:
@@ -775,6 +808,14 @@ async def main() -> int:
     check("BK-58 'cancel' dentro una frase non annulla", not brain._citizen_cancels("I would like to book, can I cancel later if needed?") and not brain._citizen_cancels("Non voglio cancellare niente, vorrei prenotare"), None)
     check("BK-58 il vero cancel resta", brain._citizen_cancels("No grazie. cancel offer_id=of-1 reason=past") and brain._citizen_cancels("cancel booking_id=B-1"), None)
 
+    # P-magesh-13: negated days, the GP symptom story, "any day".
+    GPID = "agent:fddgaqmp6kb0"
+    check("P-magesh-13 'non posso il lunedì' esclude il lunedì", brain._days([row(CITIZEN, BK, "Non posso il lunedì, va bene qualsiasi altro giorno", 600)]) == frozenset({"tue", "wed", "thu", "fri"}), None)
+    check("P-magesh-13 'any day except Friday'", brain._days([row(CITIZEN, BK, "I can come any day except Friday", 601)]) == frozenset({"mon", "tue", "wed", "thu"}), None)
+    check("P-magesh-13 il giorno detto al gp non conta", brain._days([row(CITIZEN, GPID, "Il dolore al ginocchio è iniziato lunedì scorso", 602), row(CITIZEN, BK, "vorrei prenotare", 603)]) is None, None)
+    check("P-magesh-13 BK-56 resta valido", brain._days([row(CITIZEN, BK, "Posso venire solo lunedì o mercoledì", 604)]) == frozenset({"mon", "wed"}), None)
+    check("P-magesh-13 virgola chiude la negazione", brain._days([row(CITIZEN, BK, "not on monday please, tuesday or wednesday is fine", 605)]) == frozenset({"tue", "wed"}), None)
+
     # 17. X-28: red flag -> acknowledge the person, 112, safety, and warn OUR hospital (no id).
     HO = "agent:jdj692g4145e"
     brain._PEERS.clear()
@@ -792,6 +833,12 @@ async def main() -> int:
     ho = to(city, HO)
     check("X-28 red flag avvisa il nostro ospedale", len(ho) == 1 and ho[0].startswith("emergency.notice") and "citizen:" not in ho[0], city.sent)
     check("X-28 nessun messaggio all'ospedale di un'altra squadra", not to(city, "agent:other-ho"), city.sent)
+    # X-56 (journey 0000540007): the Index shows nobody (slow or down) -> the notice still goes.
+    brain._PEERS.clear()
+    city56 = FakeCity("agent:gp", peers=[])
+    await brain._gp(city56, citizen_msg("da stamattina ho un dolore al petto mica da ridere"), [])
+    check("X-56 avviso all'ospedale anche senza Index", any(t.startswith("emergency.notice") for t in to(city56, HO)), city56.sent)
+    check("X-56 il 112 dice 'li ho già avvisati'", to(city56, CITIZEN) and "li ho già avvisati io" in to(city56, CITIZEN)[0], to(city56, CITIZEN))
     # X-55: the notice to our hospital leaves BEFORE the 112 message, which says "already told".
     order = [r for r, t in city.sent if t.startswith(("emergency.notice", "escalate.emergency"))]
     check("X-55 avviso ospedale prima del 112", order[:2] == [HO, CITIZEN], city.sent)
@@ -1395,6 +1442,7 @@ async def main() -> int:
     await test_francesco_23(check)
     await test_000113(check)
     await test_x49(check)
+    await test_p17_never_silent(check)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 
