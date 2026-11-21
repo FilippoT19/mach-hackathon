@@ -196,6 +196,8 @@ def checks(w: World) -> list[tuple[str, bool, str]]:
             m.sender == SPEC and m.recipient == LEDGER and m.text.startswith("report ") and "consent_ref=" in m.text
             for m in log) and any(m.sender == SPEC and m.recipient == cz and m.text.startswith("report ")
                                    for m in log), ""))
+        out.append(("GP-23 the GP tells the citizen it has the report (consented share)", any(
+            m.sender == GP and m.recipient == cz and m.text.startswith("gp.report ") for m in log), ""))
     out.append(("no simulator errors / crashes", not w.errors, "; ".join(w.errors)))
     return out
 

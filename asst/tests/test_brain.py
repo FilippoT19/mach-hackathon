@@ -2754,6 +2754,71 @@ async def main() -> int:
 
     await test_gp18(check)
 
+    async def test_gp_proactive(check):
+        """GP-22 (red flags after the prescription), GP-12 (two symptoms), GP-23 (report to citizen)."""
+        from unittest.mock import patch
+
+        brain._LANG_OF.pop("N-1", None)
+        # GP-22
+        city = await run_gp("Buongiorno dottore, ho mal di schiena da una settimana")
+        rx = [t for t in to(city, CITIZEN) if t.startswith("prescription ")]
+        check("GP-22 ricetta con le red flag del protocollo: dolore al petto, forza alle gambe, 112",
+              len(rx) == 1 and "dolore al petto o perdita di forza alle gambe" in rx[0] and "112" in rx[0], city.sent)
+        check("GP-22 la frase di sicurezza non è consiglio clinico (clinical() falso)",
+              not any(brain.clinical(line) for line in brain._SAFETY), brain._SAFETY)
+
+        # GP-12
+        brain._LANG_OF.pop("N-1", None)
+        both = citizen_msg("Mi fa male il ginocchio e ho anche mal di schiena da giorni")
+        city = FakeCity("agent:gp")
+        await brain._gp(city, both, [both])
+        out = to(city, CITIZEN)
+        check("GP-12 due sintomi con righe diverse: una domanda mirata, nessuna ricetta",
+              len(out) == 1 and out[0].startswith("gp.which ") and "ginocchio" in out[0] and "schiena" in out[0]
+              and not to(city, LEDGER), city.sent)
+        asked = row("agent:gp", CITIZEN, out[0] if out else "gp.which", 2)
+        knee = Message(type="chat", sender=CITIZEN, msg_id="m-knee", need_id="N-1", body={"text": "Soprattutto il ginocchio"}, recipient="agent:gp")
+        city = FakeCity("agent:gp")
+        await brain._gp(city, knee, [both, asked, knee])
+        check("GP-12 dopo la risposta 'il ginocchio': ricetta VIS-FIS D",
+              any(t.startswith("prescribe ") and "procedure=VIS-FIS" in t and "priority=D" in t for t in to(city, LEDGER)), city.sent)
+        again = Message(type="chat", sender=CITIZEN, msg_id="m-again", need_id="N-1", body={"text": "Il ginocchio e il mal di schiena"}, recipient="agent:gp")
+        city = FakeCity("agent:gp")
+        await brain._gp(city, again, [both, asked, again])
+        check("GP-12 una sola domanda per need: se nomina ancora tutti e due, ricetta (nessun interrogatorio)",
+              not any(t.startswith("gp.which") for t in to(city, CITIZEN)) and any(t.startswith("prescribe ") for t in to(city, LEDGER)), city.sent)
+        brain._LANG_OF.pop("N-1", None)
+        one = await run_gp("Ho mal di schiena e la schiena mi fa male anche di notte")
+        check("GP-12 must not break: un solo sintomo, ricetta subito",
+              any(t.startswith("prescribe ") for t in to(one, LEDGER)) and not any(t.startswith("gp.which") for t in to(one, CITIZEN)), one.sent)
+
+        # GP-23
+        gp, spec, ring_spec = "agent:fddgaqmp6kb0", "agent:jmjfst55vgjz", "agent:sc25kab6cgde"
+        brain._GP_TOLD_REPORT.clear()
+        note = row(spec, gp, f"report.notice booking_id=B-23 outcome_code=VISIT citizen={CITIZEN} lang=it Referto archiviato", 1)
+        city = FakeCity(gp)
+        await brain._gp(city, note, [note])
+        told = [t for t in to(city, CITIZEN) if t.startswith("gp.report booking_id=B-23")]
+        check("GP-23 referto dal nostro specialista: il gp lo dice al cittadino, senza promettere il controllo",
+              len(told) == 1 and "fascicolo" in told[0] and "prescrivo" not in told[0]
+              and any(t.startswith("report.notice.ack") for t in to(city, spec)), city.sent)
+        await brain._gp(city, note, [note])
+        check("GP-23 una volta sola per referto",
+              len([t for t in to(city, CITIZEN) if t.startswith("gp.report")]) == 1, city.sent)
+        with patch.object(brain, "_TRUSTED_PARTNERS", set(RING_CONFIG)):
+            city = FakeCity(gp)
+            other = row(ring_spec, gp, f"report.notice booking_id=B-X outcome_code=VISIT citizen={CITIZEN}", 3)
+            await brain._gp(city, other, [other])
+            check("GP-23 avviso da uno specialista non nostro: nessun messaggio al cittadino",
+                  not to(city, CITIZEN), city.sent)
+        brain._GP_TOLD_REPORT.clear()
+        city = FakeCity(gp)
+        bare = row(spec, gp, "report.notice booking_id=B-24 outcome_code=VISIT", 4)
+        await brain._gp(city, bare, [bare])
+        check("GP-23 avviso senza citizen=: nessun messaggio al cittadino", not to(city, CITIZEN), city.sent)
+
+    await test_gp_proactive(check)
+
     async def test_mach2(check):
         """MACH-2.0 (red-agent): ring R17, round of 12 R3, mach/lease tokens, R7, R13, R20, R21."""
         from unittest.mock import patch

@@ -63,6 +63,14 @@ async def _gp_again(city: City, message: Message, chat: list[Message]) -> None:
             if en else
             "La sua ricetta è pronta: contatti il centro prenotazioni con questo numero per prenotare la visita."))
         return
+    if _we(chat, agent, "", to=citizen, word="gp.report"):
+        # GP-23: after "I have your report", a reply with no symptom is not a new triage.
+        await _say(city, citizen, "gp.note " + (
+            "Your report is in your file. If you have a new problem, tell me where you feel it and "
+            "since when, and I will prepare the right prescription." if en else
+            "Il referto è nel suo fascicolo. Se ha un disturbo nuovo, mi dica dove lo sente e da "
+            "quando, e le preparo la ricetta giusta."))
+        return
     if not _we(chat, agent, "", to=citizen, word="gp.choices"):
         await _say(city, citizen, "gp.choices " + (
             "So I can prepare the right prescription: is it your back, your knee, your heart "
@@ -182,6 +190,39 @@ def _symptom(message: Message) -> str | None:
     return None
 
 
+# GP-23 (proactivity, closing the loop): our specialist sends report.notice only with the citizen's
+# report_sharing consent (SP-10), with citizen= and lang=. The GP tells the citizen it has the
+# report. It promises nothing it does not do: the GP prescribes no follow-up on its own (SP-11 open).
+_GP_TOLD_REPORT: set[tuple[str, str]] = set()
+
+
+async def _report_to_citizen(city: City, message: Message, chat: list[Message], booking_id: str) -> None:
+    fields = fields_of(message.text)
+    citizen = fields.get("citizen", "")
+    if not booking_id or not citizen.startswith("citizen:") or not _ours(message.sender):
+        return  # only our specialist's consented notice names the citizen
+    key = (citizen, booking_id)
+    if key in _GP_TOLD_REPORT or _we(chat, city.agent_id, f"booking_id={booking_id}", to=citizen, word="gp.report"):
+        return
+    _GP_TOLD_REPORT.add(key)
+    if len(_GP_TOLD_REPORT) > _SENT_NEEDS:
+        _GP_TOLD_REPORT.clear()
+        _GP_TOLD_REPORT.add(key)
+    en = (fields.get("lang") or _lang(chat)) != "it"
+    await _say(city, citizen, f"gp.report booking_id={booking_id} " + (
+        "I am your GP: the specialist has sent me the report of your visit, as you allowed, and I "
+        "have put it in your file. If your symptoms change or you have a doubt, write to me." if en else
+        "Sono il suo medico di base: lo specialista mi ha inviato il referto della sua visita, come "
+        "lei ha autorizzato, e l'ho messo nel suo fascicolo. Se i disturbi cambiano o ha un dubbio, "
+        "mi scriva."))
+
+
+def _symptoms_named(message: Message) -> list[str]:
+    """GP-12: every protocol symptom the citizen's words name, in table order."""
+    lowered = message.text.lower()
+    return [name for name, phrases in _KEYWORDS if any(phrase in lowered for phrase in phrases)]
+
+
 def _our_rx(chat: list[Message], agent: str) -> dict[str, str]:
     found: dict[str, str] = {}
     for row in chat:
@@ -232,21 +273,40 @@ def _rx_line(
     visit = _VISIT.get(procedure or "", ("la visita", "the visit"))[k]
     when = _WHEN.get(priority or "", ("", ""))[k]
     where = _WHERE.get(procedure or "", ("", ""))[k]
+    safety = _safety_line(en)
     if en:
         return (
             f"Thank you for telling me about {symptom}, I understand it is worrying. As your GP I "
             f"have prescribed {visit}" + (f", {when}" if when else "") + ". I am telling the "
             "booking centre now: contact it with this prescription number and it will offer you "
             "the first suitable slots" + (f". The visit is {where}" if where else "") + ". On the "
-            "day, bring your health card and this number."
+            "day, bring your health card and this number." + safety
         )
     return (
         f"Grazie per avermi descritto {symptom}, capisco che la preoccupi. Come suo medico di base "
         f"le ho prescritto {visit}" + (f", {when}" if when else "") + ". Avviso subito il centro "
         "prenotazioni: lo contatti con questo numero di ricetta e le proporrà i primi posti "
         "adatti" + (f". La visita si fa {where}" if where else "") + ". Il giorno della visita "
-        "porti la tessera sanitaria e questo numero."
+        "porti la tessera sanitaria e questo numero." + safety
     )
+
+
+# GP-22 (proactivity): after the prescription, the red flags of the city's protocol, so the citizen
+# knows when not to wait for the visit. Only the two red flags the kit names (the example's
+# _RED_FLAGS table; chat_play: "SYM-PALPITATIONS ... red flag if the text says chest pain"). The kit
+# does not tie "loss of strength in the legs" to one symptom, so both go with every prescription:
+# no diagnosis, no symptom-specific advice. The line passes clinical() or is left out.
+_SAFETY = (
+    " Se nel frattempo compaiono dolore al petto o perdita di forza alle gambe, non aspetti la "
+    "visita: chiami subito il 112.",
+    " If in the meantime you get chest pain or loss of strength in your legs, do not wait for the "
+    "visit: call 112 straight away.",
+)
+
+
+def _safety_line(en: bool) -> str:
+    line = _SAFETY[1 if en else 0]
+    return "" if clinical(line) else line
 
 
 def _renewal_source(chat: list[Message], number: str) -> dict[str, str] | None:
@@ -327,6 +387,7 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
         if not _we(chat, agent, f"booking_id={bid}", to=message.sender, word="report.notice.ack"):
             await _say(city, message.sender, f"report.notice.ack booking_id={bid} Grazie, leggo il referto "
                        "e richiamo io il paziente se serve un controllo.")
+        await _report_to_citizen(city, message, chat, bid)
         return
     if first_word(message.text) == "booking.notice" and message.sender.startswith("agent:"):
         # G5: the booking tells us the visit is booked; we close the loop for the follow-up.
@@ -411,6 +472,20 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
         elif (asked and message.sender.startswith("citizen:")
               and not _we(chat, agent, "", to=message.sender, word="escalate.emergency")):
             await _gp_again(city, message, chat)
+        return
+    # GP-12: two protocol symptoms in one message ("il ginocchio, ma anche la schiena") with
+    # different rows (VIS-FIS D or B...): one targeted question instead of guessing the first.
+    # Once per need: if the answer still names both, the first keyword wins as before.
+    named = _symptoms_named(message)
+    if (len({_PROTOCOLS[c] for c in named}) > 1 and "symptom_code" not in fields
+            and not _we(chat, agent, "", to=message.sender, word="gp.which")):
+        en = _lang([*chat, message]) != "it"
+        a, b = (_SYMPTOM_NAME[c][1 if en else 0] for c in named[:2])
+        await _say(city, message.sender, "gp.which " + (
+            f"Thank you for telling me. You mention {a} and {b}: which one bothers you most right "
+            "now? Then I prescribe the right visit straight away." if en else
+            f"Grazie di avermelo detto. Mi parla di {a} e di {b}: quale dei due le dà più fastidio "
+            "adesso? Così le prescrivo subito la visita giusta.") + _safety_line(en))
         return
     procedure, priority = _PROTOCOLS[code]
     number = _rx(message.need_id, message.msg_id)

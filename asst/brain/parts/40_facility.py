@@ -809,8 +809,9 @@ async def _on_reported(city: City, message: Message, chat: list[Message], *, sha
     # SP-10: only with the citizen's report_sharing consent.
     gp = await _peer(city, "gp", "medico di base gp asst-niguarda")
     if gp and gp != city.agent_id and not _we(chat, city.agent_id, token, to=gp, word="report.notice"):
-        if await _say(city, gp, f"report.notice {token} outcome_code=VISIT Referto archiviato per il vostro "
-                      "paziente: potete leggerlo e decidere il controllo."):
+        # GP-23: citizen= and lang= so the GP can tell the citizen it has the report (consented share).
+        if await _say(city, gp, f"report.notice {token} outcome_code=VISIT citizen={citizen} lang={_lang(chat)} "
+                      "Referto archiviato per il vostro paziente: potete leggerlo e decidere il controllo."):
             line += (" With your consent, I have sent the report to your GP myself, so they can plan any "
                      "follow-up with you."
                      if _lang(chat) != "it" else
