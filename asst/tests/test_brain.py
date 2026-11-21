@@ -2565,6 +2565,87 @@ async def main() -> int:
 
     await test_gp17(check)
 
+    async def test_gp18(check):
+        """GP-18: the need was marked in _EARLY_112 before the send. A failed first 112 then
+        silenced every later turn of that need (Codex replay: 1 attempt, 0 escalations sent)."""
+        import os
+
+        def msg(text, mid, need="N-18"):
+            return Message(type="chat", sender=CITIZEN, msg_id=mid, need_id=need, body={"text": text}, recipient="agent:gp")
+
+        class DownCity(FakeCity):
+            """The Relay refuses every message to the citizen in this turn."""
+            async def say(self, to, text, *, status=None):
+                if to == CITIZEN:
+                    raise CapError("RELAY_DOWN", "relay down")
+                return await super().say(to, text, status=status)
+
+        class SlowSayCity(FakeCity):
+            async def say(self, to, text, *, status=None):
+                if text.startswith("escalate.emergency"):
+                    await asyncio.sleep(0.05)
+                return await super().say(to, text, status=status)
+
+        red = "Dottore, ho un forte dolore al petto da mezz'ora."
+        old_role = os.environ.get("CITY_ROLE")
+        os.environ["CITY_ROLE"] = "gp"
+        brain._PEERS.clear()
+        brain._EARLY_112.clear()
+        need = type("N", (), {"is_emergency": False})()
+        try:
+            down = DownCity("agent:gp")
+            down.inbound = msg(red, "g18a")
+            await brain.main(need, down)
+            check("GP-18 primo 112 non partito: il need non risulta già avvisato",
+                  "N-18" not in brain._EARLY_112, sorted(brain._EARLY_112))
+            retry = FakeCity("agent:gp")
+            retry.inbound = msg(red, "g18b")
+            await brain.main(need, retry)
+            esc = [t for t in to(retry, CITIZEN) if t.startswith("escalate.emergency")]
+            check("GP-18 nuovo messaggio dello stesso need: il 112 parte, una volta sola",
+                  len(esc) == 1 and "112" in esc[0], retry.sent)
+            later = FakeCity("agent:gp")
+            later.inbound = msg(red, "g18c")
+            await brain.main(need, later)
+            check("GP-18 messaggio successivo dopo il 112 riuscito: nessun doppione",
+                  not any(t.startswith("escalate.emergency") for t in to(later, CITIZEN)), later.sent)
+
+            class FlakyCity(FakeCity):
+                """Only the first 112 of the turn is refused; the full 112 of _escalate leaves."""
+                failed = False
+                async def say(self, to, text, *, status=None):
+                    if text.startswith("escalate.emergency") and not self.failed:
+                        self.failed = True
+                        raise CapError("RELAY_DOWN", "relay down")
+                    return await super().say(to, text, status=status)
+
+            brain._EARLY_112.clear()
+            flaky = FlakyCity("agent:gp")
+            flaky.inbound = msg(red, "g18f", need="N-18c")
+            await brain.main(need, flaky)
+            after = FakeCity("agent:gp")
+            after.inbound = msg(red, "g18g", need="N-18c")
+            await brain.main(need, after)
+            check("GP-18 primo 112 fallito, 112 completo partito nello stesso turno: il messaggio dopo non lo ripete",
+                  sum(t.startswith("escalate.emergency") for t in to(flaky, CITIZEN)) == 1
+                  and not any(t.startswith("escalate.emergency") for t in to(after, CITIZEN)), (flaky.sent, after.sent))
+
+            brain._EARLY_112.clear()
+            one, two = SlowSayCity("agent:gp"), SlowSayCity("agent:gp")
+            one.inbound, two.inbound = msg(red, "g18d", need="N-18b"), msg(red, "g18e", need="N-18b")
+            await asyncio.gather(brain.main(need, one), brain.main(need, two))
+            both = [t for c in (one, two) for t in to(c, CITIZEN) if t.startswith("escalate.emergency")]
+            check("GP-18 due messaggi ravvicinati dello stesso need: un solo 112", len(both) == 1, (one.sent, two.sent))
+        finally:
+            brain._EARLY_112.clear()
+            brain._EARLY_112_FAILED.clear()
+            if old_role is None:
+                os.environ.pop("CITY_ROLE", None)
+            else:
+                os.environ["CITY_ROLE"] = old_role
+
+    await test_gp18(check)
+
     async def test_mach2(check):
         """MACH-2.0 (red-agent): ring R17, round of 12 R3, mach/lease tokens, R7, R13, R20, R21."""
         from unittest.mock import patch
