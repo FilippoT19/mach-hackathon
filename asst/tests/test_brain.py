@@ -295,6 +295,9 @@ async def main() -> int:
           row(CITIZEN, "agent:bk", "data.response purpose=cross_asst", 2)]
     got = brain._cross_consent(cc, "agent:bk")
     check("BK-36 data.response cross_asst = consenso", got[0] is True and bool(got[1]), got)
+    ka = [row(CITIZEN, "agent:bk", "need.request lang=ka mal di schiena", 1)]
+    check("X-51 georgiano -> ASST Giambellino", brain._rare_hospital(ka, "VIS-FIS")[0] == "agent:h6r1v45esk77"
+          and "Giambellino" in brain._cross_question(ka, "VIS-FIS"), brain._cross_question(ka, "VIS-FIS"))
 
     # P-francesco-37: a prescription number we issued, no renewal words -> no new prescription.
     gp = FakeCity("agent:gp")
