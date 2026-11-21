@@ -5,7 +5,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 
 <!-- aggiungi qui sotto -->
 
-### [ ] P-magesh-17: centro prenotazioni muto dopo le 03:00 UTC (deploy in pausa): nessuna risposta alla need.request e ai cancel
+### [x] P-magesh-17: centro prenotazioni muto dopo le 03:00 UTC (deploy in pausa): nessuna risposta alla need.request e ai cancel
 - Journey: N-2026-11-02-8909120001310003 (L3), N-2026-11-02-8909120002280005 (L5), N-2026-11-02-890912000278 (L6), ondata W01QQQ — ruolo: booking_centre
 - Cosa fa il cittadino:
   - 0131 (L3): manda `need.request … prescription_number=… service_type=hospital.physiatry` alle 03:03:53 UTC.
@@ -28,7 +28,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 | Cancel senza risposta (0228, 278) | Nuove offerte o lista d'attesa, in un messaggio | Mai silenzio: −1 `no_booking` con posti liberi | 4 cancel → nuove `offer` |
 | Causa del silenzio | Leggere i log booking 03:03–03:18 UTC | Non è un deploy (OPS-10) | — |
 
-### [ ] P-magesh-16: consultorio, la red flag in gravidanza (CO-10b) scatta su domande normali → 112 invece della visita
+### [x] P-magesh-16: consultorio, la red flag in gravidanza (CO-10b) scatta su domande normali → 112 invece della visita
 - Journey: N-2026-11-02-8909120002290002 (livello 3, ondata W01QQQ) — ruolo: family_counseling. Ricontrollato leggendo il codice su `main` 1ae5051.
 - Cosa fa il cittadino: chiede una visita al consultorio, riceve le offerte, conferma (sul Ledger c'è un hold `bk-edbbfafc-…`). Il testo esatto del cittadino non l'ho letto: va aperto nel trace per vedere quale parola ha fatto scattare l'allarme.
 - Cosa risponde oggi il nostro agente: annulla l'hold e manda **3 volte** `escalate.emergency reason=red_flag` "Capisco, quello che mi descrive va preso sul serio subito. Chiami subito il 112…". Percorso **Failed**: 208 posti accettabili, 208 ancora liberi a fine percorso.
