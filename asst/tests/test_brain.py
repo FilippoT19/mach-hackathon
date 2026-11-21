@@ -450,6 +450,32 @@ async def test_000113(check) -> None:
     check("OPS-07 nessun testo del cittadino nei log", not any("English-speaking" in l for l in lines), lines)
 
 
+async def test_p17_never_silent(check) -> None:
+    """P-magesh-17: a slow or broken booking turn still sends the citizen a status line."""
+    real, early = brain._desk_route, brain._EARLY_STATUS
+
+    async def slow(city, message, chat, **kw):
+        await asyncio.sleep(0.3)
+        await brain._say(city, message.sender, "offer offer_id=o-1 slot_id=s-1 Posto libero")
+
+    async def broken(city, message, chat, **kw):
+        raise RuntimeError("ledger down")
+
+    try:
+        brain._EARLY_STATUS = 0.05
+        for name, route, want in (("lento", slow, ["status", "offer"]), ("errore", broken, ["status"])):
+            brain._desk_route = route
+            city = FakeCity("agent:fn64xfq2jft4")
+            msg = Message(type="chat", sender=CITIZEN, msg_id=f"m-p17-{name}", need_id=f"N-p17-{name}",
+                          recipient="agent:fn64xfq2jft4",
+                          body={"text": "need.request prescription_number=prescription_number-N-1 service_type=hospital.physiatry"})
+            await brain._desk(city, msg, [msg], hold_self=False, fixed=None)
+            got = [o.split()[0] for o in to(city, CITIZEN)]
+            check(f"P-magesh-17 turno {name}: il cittadino riceve {want}", got == want, to(city, CITIZEN))
+    finally:
+        brain._desk_route, brain._EARLY_STATUS = real, early
+
+
 async def test_x49(check) -> None:
     """X-49: the address is asked when the citizen confirms, before the booking.receipt."""
     BKX, HOSP = "agent:bk", "agent:jdj692g4145e"
@@ -1384,6 +1410,7 @@ async def main() -> int:
     await test_francesco_23(check)
     await test_000113(check)
     await test_x49(check)
+    await test_p17_never_silent(check)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 
