@@ -1252,11 +1252,165 @@ _DOORS: dict[str, tuple[float, float, str]] = {}
 _ANSWERED_WHERE: set[str] = set()
 # Fallback doors (Index cards carry the exact coordinates; these are used only if find fails).
 _DOOR_FALLBACK = {
-    "agent:jdj692g4145e": (45.5155, 9.1835, "Via Arganini Gerolamo 38"),
-    "agent:jmjfst55vgjz": (45.5106, 9.1867, "Viale Ca' Granda 28"),
-    "agent:mm18nddkfc5w": (45.5080, 9.1950, "Via Giolli Raffaello 23"),
+    "agent:jdj692g4145e": (45.51774, 9.19626, "Via Arganini Gerolamo 38"),
+    "agent:jmjfst55vgjz": (45.50815, 9.19427, "Viale Ca' Granda 28"),
+    "agent:mm18nddkfc5w": (45.52628, 9.21068, "Via Giolli Raffaello 23"),
 }
 _NUM = re.compile(r"-?\d{1,2}\.\d{3,}")
+
+# Milan metro stops (Comune di Milano open data, ds535 ATM fermate metropolitane): lat, lon, name, lines.
+_METRO_STOPS: tuple[tuple[float, float, str, str], ...] = (
+    (45.40175, 9.14554, 'Assago Milanofiori Forum', '2'),
+    (45.40945, 9.15005, 'Assago Milanofiori Nord', '2'),
+    (45.42921, 9.25623, 'San Donato', '3'),
+    (45.42999, 9.17732, 'Abbiategrasso', '2'),
+    (45.43359, 9.23809, 'Rogoredo Fs', '3'),
+    (45.4369, 9.16801, 'Famagosta', '2'),
+    (45.43713, 9.23031, 'Porto Di Mare', '3'),
+    (45.44041, 9.22347, 'Corvetto', '3'),
+    (45.44236, 9.12977, 'San Cristoforo', '4'),
+    (45.44281, 9.21848, 'Brenta', '3'),
+    (45.44373, 9.16768, 'Romolo', '2'),
+    (45.44654, 9.13057, 'Segneri', '4'),
+    (45.44676, 9.21082, 'Lodi T.I.B.B.', '3'),
+    (45.44962, 9.13572, 'Gelsomini', '4'),
+    (45.45143, 9.2034, 'Porta Romana', '3'),
+    (45.45182, 9.14245, 'Frattini', '4'),
+    (45.45238, 9.16961, 'P.Ta Genova F.S.', '2'),
+    (45.4536, 9.14802, 'Tolstoj', '4'),
+    (45.45532, 9.15315, 'Bolivar', '4'),
+    (45.45538, 9.11293, 'Bisceglie', '1'),
+    (45.45627, 9.18818, 'Santa Sofia', '4'),
+    (45.45655, 9.1951, 'Crocetta', '3'),
+    (45.45713, 9.18232, 'Vetra', '4'),
+    (45.45755, 9.16006, 'California', '4'),
+    (45.45756, 9.12226, 'Inganni', '1'),
+    (45.45862, 9.16981, 'S.Agostino', '2'),
+    (45.45876, 9.178, 'De Amicis', '4'),
+    (45.45909, 9.16491, 'Coni Zugna', '4'),
+    (45.45941, 9.12926, 'Primaticcio', '1'),
+    (45.45972, 9.19547, 'Sforza-Policlinico', '4'),
+    (45.46011, 9.18903, 'Missori', '3'),
+    (45.4615, 9.13648, 'Bande Nere', '1'),
+    (45.46162, 9.17317, 'S.Ambrogio', '2'),
+    (45.46182, 9.17322, 'San Ambrogio', '4'),
+    (45.46201, 9.24039, 'Repetti', '4'),
+    (45.46285, 9.2779, 'Linate Aeroporto', '4'),
+    (45.4639, 9.18861, 'Duomo', '3'),
+    (45.46431, 9.23635, 'Stazione Forlanini', '4'),
+    (45.46462, 9.1896, 'Duomo', '1'),
+    (45.4649, 9.14303, 'Gambara', '1'),
+    (45.46553, 9.18624, 'Cordusio', '1'),
+    (45.46643, 9.14957, 'De Angeli', '1'),
+    (45.46652, 9.19753, 'San Babila', '1,4'),
+    (45.46753, 9.16649, 'Conciliazione', '1'),
+    (45.4679, 9.20777, 'Tricolore', '4'),
+    (45.46795, 9.15591, 'Wagner', '1'),
+    (45.46799, 9.21845, 'Dateo', '4'),
+    (45.46807, 9.22488, 'Susa', '4'),
+    (45.46813, 9.23196, 'Argonne', '4'),
+    (45.46816, 9.1771, 'Cadorna Fn', '2'),
+    (45.4682, 9.17643, 'Cadorna Fn', '1'),
+    (45.46828, 9.1611, 'Pagano', '1'),
+    (45.46837, 9.18203, 'Cairoli', '1'),
+    (45.47001, 9.19285, 'Montenapoleone', '3'),
+    (45.4704, 9.15529, 'Buonarroti', '1'),
+    (45.47143, 9.20195, 'Palestro', '1'),
+    (45.47223, 9.18255, 'Lanza', '2'),
+    (45.47368, 9.15097, 'Amendola', '1'),
+    (45.47442, 9.20505, 'P.Ta Venezia', '1'),
+    (45.47504, 9.19471, 'Turati', '3'),
+    (45.47621, 9.12901, 'San Siro Ippodromo', '5'),
+    (45.47626, 9.11832, 'San Siro Stadio', '5'),
+    (45.47636, 9.13789, 'Segesta', '5'),
+    (45.47744, 9.18448, 'Moscova', '2'),
+    (45.47814, 9.15668, 'Tre Torri', '5'),
+    (45.47915, 9.14375, 'Lotto Fieramilanocity', '1'),
+    (45.47978, 9.14367, 'Lotto', '5'),
+    (45.48009, 9.19886, 'Repubblica', '3'),
+    (45.48035, 9.21098, 'Lima', '1'),
+    (45.4808, 9.1515, 'Portello', '5'),
+    (45.48115, 9.22592, 'Piola', '2'),
+    (45.48162, 9.16226, 'Domodossola', '5'),
+    (45.48364, 9.18674, 'Garibaldi Fs', '2,5'),
+    (45.48425, 9.23483, 'Lambrate Fs', '2'),
+    (45.48444, 9.20261, 'Centrale Fs', '2,3'),
+    (45.48452, 9.16678, 'Gerusalemme', '5'),
+    (45.48459, 9.21517, 'Loreto', '2'),
+    (45.48481, 9.17979, 'Monumentale', '5'),
+    (45.4849, 9.19486, 'Gioia', '2'),
+    (45.48532, 9.20941, 'Caiazzo', '2'),
+    (45.48596, 9.13718, 'Qt8', '1'),
+    (45.48624, 9.21698, 'Loreto', '1'),
+    (45.48749, 9.17195, 'Cenisio', '5'),
+    (45.48761, 9.19126, 'Isola', '5'),
+    (45.4894, 9.12732, 'Lampugnano', '1'),
+    (45.48999, 9.20056, 'Sondrio', '3'),
+    (45.49107, 9.21818, 'Pasteur', '1'),
+    (45.4912, 9.237, 'Udine', '2'),
+    (45.49266, 9.1926, 'Zara', '3,5'),
+    (45.49372, 9.12055, 'Uruguay', '1'),
+    (45.49553, 9.21951, 'Rovereto', '1'),
+    (45.49615, 9.19482, 'Marche', '5'),
+    (45.497, 9.11015, 'Bonola', '1'),
+    (45.4977, 9.18504, 'Maciachini', '3'),
+    (45.50004, 9.24143, 'Cimiano', '2'),
+    (45.50045, 9.221, 'Turro', '1'),
+    (45.50116, 9.10148, 'S.Leonardo', '1'),
+    (45.50163, 9.19792, 'Istria', '5'),
+    (45.50521, 9.09297, 'Molino Dorino', '1'),
+    (45.50525, 9.24819, 'Crescenzago', '2'),
+    (45.50554, 9.1796, 'Dergano', '3'),
+    (45.50673, 9.22274, 'Gorla', '1'),
+    (45.50724, 9.20111, "Ca' Granda", '5'),
+    (45.5088, 9.08581, 'Pero', '1'),
+    (45.51144, 9.26051, 'Cascina Gobba', '2'),
+    (45.51203, 9.2245, 'Precotto', '1'),
+    (45.51355, 9.17398, 'Affori Centro', '3'),
+    (45.51473, 9.20537, 'Bicocca', '5'),
+    (45.51578, 9.28599, 'Vimodrone', '2'),
+    (45.51736, 9.29784, 'Cascina Burrona', '2'),
+    (45.51745, 9.22613, 'Villa S.G.', '1'),
+    (45.51984, 9.08711, 'Rho Fieramilano', '1'),
+    (45.52021, 9.27493, 'Cologno Sud', '2'),
+    (45.52074, 9.34597, 'Villa Fiorita', '2'),
+    (45.52107, 9.33138, 'Cernusco Sul Naviglio', '2'),
+    (45.52168, 9.16825, 'Affori Fn', '3'),
+    (45.52186, 9.36312, 'Cassina De Pecchi', '2'),
+    (45.52199, 9.20947, 'Ponale', '5'),
+    (45.52348, 9.22796, 'Sesto Marelli', '1'),
+    (45.5253, 9.3759, 'Bussero', '2'),
+    (45.52678, 9.21218, 'Bignami', '5'),
+    (45.52748, 9.28296, 'Cologno Centro', '2'),
+    (45.52785, 9.38497, 'Villa Pompea', '2'),
+    (45.52813, 9.16373, 'Comasina', '3'),
+    (45.53416, 9.23125, 'Sesto Rondo', '1'),
+    (45.5343, 9.29109, 'Cologno Nord', '2'),
+    (45.53674, 9.40345, 'Gorgonzola', '2'),
+    (45.54169, 9.23833, 'Sesto 1 Maggio Fs', '1'),
+    (45.54208, 9.4235, 'Cascina Antonietta', '2'),
+    (45.54529, 9.43663, 'Gessate', '2'),
+)
+
+
+def _stop_near(point: tuple[float, float] | None) -> tuple[str, str, float] | None:
+    """X-50: nearest metro stop (name, lines, km) from the city open data, or None."""
+
+    if not point:
+        return None
+    lat, lon = point[0], point[1]
+    best = min(_METRO_STOPS, key=lambda r: (r[0] - lat) ** 2 + ((r[1] - lon) * 0.7) ** 2)
+    dist = 6371 * 2 * math.asin(math.sqrt(
+        math.sin(math.radians(best[0] - lat) / 2) ** 2
+        + math.cos(math.radians(lat)) * math.cos(math.radians(best[0])) * math.sin(math.radians(best[1] - lon) / 2) ** 2
+    ))
+    return best[2], "/".join(f"M{x}" for x in best[3].split(",") if x), dist
+
+
+def _stop_text(en: bool, stop: tuple[str, str, float] | None) -> str:
+    if not stop:
+        return "ATM buses" if en else "bus ATM"
+    return (f"{stop[1]} metro, {stop[0]} stop" if en else f"metro {stop[1]}, fermata {stop[0]}")
 
 
 def _asked_where(chat: list[Message], agent: str, message: Message) -> bool:
@@ -1305,14 +1459,17 @@ def _citizen_point(text: str) -> tuple[float, float] | None:
     return None
 
 
-def _route_line(en: bool, km: float | None, door: tuple[float, float, str] | None, fields: dict[str, str]) -> str:
+def _route_line(en: bool, km: float | None, door: tuple[float, float, str] | None, fields: dict[str, str],
+                origin: tuple[float, float] | None = None) -> str:
     street = door[2] if door else ("the facility" if en else "la struttura")
     out: list[str] = []
+    at_door = _stop_text(en, _stop_near(door[:2] if door else None))
+    mine = _stop_near(origin)
     if km is None:
         out.append(
-            f"The visit is at {street}, near the M5 metro (Ca' Granda stop) and several ATM bus lines."
+            f"The visit is at {street}, near the {at_door} and several ATM bus lines."
             if en else
-            f"La visita è in {street}, vicino alla metro M5 (fermata Ca' Granda) e a diverse linee ATM."
+            f"La visita è in {street}, vicino alla {at_door} e a diverse linee ATM."
         )
     elif km < 1.2:
         mins = max(5, round(km * 13))
@@ -1324,11 +1481,13 @@ def _route_line(en: bool, km: float | None, door: tuple[float, float, str] | Non
     else:
         mins = round(10 + km * 4)
         out.append(
-            f"{street} is about {km:.1f} km from you: by public transport (M5 metro, Ca' Granda stop, "
-            f"or ATM buses) it takes about {mins} minutes; please allow some extra time."
+            f"{street} is about {km:.1f} km from you: by public transport "
+            + (f"(from the {_stop_text(True, mine)} near you to the {at_door}) " if mine and mine[2] < 1.5 else f"({at_door}, or ATM buses) ")
+            + f"it takes about {mins} minutes; please allow some extra time."
             if en else
-            f"{street} è a circa {km:.1f} km da lei: con i mezzi pubblici (metro M5, fermata Ca' Granda, "
-            f"o bus ATM) servono circa {mins} minuti; tenga un po' di margine."
+            f"{street} è a circa {km:.1f} km da lei: con i mezzi pubblici "
+            + (f"(dalla {_stop_text(False, mine)} vicino a lei alla {at_door}) " if mine and mine[2] < 1.5 else f"({at_door}, o bus ATM) ")
+            + f"servono circa {mins} minuti; tenga un po' di margine."
         )
     disability = fields.get("disability", "none").lower()
     if disability == "motor":
@@ -1371,7 +1530,7 @@ async def _on_where(city: City, message: Message, chat: list[Message]) -> None:
     if km is None and "address" not in fields_of(message.text):
         head = "No problem." if en else "Nessun problema."
     extra = await _nearest_line(city, point, en, facility) if point else ""
-    await _say(city, message.sender, f"{head} {_route_line(en, km, door, fields_of(message.text))}{extra}")
+    await _say(city, message.sender, f"{head} {_route_line(en, km, door, fields_of(message.text), point)}{extra}")
 
 
 async def _nearest_line(city: City, point: tuple[float, float], en: bool, booked: str) -> str:
@@ -1500,6 +1659,6 @@ async def _zone_route(city: City, chat: list[Message], facility: str) -> str:
     if not door:
         return ""
     km = _km(zone, door[:2]) if zone else None
-    line = _route_line(_lang(chat) != "it", km, door, {})
+    line = _route_line(_lang(chat) != "it", km, door, {}, zone)
     line = line.replace("da lei", "dalla sua zona").replace("from you", "from your area")
     return (line + " ") if line else ""
