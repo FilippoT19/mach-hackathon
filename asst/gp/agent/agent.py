@@ -130,7 +130,9 @@ async def main(need: Need, city: City) -> None:
             fields_of(message.text).get("offer_id", ""), _lang([message]) != "it")))
         _EARLY_ACK[message.msg_id] = early_ack
     try:
+        _remember_ledger([message], city.agent_id)  # BK-67: a Ledger push is kept before anything else
         case = await city.history(need_id=message.need_id)
+        _remember_ledger(case, city.agent_id)
         await handle(role_of(), city, message, case)
     finally:
         if early is not None and _EARLY_LLM.pop(message.msg_id, None) is not None:
@@ -456,6 +458,7 @@ async def _until(
         except CapError:
             fresh = chat
         fresh = _keep(fresh, chat)
+        _remember_ledger(fresh, city.agent_id)  # BK-67: every Ledger line read feeds the process memory
         if ready(fresh):
             return fresh
         if time.monotonic() - started >= _PULL_SECONDS:  # BK-54: slow history() calls
@@ -5519,6 +5522,23 @@ def _memory_rows(procedure: str, *, at: float | None = None) -> list[Message]:
     return rows
 
 
+def _with_memory(chat: list[Message], procedure: str) -> list[Message]:
+    """``chat`` plus the remembered Ledger lines this case lacks: the agenda when the case has none,
+    the catalogue pages when the case has none. The search then reads them as its own."""
+    if not procedure:
+        return chat
+    need_agenda = _ledger(chat, "agenda") is None
+    need_world = _latest_slots(chat) is None
+    if not (need_agenda or need_world):
+        return chat
+    seen = {row.msg_id for row in chat}
+    extra = [
+        row for row in _memory_rows(procedure)
+        if row.msg_id not in seen and (need_agenda if first_word(row.text) == "agenda" else need_world)
+    ]
+    return [*chat, *extra] if extra else chat
+
+
 def _page(text: str) -> tuple[int, int]:
     raw = fields_of(text.splitlines()[0] if text else "").get("page", "")
     left, _, right = raw.partition("/")
@@ -7161,6 +7181,15 @@ async def _advance_alone(
                     "più valida). Scriva al suo medico di base con questo numero: gliene prepara una "
                     "nuova e io le tengo pronti i posti liberi."))
             return
+        if _latest_slots(chat) is None:
+            # BK-67: agenda and catalogue the process already has, instead of a Ledger round.
+            with_memory = _with_memory(chat, procedure)
+            if _latest_slots(with_memory) is not None:
+                _sent(key).notes.add("memory")
+                _trace("memory", message, procedure=procedure, rows=len(with_memory) - len(chat))
+            chat = with_memory
+        else:
+            chat = _with_memory(chat, procedure)
         agenda = _ledger(chat, "agenda")
         now = _when("" if agenda is None else agenda.get("agenda_now", ""))
         replacement_reply = (
@@ -7234,8 +7263,9 @@ async def _advance_alone(
     deadline = _rx_deadline(chat, reply, priority, number)
     learned = _cancel_learned(chat)
     lines = [line for line in world.splitlines() if "slot_id=" in line]
-    if "widen" in sent.notes and not replacing:
-        lines = _all_slot_lines(chat, agent)  # BK-61: the pages read before offering count together
+    if ("widen" in sent.notes or "memory" in sent.notes) and not replacing:
+        # BK-61: the pages read before offering count together. BK-67: so do the remembered pages.
+        lines = _all_slot_lines(chat, agent)
     elif replacing and not replacement_reply:
         # BK-63: new offers after a cancel come first from the pages already read (no Ledger round:
         # the verdict came five minutes after the cancels). The next page is asked only if none fits.

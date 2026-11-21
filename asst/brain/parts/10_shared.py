@@ -231,6 +231,7 @@ async def _until(
         except CapError:
             fresh = chat
         fresh = _keep(fresh, chat)
+        _remember_ledger(fresh, city.agent_id)  # BK-67: every Ledger line read feeds the process memory
         if ready(fresh):
             return fresh
         if time.monotonic() - started >= _PULL_SECONDS:  # BK-54: slow history() calls

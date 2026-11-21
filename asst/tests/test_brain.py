@@ -1782,6 +1782,38 @@ async def main() -> int:
               [r.msg_id for r in brain._memory_rows("VIS-FIS", at=_t.time() + 31 * 60)] == ["h4"], "")
         check("BK-67 memoria: agenda vecchia di 46 minuti non usata",
               brain._memory_rows("VIS-FIS", at=_t.time() + 46 * 60) == [], "")
+
+        # (2) the second citizen of the same procedure: offers at once, no world/agenda question
+        wipe()
+        p1 = "slots page=1/2\n" + "\n".join(slot(f"A{i}", "h1", f"2026-11-03T1{i}:00:00Z", "tue") for i in range(3))
+        p2 = "slots page=2/2\n" + "\n".join([slot("B1", "h2", "2026-11-04T10:00:00Z", "wed"), slot("B2", "h2", "2026-11-05T10:00:00Z", "thu")])
+        warm = [row(LEDGER, bk, "agenda agenda_now=2026-11-02T07:00:00Z", 90), row(LEDGER, bk, p1, 91), row(LEDGER, bk, p2, 92)]
+        brain._remember_ledger(warm, bk)
+        ref = row(brain._OUR_AGENTS["gp"], bk, f"referral prescription_number={rx_number} procedure=VIS-FIS priority=D", 0)
+        ask = row(CITIZEN, bk, f"Vorrei una visita need.request lang=it prescription_number={rx_number} service_type=hospital.physiatry", 1)
+        city = FakeCity(bk)
+        await desk_turn(city, ask, [ref, ask])
+        offers = [t for t in to(city, CITIZEN) if t.startswith("offer ")]
+        check("BK-67 memoria calda: UN messaggio di offerte nello stesso turno", len(offers) == 1, city.sent)
+        check("BK-67 memoria calda: nessuna domanda world page=1 al Ledger",
+              "world procedure=VIS-FIS page=1" not in to(city, LEDGER), to(city, LEDGER))
+        check("BK-67 offerte su almeno due giorni e due medici",
+              len(offers) == 1 and "agenda_day=tue" in offers[0] and ("agenda_day=wed" in offers[0] or "agenda_day=thu" in offers[0])
+              and "h1" in offers[0] and "h2" in offers[0], offers)
+        # empty memory: today's behaviour
+        wipe()
+        city = FakeCity(bk)
+        await desk_turn(city, ask, [ask])
+        check("BK-67 memoria vuota: domande al Ledger come prima",
+              "world procedure=VIS-FIS page=1" in to(city, LEDGER) and "agenda" in to(city, LEDGER), to(city, LEDGER))
+        # harvest from the history of a case
+        wipe()
+
+        class Hist(FakeCity):
+            async def history(self, peer=None, *, need_id=None):
+                return [row(LEDGER, bk, p1, 91)]
+        await brain._until(Hist(bk), "N-1", [], lambda rows: True)
+        check("BK-67 raccolta: la storia riletta riempie la memoria", 1 in brain._WORLD.get("VIS-FIS", {}), brain._WORLD)
         wipe()
 
     await test_bk67(check)
