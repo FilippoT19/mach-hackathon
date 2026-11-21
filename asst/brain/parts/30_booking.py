@@ -259,6 +259,10 @@ _DAY_WORDS = re.compile(
     r"\b(luned[iì]|marted[iì]|mercoled[iì]|gioved[iì]|venerd[iì]|monday|tuesday|wednesday|thursday|friday)s?\b")
 
 
+_NOT_DAY = re.compile(r"\b(?:non|tranne|eccetto|escluso|salvo|except|not|no|but)\b(?!.*\b(?:solo|only|o|or|e|and)\b)")
+_ANY_DAY = re.compile(r"\b(?:qualsiasi|qualunque|ogni)\s+giorno\b|\bany\s*day\b")
+
+
 def _days(chat: list[Message]) -> frozenset[str] | None:
     """The citizen's days. BK-56 (journey 249): the citizen may write them only in words
     ("Posso venire solo lunedì o mercoledì"), with no ``days=`` token, and may tell the GP other
@@ -273,12 +277,28 @@ def _days(chat: list[Message]) -> frozenset[str] | None:
             day = _DAY_ALIASES.get(value.strip())
             if day:
                 found.add(day)
+        if not found and row.recipient == _OUR_AGENTS["gp"]:
+            continue  # P-magesh-13: the symptom story to the GP ("iniziato lunedì") is no agenda
         if not found:
-            for word in _DAY_WORDS.findall((row.text or "").lower()):
+            low = (row.text or "").lower()
+            if _ANY_DAY.search(low) and not _DAY_WORDS.search(low):
+                latest = set()  # "qualsiasi giorno" / "any day": no day preference
+                continue
+            skipped: set[str] = set()
+            for match in _DAY_WORDS.finditer(low):
+                word = match.group(1)
                 word = word[:-1] + "ì" if word.endswith("i") else word.removesuffix("s")
                 day = _DAY_ALIASES.get(word)
-                if day:
+                if not day:
+                    continue
+                # P-magesh-13: "non posso il lunedì", "tranne venerdì", "except Friday" exclude a day.
+                before = re.split(r"[,.;:!?]", low[max(0, match.start() - 25):match.start()])[-1]
+                if _NOT_DAY.search(before):
+                    skipped.add(day)
+                else:
                     found.add(day)
+            if skipped and not found:
+                found = {"mon", "tue", "wed", "thu", "fri"} - skipped
         if found:
             latest = found
     return frozenset(latest) or None
@@ -1151,10 +1171,8 @@ async def _still_here(city: City, message: Message, chat: list[Message], *, fixe
     citizen = message.sender
     en = _lang(chat) != "it"
     agent = city.agent_id
-    open_offer = any(
-        row.sender == agent and row.recipient == citizen and first_word(row.text) == "offer"
-        for row in chat
-    )
+    # P-magesh-14: only offers still open count (not the waiting list, not a cancelled one).
+    open_offer = any(not o.startswith("wl-") for o in _open_offers(chat, agent, citizen))
     if _we(chat, agent, "", to=citizen, word="booking.receipt"):
         state = "booked"
         text = "status " + (
@@ -1589,11 +1607,12 @@ async def _advance_alone(
                 await _say(
                     city,
                     citizen,
+                    "status " + (  # P-magesh-15: every citizen message carries its act word
                     "I have your request and I am checking every free appointment for you now; "
                     "I will write again in a moment."
                     if _lang(chat) != "it"
                     else "Ho la sua richiesta e sto controllando tutti i posti liberi per lei; "
-                    "le riscrivo tra un momento.",
+                    "le riscrivo tra un momento."),
                 )
         # BK-37: the Ledger's next page may never open a turn. _advance reads it back in this
         # same turn (``pending_page``) and goes on from there.
@@ -1694,9 +1713,10 @@ async def _on_confirm(
         return
     if not slot:
         if message.sender.startswith("citizen:"):
-            await _say(city, message.sender, "Please send me the offer number to book your appointment."
+            await _say(city, message.sender, "status " + (  # P-magesh-15
+                       "Please send me the offer number to book your appointment."
                        if _lang(chat) != "it" else
-                       "Mi scriva il numero dell'offerta per prenotare l'appuntamento.")
+                       "Mi scriva il numero dell'offerta per prenotare l'appuntamento."))
         return
     citizen = fields.get("citizen") or (
         message.sender if message.sender.startswith("citizen:") else ""
