@@ -29,6 +29,9 @@ _MAX_PAGE = 20  # BK-38 (P-magesh-8): read the whole local catalogue before goin
 # The agenda runs 60x (e19: 16 agenda hours = 16 real minutes), so four agenda hours are four
 # real minutes: the time the citizen and the Ledger need to confirm and hold a slot.
 _LEAD = timedelta(hours=4)
+# MACH-1.2 (3): one hop agent -> citizen -> agent takes ~3 real minutes = 3 agenda hours tonight;
+# a slot nearer than this is past when the citizen confirms (reason=past). U keeps _LEAD (same day).
+_LEAD_BOOK = timedelta(hours=5)
 # Doctor key (the last segment of doctor_id) -> languages, gender, days. ``*`` is the ASST's
 # rare language. The Ledger's slot line names the doctor; it does not repeat this table.
 _DOCTORS: dict[str, tuple[frozenset[str], str, frozenset[str]]] = {
@@ -562,7 +565,7 @@ def fitting(
         horizon = None
     else:
         horizon = now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14))
-    earliest = now + _LEAD
+    earliest = now + (_LEAD if priority == "U" else _LEAD_BOOK)
     chosen: list[tuple[int, datetime, dict[str, str]]] = []
     for line in lines:
         slot = fields_of(line)
@@ -6335,6 +6338,12 @@ async def _cross_asst(
         want_days = _days(chat)
         if want_days:
             parts.append("days=" + "/".join(sorted(want_days)))
+        # MACH-1.2 (2): the partner does not know when the prescription was issued; tell it the
+        # last agenda time the citizen accepts, so it never offers a slot after it.
+        number = _number(chat)
+        limit = _rx_deadline(chat, _prescription_reply(chat, number), priority, number)
+        if limit is not None:
+            parts.append("deadline=" + limit.strftime("%Y-%m-%dT%H:%M:%SZ"))
         requests.append((target, " ".join(parts)))
     # OPS-11: one need.request per partner, all at once (each say costs seconds under load).
     done = await asyncio.gather(*(_say(city, target, text) for target, text in requests))
@@ -8929,7 +8938,11 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
             [line for line in world.splitlines() if "slot_id=" in line],
             now=now, priority=priority, lang=fields.get("lang", "it"),
             gender=fields.get("gender_preference") or fields.get("gender") or None, facility=agent, procedure=procedure,
-        )[:_OFFER_MAX]  # BK-55: every fitting slot in one answer
+        )
+        limit = _when(fields.get("deadline", ""))  # MACH-1.2 (2): never a slot after the asker's deadline
+        if limit is not None:
+            picks = [slot for slot in picks if (_when(slot.get("at", "")) or limit) <= limit]
+        picks = picks[:_OFFER_MAX]  # BK-55: every fitting slot in one answer
     if not picks:
         await _say(city, message.sender, f"cancel reason=no_availability request_id={request_id} Al momento non abbiamo posti adatti per {procedure}.")
         return

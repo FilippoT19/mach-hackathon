@@ -1123,6 +1123,14 @@ async def main() -> int:
         out = to(c, req.sender)
         check(f"P-francesco-10 lingua {lang}: disponibilità corretta",
               len(out) == 1 and out[0].startswith(expected) and "slot_id=S-H1" not in out[0], c.sent)
+    # MACH-1.2 (2): the asker's deadline= cuts the partner's slots (S-H3 is after it).
+    brain._PARTNER_DONE.clear()
+    c = FakeCity(HO)
+    req = row("agent:partner-bk", HO, "need.request procedure=VIS-FIS priority=B deadline=2026-11-05T00:00:00Z request_id=R-dl", 4)
+    await brain._facility(c, req, [*pre[1:], req], reports=False, hold_self=False)
+    out = to(c, req.sender)
+    check("MACH-1.2 deadline= del partner: solo slot prima della scadenza",
+          len(out) == 1 and "slot_id=S-H1" in out[0] and "slot_id=S-H3" not in out[0], c.sent)
     # 28. BK-27: deadline from the prescription date.
     rep = {"issued_at": "2026-11-03T09:00:00Z"}
     check("BK-27 slot oltre la scadenza della ricetta escluso", not brain._before_rx_deadline({"at": "2026-11-06T10:00:00Z"}, rep, "B"), "")

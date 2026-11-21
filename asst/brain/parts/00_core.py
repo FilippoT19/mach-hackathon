@@ -31,6 +31,9 @@ _MAX_PAGE = 20  # BK-38 (P-magesh-8): read the whole local catalogue before goin
 # The agenda runs 60x (e19: 16 agenda hours = 16 real minutes), so four agenda hours are four
 # real minutes: the time the citizen and the Ledger need to confirm and hold a slot.
 _LEAD = timedelta(hours=4)
+# MACH-1.2 (3): one hop agent -> citizen -> agent takes ~3 real minutes = 3 agenda hours tonight;
+# a slot nearer than this is past when the citizen confirms (reason=past). U keeps _LEAD (same day).
+_LEAD_BOOK = timedelta(hours=5)
 # Doctor key (the last segment of doctor_id) -> languages, gender, days. ``*`` is the ASST's
 # rare language. The Ledger's slot line names the doctor; it does not repeat this table.
 _DOCTORS: dict[str, tuple[frozenset[str], str, frozenset[str]]] = {

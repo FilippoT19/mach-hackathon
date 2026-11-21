@@ -977,6 +977,12 @@ async def _cross_asst(
         want_days = _days(chat)
         if want_days:
             parts.append("days=" + "/".join(sorted(want_days)))
+        # MACH-1.2 (2): the partner does not know when the prescription was issued; tell it the
+        # last agenda time the citizen accepts, so it never offers a slot after it.
+        number = _number(chat)
+        limit = _rx_deadline(chat, _prescription_reply(chat, number), priority, number)
+        if limit is not None:
+            parts.append("deadline=" + limit.strftime("%Y-%m-%dT%H:%M:%SZ"))
         requests.append((target, " ".join(parts)))
     # OPS-11: one need.request per partner, all at once (each say costs seconds under load).
     done = await asyncio.gather(*(_say(city, target, text) for target, text in requests))
