@@ -2612,6 +2612,14 @@ async def _on_confirm(
             await _say(city, message.sender, f"cancel offer_id={offer_id} reason={why} "
                        f"Manca {why.split('_', 1)[1]}: rimandate il confirm completo e blocchiamo subito il posto.")
         return
+    if not slot and offer_id.startswith("wl-") and message.sender.startswith("citizen:"):
+        # BK-79 (P-magesh-1): the waiting-list offer has no slot and no Ledger operation (e19).
+        # The citizen confirmed it: say it is registered, never ask again for the offer number.
+        await _say(city, message.sender, f"status offer_id={offer_id} waiting_list=registered " + (
+                   "You are on the waiting list: we will contact you as soon as a place frees up."
+                   if _lang(chat) != "it" else
+                   "È in lista d'attesa: la contattiamo appena si libera un posto."))
+        return
     if not slot:
         if message.sender.startswith("citizen:"):
             await _say(city, message.sender, "status " + (  # P-magesh-15

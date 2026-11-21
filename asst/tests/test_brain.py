@@ -747,6 +747,27 @@ async def test_ops13(check) -> None:
         brain._DESK_HOLDS[0] = True
 
 
+async def test_p_magesh_1(check) -> None:
+    """BK-79 (P-magesh-1): a citizen confirms the waiting-list offer: registered, no Ledger, no loop."""
+    for role in ("booking_centre", "family_counseling"):
+        agent = brain._OUR_AGENTS[role]
+        for lang, words_ in (("it", "lista d'attesa"), ("en", "waiting list")):
+            brain._SENT.clear()
+            city = FakeCity(agent)
+            ask = row(CITIZEN, agent, f"need.request prescription_number=RX-1 lang={lang} Mi serve una visita.", 1)
+            wl = row(agent, CITIZEN, "offer offer_id=wl-N-1 waiting_list=true procedure=VIS-FIS priority=P", 2)
+            first = row(CITIZEN, agent, "confirm offer_id=wl-N-1", 3)
+            await brain.handle(role, city, first, [ask, wl, first])
+            second = row(CITIZEN, agent, "confirm offer_id=wl-N-1", 5)
+            await brain.handle(role, city, second, [ask, wl, first, row(agent, CITIZEN, (to(city, CITIZEN) or [""])[-1], 4), second])
+            out = to(city, CITIZEN)
+            check(f"BK-79 (P-magesh-1) {role} {lang}: lista d'attesa registrata a ogni confirm, nessun Ledger",
+                  len(out) == 2 and all(t.startswith("status offer_id=wl-N-1 waiting_list=registered")
+                                        and words_ in t for t in out)
+                  and not any(brain.first_word(t) in {"hold", "commit"} for t in to(city, LEDGER))
+                  and not any("offer number" in t or "numero dell'offerta" in t for t in out), city.sent)
+
+
 async def test_p_magesh_26(check) -> None:
     """P-magesh-26 (N-...0001240009): consent question, then silence -> waiting list on its own."""
     BKX = "agent:bk"
@@ -2384,6 +2405,7 @@ async def main() -> int:
     await test_ops13(check)
     await test_p_magesh_26(check)
     await test_bk78(check)
+    await test_p_magesh_1(check)
     await test_bk63(check)
 
     async def test_bk67(check):
