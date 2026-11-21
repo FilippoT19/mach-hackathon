@@ -1316,7 +1316,12 @@ async def _on_confirm(
         accepted, cross_ref = _cross_consent(chat, agent)
         if accepted and cross_ref:
             parts.append(f"cross_asst_consent_ref={cross_ref}")  # common format between ASSTs
-    await _say(city, target, " ".join(parts))
+    if await _say(city, target, " ".join(parts)) and message.sender.startswith("citizen:"):
+        # X-49: ask where the citizen comes from while the facility locks the slot, so the
+        # receipt can carry the exact route. The receipt never waits for this answer.
+        if message.need_id:
+            _BOOKED_AT[message.need_id] = target
+        await _ask_where(city, message, chat, citizen, early=True)
 
 
 _RECEIPT_GATES: dict[tuple[str, str], _Gate] = {}
@@ -1387,11 +1392,16 @@ async def _send_forwarded_receipt(
         city,
         citizen,
         f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref} {line} "
-        + await _zone_route(city, chat, message.sender)
-        + _prep_line((_prescription_reply(chat, _number(chat)) or {}).get("procedure", ""), _lang(chat) != "it"),  # P-02
+        + await _where_route(city, message, chat, message.sender)
+        + _prep_line((_prescription_reply(chat, _number(chat)) or {}).get("procedure", ""), _lang(chat) != "it",
+                     route_given=(message.need_id or "") in _WHERE_OF),  # P-02, X-49
     ):
         return
     _remember_receipt(city.agent_id, message.need_id, booking_id)
+    if message.need_id:
+        _RECEIPT_SENT[message.need_id] = None
+        while len(_RECEIPT_SENT) > _SENT_NEEDS:
+            _RECEIPT_SENT.popitem(last=False)
     # G5 collaboration: tell the GP the visit is booked, so the GP can follow up after the report.
     gp = await _peer(city, "gp", "medico di base gp asst-niguarda")
     if gp and gp != city.agent_id and not _we(chat, city.agent_id, token, to=gp, word="booking.notice"):
@@ -1403,20 +1413,49 @@ async def _send_forwarded_receipt(
     # the best way to reach the facility (distance from the map, transit, access, Area B).
     if message.need_id:
         _BOOKED_AT[message.need_id] = message.sender
-    if not _we(chat, city.agent_id, "purpose=booking", to=citizen, word="data.request"):
-        en = _lang(chat) != "it"
-        await _say(
-            city,
-            citizen,
-            f"data.request purpose=booking fields={_WHERE_FIELDS} "
-            + (
-                "To help you get there: may I have your address, and do you need any assistance "
-                "or plan to come by car? I will tell you the easiest way to reach the visit."
-                if en
-                else "Per aiutarla ad arrivare: mi indica il suo indirizzo, se le serve assistenza "
-                "e se pensa di venire in auto? Le dico il modo più comodo per raggiungere la visita."
-            ),
+    await _ask_where(city, message, chat, citizen, early=False)
+
+
+async def _ask_where(city: City, message: Message, chat: list[Message], citizen: str, *, early: bool) -> None:
+    """X-31/X-49: one data.request per case for address, assistance and car, with its purpose."""
+    if _we(chat, city.agent_id, "purpose=booking", to=citizen, word="data.request"):
+        return
+    en = _lang(chat) != "it"
+    if early:
+        line = (
+            "While I lock your appointment: may I have your address, and do you need any assistance "
+            "or plan to come by car? I will put the easiest way to reach the visit in your confirmation. "
+            "If you prefer not to say, no problem."
+            if en else
+            "Mentre blocco il suo appuntamento: mi indica il suo indirizzo, se le serve assistenza e se "
+            "pensa di venire in auto? Nella conferma le scrivo il modo più comodo per arrivare. "
+            "Se preferisce non dirlo, nessun problema."
         )
+    else:
+        line = (
+            "To help you get there: may I have your address, and do you need any assistance "
+            "or plan to come by car? I will tell you the easiest way to reach the visit."
+            if en else
+            "Per aiutarla ad arrivare: mi indica il suo indirizzo, se le serve assistenza "
+            "e se pensa di venire in auto? Le dico il modo più comodo per raggiungere la visita."
+        )
+    if await _say(city, citizen, f"data.request purpose=booking fields={_WHERE_FIELDS} {line}"):
+        _trace("where.ask", message, early=early)
+
+
+async def _where_route(city: City, message: Message, chat: list[Message], facility: str) -> str:
+    """X-49: the receipt's route from the citizen's own answer, else from their district (X-45)."""
+    known = _WHERE_OF.get(message.need_id or "")
+    if known is None:
+        return await _zone_route(city, chat, facility)
+    point, fields = known
+    door = await _door(city, facility)
+    if not door:
+        return ""
+    en = _lang(chat) != "it"
+    km = _km(point, door[:2]) if point else None
+    extra = await _nearest_line(city, point, en, facility) if point else ""
+    return f"{_route_line(en, km, door, fields)}{extra} "
 
 
 async def _partner_cancel(
@@ -1457,6 +1496,9 @@ _WHERE_FIELDS = "address,disability,car,car_euro_class"
 _BOOKED_AT: OrderedDict[str, str] = OrderedDict()
 _DOORS: dict[str, tuple[float, float, str]] = {}
 _ANSWERED_WHERE: set[str] = set()
+# X-49: the citizen's answer that came before the receipt: (point or None, data.response fields).
+_WHERE_OF: OrderedDict[str, tuple[tuple[float, float] | None, dict[str, str]]] = OrderedDict()
+_RECEIPT_SENT: OrderedDict[str, None] = OrderedDict()
 # Fallback doors (Index cards carry the exact coordinates; these are used only if find fails).
 _DOOR_FALLBACK = {
     "agent:jdj692g4145e": (45.5155, 9.1835, "Via Arganini Gerolamo 38"),
@@ -1470,6 +1512,14 @@ def _asked_where(chat: list[Message], agent: str, message: Message) -> bool:
     """True when our last word to this citizen was the X-31 data.request, still unanswered."""
     if message.need_id and message.need_id in _ANSWERED_WHERE:
         return False
+    # X-49: asked at confirm time, the receipt may come before the answer. A data.response for
+    # the booking purpose still belongs to our question.
+    if first_word(message.text) == "data.response" and fields_of(message.text).get("purpose", "booking") == "booking" and any(
+        row.sender == agent and row.recipient == message.sender and "data.request" in words(row.text)
+        and "fields=" + _WHERE_FIELDS in row.text.split()
+        for row in chat
+    ):
+        return True
     last = None
     for row in chat:
         if row.sender == agent and row.recipient == message.sender:
@@ -1566,6 +1616,23 @@ async def _on_where(city: City, message: Message, chat: list[Message]) -> None:
     if key in _ANSWERED_WHERE:
         return
     _ANSWERED_WHERE.add(key)
+    receipt_out = key in _RECEIPT_SENT or any(
+        row.sender == city.agent_id and row.recipient == message.sender and first_word(row.text) == "booking.receipt"
+        for row in chat
+    )
+    if not receipt_out:
+        # X-49: the slot is still being locked. Keep the answer for the receipt's route.
+        _WHERE_OF[key] = (_citizen_point(message.text) or await _zone_point(city, chat), fields_of(message.text))
+        while len(_WHERE_OF) > _SENT_NEEDS:
+            _WHERE_OF.popitem(last=False)
+        en = _lang(chat) != "it"
+        await _say(city, message.sender, "data.response.ack " + (
+            "Thank you. I am locking your appointment now: the confirmation will tell you the easiest way to get there."
+            if en else
+            "Grazie. Sto bloccando il suo appuntamento: nella conferma le scrivo il modo più comodo per arrivare."))
+        _trace("where.answer", message, before_receipt=True, point=_WHERE_OF[key][0] is not None)
+        return
+    _trace("where.answer", message, before_receipt=False)
     facility = _BOOKED_AT.get(key) or next(
         (row.sender for row in reversed(chat) if row.sender.startswith("agent:") and "booking.receipt" in words(row.text)),
         "agent:jdj692g4145e",
@@ -1650,15 +1717,16 @@ _PREP = {
 }
 
 
-def _prep_line(procedure: str, en: bool) -> str:
+def _prep_line(procedure: str, en: bool, *, route_given: bool = False) -> str:
     """P-02: what to bring and when to arrive, before the citizen asks."""
 
     it_extra, en_extra = _PREP.get(procedure, ("eventuali referti precedenti", "any previous reports"))
     if en:
         return ("To be ready for the visit: arrive 15 minutes early and bring your health card, the "
-                f"prescription number, {en_extra}. I will tell you how to get there right away.")
+                f"prescription number, {en_extra}."
+                + ("" if route_given else " I will tell you how to get there right away."))
     return ("Per arrivare pronto alla visita: venga 15 minuti prima e porti la tessera sanitaria, il "
-            f"numero della ricetta, {it_extra}. Subito dopo le dico come arrivare.")
+            f"numero della ricetta, {it_extra}." + ("" if route_given else " Subito dopo le dico come arrivare."))
 
 
 # --- X-45: the citizen's zone from the Index (no external map API) ---------------------------
