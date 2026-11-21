@@ -633,6 +633,95 @@ async def test_bk72(check) -> None:
     wipe()
 
 
+async def test_ops13(check) -> None:
+    """OPS-13: one log line per decision, with need_id= in the text, no citizen text."""
+    import logging
+    import os
+    import time as _time
+    bk, spec = brain._OUR_AGENTS["booking_centre"], brain._OUR_AGENTS["specialist"]
+    rx = "prescription_number-RX-13"
+    lines: list[str] = []
+
+    class Grab(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+
+    class DeadCity(FakeCity):
+        async def say(self, to, text, *, status=None):
+            raise CapError("RELAY_DOWN", "relay down")
+
+    grab = Grab()
+    brain._LOG.addHandler(grab)
+    old_level = brain._LOG.level
+    brain._LOG.setLevel(logging.INFO)
+    try:
+        token = brain._TURN_NEED.set("N-13")
+        try:
+            sent = await brain._say(DeadCity(bk), brain.LEDGER, "hold slot_id=S-1 consent_ref=c-1")
+        finally:
+            brain._TURN_NEED.reset(token)
+        fail = next((l for l in lines if l.startswith("say.fail")), "")
+        check("OPS-13 messaggio non partito: riga say.fail con need, destinatario, atto ed errore",
+              sent is False and "need_id=N-13" in fail and "to=ledger" in fail and "act=hold" in fail
+              and "error=CapError" in fail, lines)
+
+        lines.clear()
+        city = FakeCity(bk)
+        city.inbound = row(brain.LEDGER, bk, "refused hold slot_id=S-9 reason=no_capacity", 1)
+        old_role = os.environ.get("CITY_ROLE")
+        os.environ["CITY_ROLE"] = "booking_centre"
+        try:
+            await brain.main(type("N", (), {"is_emergency": False})(), city)
+        except Exception:
+            pass  # only the first log line matters here
+        finally:
+            if old_role is None:
+                os.environ.pop("CITY_ROLE", None)
+            else:
+                os.environ["CITY_ROLE"] = old_role
+        got = next((l for l in lines if l.startswith("ledger.in")), "")
+        check("OPS-13 risposta del Ledger: riga ledger.in con atto, operazione, motivo e slot",
+              "need_id=N-1" in got and "act=refused" in got and "op=hold" in got
+              and "reason=no_capacity" in got and "slot_id=S-9" in got, lines)
+
+        lines.clear()
+        brain._SENT.clear(); brain._HELD_FOR.clear()
+        brain._DESK_HOLDS[0] = True
+        brain._HELD_FOR["S-00"] = ("N-OTHER-CASE", _time.monotonic())
+        case = [
+            row(CITIZEN, bk, f"need.request lang=it prescription_number={rx}", 0),
+            row(brain.LEDGER, bk, f"prescription prescription_number={rx} procedure=VIS-CARD priority=D state=issued", 1),
+            row(bk, CITIZEN, f"offer offer_id=of-S-00 slot_id=S-00 doctor_id=asst-niguarda-s1 facility={spec} "
+                f"procedure=VIS-CARD agenda_date=2026-11-03T09:00:00Z priority=D prescription_number={rx}", 2),
+        ]
+        confirm = row(CITIZEN, bk, "confirm offer_id=of-S-00 consent_ref=cons-N-1-booking", 3)
+        await brain._on_confirm(FakeCity(bk), confirm, [*case, confirm], hold_self=False)
+        busy = next((l for l in lines if l.startswith("booking.confirm") and "step=no_capacity" in l), "")
+        check("OPS-13 no_capacity: riga booking.confirm con slot, motivo e caso che tiene il posto",
+              "need_id=N-1" in busy and "slot_id=S-00" in busy and "why=held_elsewhere" in busy
+              and "holder=N-OTHER-CASE" in busy, lines)
+
+        lines.clear()
+        brain._SENT.clear(); brain._HELD_FOR.clear()
+        await brain._on_confirm(FakeCity(bk), confirm, [*case, confirm], hold_self=False)
+        held = next((l for l in lines if l.startswith("booking.confirm") and "step=hold" in l), "")
+        check("OPS-13 hold mandato: riga booking.confirm step=hold con slot e struttura",
+              "need_id=N-1" in held and "slot_id=S-00" in held and "facility=specialist" in held, lines)
+
+        lines.clear()
+        gp = FakeCity("agent:gp", model("SYM-BACK"))
+        await brain._gp(gp, citizen_msg("Ho un fastidio da settimane, non so bene dove"), [])
+        tri = next((l for l in lines if l.startswith("gp.triage")), "")
+        check("OPS-13 gp: riga gp.triage con parola chiave, risposta del modello, codice e attesa, senza il testo",
+              "need_id=N-1" in tri and "llm=" in tri and "code=" in tri and "emergency=" in tri
+              and "wait_ms=" in tri and "fastidio" not in tri, lines)
+    finally:
+        brain._LOG.removeHandler(grab)
+        brain._LOG.setLevel(old_level)
+        brain._SENT.clear(); brain._HELD_FOR.clear()
+        brain._DESK_HOLDS[0] = True
+
+
 async def test_x49(check) -> None:
     """X-49: the address is asked when the citizen confirms, before the booking.receipt."""
     BKX, HOSP = "agent:bk", "agent:jdj692g4145e"
@@ -1879,6 +1968,7 @@ async def main() -> int:
 
     await test_bk62(check)
     await test_bk72(check)
+    await test_ops13(check)
     await test_bk63(check)
 
     async def test_bk67(check):

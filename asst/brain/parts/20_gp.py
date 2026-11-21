@@ -360,6 +360,7 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
             return
         await _renew_prescription(city, message, chat, number)
         return
+    assessed, keyword, asked = None, code, time.monotonic()  # OPS-13
     if not emergency:
         early = _EARLY_LLM.pop(message.msg_id, None)  # OPS-09: started in main() with the history read
         try:
@@ -373,6 +374,9 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
         # (P-francesco-19: "non riesco più a stare in piedi").
         emergency = assessed == "RED_FLAG" and code not in ("SYM-PALPITATIONS", "SYM-FOLLOWUP")
         code = code or (assessed if assessed != "RED_FLAG" else None)
+    _event("gp.triage", message.need_id, keyword=keyword or "none", llm=assessed or "none",
+           code=code or "none", emergency=str(bool(emergency)).lower(),
+           wait_ms=int((time.monotonic() - asked) * 1000))  # OPS-13
     if emergency:
         await _escalate(city, message, chat)  # X-42: one path for all roles (112, notice, nearest ER)
         return
