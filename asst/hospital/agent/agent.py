@@ -1434,6 +1434,18 @@ def _diverse(chosen: list[dict[str, str]], count: int) -> list[dict[str, str]]:
     return sorted(picks, key=chosen.index)
 
 
+def _refused_slots(chat: list[Message], agent: str, sent: _Sent) -> set[str]:
+    """P-magesh-9: slots whose hold or commit the Ledger refused to us. Never offered again."""
+
+    found = {note[8:] for note in sent.notes if note.startswith("refused:")}
+    for row in chat:
+        if row.sender == LEDGER and row.recipient == agent and first_word(row.text) == "refused":
+            slot = fields_of(row.text).get("slot_id", "")
+            if slot and words(row.text) & {"hold", "commit"}:
+                found.add(slot)
+    return found
+
+
 def _slot_ids(offers: set[str]) -> set[str]:
     """Slot ids among the offers this process remembers (not the waiting-list offer id)."""
 
@@ -2543,6 +2555,7 @@ async def _advance_alone(
         taken = _withdrawn(chat, agent) | sent.again
     else:
         taken = _offered(chat, agent) | _slot_ids(sent.offers)
+    taken = taken | _refused_slots(chat, agent, sent)  # P-magesh-9
     deadline = _rx_deadline(chat, reply, priority, number)
     lines = [line for line in world.splitlines() if "slot_id=" in line]
     chosen = [
@@ -2768,6 +2781,17 @@ async def _on_confirm(
     number = fields.get("prescription_number") or offer.get("prescription_number")
     procedure = fields.get("procedure") or offer.get("procedure", "")
     book_here = hold_self or message.sender.startswith("agent:") or facility == agent
+    if book_here and hold_self and message.sender.startswith("citizen:") and slot in _refused_slots(
+        chat, agent, _sent(message.need_id or message.msg_id)
+    ):
+        # P-magesh-9: the citizen confirms again a slot the Ledger already refused. No second hold
+        # and no silence: say it is gone and offer the ones still free (or the waiting list).
+        line = ("I am sorry, that appointment is no longer available. Here are the other free ones."
+                if _lang(chat) != "it" else
+                "Mi dispiace, quel posto non è più disponibile. Le propongo gli altri orari liberi.")
+        await _say(city, citizen, f"cancel offer_id={offer_id or 'of-' + slot} reason=no_capacity {line}")
+        await _advance(city, message, chat, fixed="CONS-GIN", replacing=True)
+        return
     if book_here:
         if message.sender.startswith("agent:"):
             _remember_booking_request(agent, message.need_id, slot, message.sender)
@@ -3878,6 +3902,9 @@ async def _on_refused(
         reason = next(iter(words(message.text) & _BOOKING_REFUSALS), "facility_cancelled")
     await _cancel_booking(city, chat, slot, reason=reason, hold_id=hold_id if commit_refused else "")
     if slot and hold_self:
+        # P-magesh-9: the cancel just sent is not in ``chat`` yet, so the refused slot looked free
+        # and went out again with the next offers. Remember it: it is never offered again.
+        _sent(message.need_id or message.msg_id).notes.add("refused:" + slot)
         await _advance(city, message, chat, fixed="CONS-GIN", replacing=True)
 
 

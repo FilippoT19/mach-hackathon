@@ -372,6 +372,9 @@ async def _on_refused(
         reason = next(iter(words(message.text) & _BOOKING_REFUSALS), "facility_cancelled")
     await _cancel_booking(city, chat, slot, reason=reason, hold_id=hold_id if commit_refused else "")
     if slot and hold_self:
+        # P-magesh-9: the cancel just sent is not in ``chat`` yet, so the refused slot looked free
+        # and went out again with the next offers. Remember it: it is never offered again.
+        _sent(message.need_id or message.msg_id).notes.add("refused:" + slot)
         await _advance(city, message, chat, fixed="CONS-GIN", replacing=True)
 
 
