@@ -3188,6 +3188,73 @@ async def main() -> int:
               and not any("follow_up_prescription_number" in t for t in to(city, LEDGER)), city.sent)
 
     await test_sp11(check)
+    async def test_ops14(check):
+        """OPS-14 (P-francesco-62): the ack to another agent leaves before the history read."""
+        from unittest.mock import patch
+        import os
+
+        bk, ho, spec, gp = "agent:fn64xfq2jft4", "agent:jdj692g4145e", "agent:jmjfst55vgjz", "agent:fddgaqmp6kb0"
+        ring_bk, ring_ho = "agent:cdc7x6m21nj6", "agent:h6r1v45esk77"  # Giambellino
+
+        class SlowCity(FakeCity):
+            def __init__(self, agent_id, rows=()):
+                super().__init__(agent_id)
+                self.rows, self.seen = list(rows), None
+
+            async def history(self, peer=None, *, need_id=None):
+                await asyncio.sleep(0.01)
+                if self.seen is None:
+                    self.seen = list(self.sent)  # what left before the first read ended
+                return list(self.rows)
+
+        async def turn(role, agent, msg, rows=()):
+            old = os.environ.get("CITY_ROLE")
+            os.environ["CITY_ROLE"] = role
+            try:
+                city = SlowCity(agent, rows)
+                city.inbound = msg
+                await brain.main(type("N", (), {"is_emergency": False})(), city)
+                await asyncio.sleep(0)
+                return city
+            finally:
+                if old is None:
+                    os.environ.pop("CITY_ROLE", None)
+                else:
+                    os.environ["CITY_ROLE"] = old
+
+        with patch.object(brain, "_TRUSTED_PARTNERS", set(RING_CONFIG)):
+            brain._PARTNER_DONE.clear()
+            city = await turn("specialist_care", spec, row(ring_bk, spec, "need.request request_id=R-14 procedure=VIS-CARD priority=B mach=2.0", 1))
+            check("OPS-14 struttura: need.request di un booking dell'anello -> need.request.ack prima della history",
+                  city.seen == [(ring_bk, "need.request.ack request_id=R-14 status=received")], (city.seen, city.sent))
+
+            city = await turn("hospital", ho, row(bk, ho, f"confirm offer_id=O-14 slot_id=S-14 consent_ref=C-14 citizen={CITIZEN}", 1))
+            check("OPS-14 struttura: confirm del booking -> confirm.ack offer_id slot_id prima della history",
+                  bool(city.seen) and city.seen[0] == (bk, "confirm.ack offer_id=O-14 slot_id=S-14 status=received"), (city.seen, city.sent))
+
+            brain._SENT.clear()
+            asked = row(bk, ring_ho, "need.request request_id=cross-N-1 procedure=VIS-FIS priority=B mach=2.0", 0)
+            offer = row(ring_ho, bk, f"offer offer_id=O-R slot_id=S-R facility={ring_ho} request_id=cross-N-1 agenda_date=2026-11-05T15:00:00Z", 2)
+            city = await turn("booking_centre", bk, offer, [asked, offer])
+            acks = [t for t in to(city, ring_ho) if t == "offer.ack status=received"]
+            check("OPS-14 booking: offerta del partner -> offer.ack prima della history, una sola volta",
+                  bool(city.seen) and city.seen[0] == (ring_ho, "offer.ack status=received") and len(acks) == 1, (city.seen, city.sent))
+
+            note = row(bk, gp, "booking.notice booking_id=B-14 prescription_number=RX-14", 1)
+            city = await turn("gp", gp, note, [note])
+            acks = [t for t in to(city, bk) if t.startswith("booking.notice.ack booking_id=B-14")]
+            check("OPS-14 gp: booking.notice -> booking.notice.ack prima della history, una sola volta",
+                  bool(city.seen) and city.seen[0][1].startswith("booking.notice.ack booking_id=B-14") and len(acks) == 1, (city.seen, city.sent))
+
+            city = await turn("hospital", ho, row("agent:impostore", ho, "need.request request_id=R-X procedure=VIS-FIS", 1))
+            check("OPS-14 impostore: nessun ack prima della history (poi cancel not_listed come prima)",
+                  city.seen == [] and any(t.startswith("cancel reason=not_listed") for t in to(city, "agent:impostore")), (city.seen, city.sent))
+
+            city = await turn("hospital", ho, row(bk, ho, "booking.receipt.ack status=received", 1))
+            check("OPS-14 un ack non riceve un ack (niente ping-pong)", city.sent == [], city.sent)
+        brain._AGENT_ACKED.clear()  # the fixtures reuse msg_ids (h1, h2...); in the city they are unique
+
+    await test_ops14(check)
 
     async def test_mach2(check):
         """MACH-2.0 (red-agent): ring R17, round of 12 R3, mach/lease tokens, R7, R13, R20, R21."""

@@ -104,6 +104,7 @@ async def _early_112(city: "City", message: "Message") -> None:
             _EARLY_112_SENDING.pop(key, None)
             done.set_result(sent)
         return  # one attempt per turn; if it failed, _escalate in this turn sends the full 112
+_AGENT_ACKED: set[str] = set()  # OPS-14: msg_ids of agent messages acked before the history read
 _RED_FLAGS_MORE = ("sanguinamento abbondante", "heavy bleeding", "non riesco a respirare", "can't breathe", "cannot breathe", "svenut", "fainted")
 _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
 _LOG = logging.getLogger("care")
@@ -192,6 +193,18 @@ async def main(need: Need, city: City) -> None:
         early_ack = asyncio.get_running_loop().create_task(_say(city, message.sender, _cancel_ack_text(
             fields_of(message.text).get("offer_id", ""), _lang([message]) != "it")))
         _EARLY_ACK[message.msg_id] = early_ack
+    # OPS-14 (P-francesco-62): e19 gives +1 (city:clock) to the agent that answers another agent
+    # within the race's fast-reply seconds (default 10). Every turn first reads the case history
+    # (minutes under load, GP-17), so every ack to an agent left after it. The ack needs only the
+    # message itself: it leaves now, as the citizen's cancel.ack does (BK-61).
+    agent_ack = None
+    ack_text = _early_agent_ack_text(role_of(), city.agent_id, message)
+    if ack_text:
+        _AGENT_ACKED.add(message.msg_id)
+        if len(_AGENT_ACKED) > 4 * _SENT_NEEDS:
+            _AGENT_ACKED.clear()
+            _AGENT_ACKED.add(message.msg_id)
+        agent_ack = asyncio.get_running_loop().create_task(_say(city, message.sender, ack_text))
     try:
         _remember_ledger([message], city.agent_id)  # BK-67: a Ledger push is kept before anything else
         case = await city.history(need_id=message.need_id)
@@ -202,6 +215,53 @@ async def main(need: Need, city: City) -> None:
             early.cancel()
         if early_ack is not None and _EARLY_ACK.pop(message.msg_id, None) is not None:
             await early_ack  # the turn took another road: the ack still reaches the citizen
+        if agent_ack is not None:
+            await agent_ack
+
+
+_FACILITY_ROLES_ACK = ("hospital", "specialist_care", "family_counseling")
+
+
+def _early_agent_ack(message: Message) -> bool:
+    """OPS-14: this agent message already got its ``... status=received`` line from main()."""
+    return message.msg_id in _AGENT_ACKED
+
+
+def _early_agent_ack_text(role: str, agent: str, message: Message) -> str | None:
+    """OPS-14: the ack line the turn would send to another agent, when it needs no history.
+
+    The same text the handlers send today after the history read (they skip it once sent here).
+    Never an ack to an ack (no ping-pong), never to an agent outside our five and the ring (X-13,
+    MACH2-1: they get their usual not_listed / ignored answer after the read)."""
+    sender = message.sender
+    head = first_word(message.text or "")
+    if (not sender.startswith("agent:") or sender == agent or not head or head.endswith(".ack")
+            or not _trusted(sender)):
+        return None
+    fields = fields_of(message.text)
+    if role == "gp" and head in {"report.notice", "booking.notice"} and fields.get("booking_id"):
+        bid = fields["booking_id"]
+        if head == "report.notice":
+            return (f"report.notice.ack booking_id={bid} Grazie, leggo il referto "
+                    "e richiamo io il paziente se serve un controllo.")
+        return (f"booking.notice.ack booking_id={bid} Grazie: annoto la visita "
+                "nel fascicolo del paziente. Dopo la visita leggo il referto e propongo io il controllo.")
+    if role in _FACILITY_ROLES_ACK:
+        if head == "emergency.notice":
+            return ("emergency.ack Ricevuto: se il cittadino arriva da noi lo accogliamo subito e lo "
+                    "accompagniamo al pronto soccorso.")
+        if head == "need.request" and fields.get("request_id"):
+            return f"need.request.ack request_id={fields['request_id']} status=received"
+        if head == "confirm":
+            ids = " ".join(f"{k}={fields[k]}" for k in ("offer_id", "slot_id") if fields.get(k))
+            return f"confirm.ack {ids} status=received".replace("  ", " ")
+        return None
+    if role == "booking_centre":
+        if head == "offer" or head == "cancel":
+            return f"{head}.ack status=received"
+        if head == "booking.receipt" and fields.get("booking_id") and fields.get("ledger_ref"):
+            return "booking.receipt.ack status=received"
+    return None
 
 
 def _asks_address(message: Message) -> bool:
@@ -1276,7 +1336,7 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
         return
     if first_word(message.text) == "report.notice" and message.sender.startswith("agent:"):
         bid = fields_of(message.text).get("booking_id", "")
-        if not _we(chat, agent, f"booking_id={bid}", to=message.sender, word="report.notice.ack"):
+        if not _early_agent_ack(message) and not _we(chat, agent, f"booking_id={bid}", to=message.sender, word="report.notice.ack"):
             await _say(city, message.sender, f"report.notice.ack booking_id={bid} Grazie, leggo il referto "
                        "e richiamo io il paziente se serve un controllo.")
         await _report_to_citizen(city, message, chat, bid)
@@ -1284,7 +1344,7 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     if first_word(message.text) == "booking.notice" and message.sender.startswith("agent:"):
         # G5: the booking tells us the visit is booked; we close the loop for the follow-up.
         bid = fields_of(message.text).get("booking_id", "")
-        if not _we(chat, agent, f"booking_id={bid}", to=message.sender, word="booking.notice.ack"):
+        if not _early_agent_ack(message) and not _we(chat, agent, f"booking_id={bid}", to=message.sender, word="booking.notice.ack"):
             await _say(city, message.sender, f"booking.notice.ack booking_id={bid} Grazie: annoto la visita "
                        "nel fascicolo del paziente. Dopo la visita leggo il referto e propongo io il controllo.")
         return
@@ -7203,7 +7263,8 @@ async def _partner_reply(city: City, message: Message, chat: list[Message], fixe
     if not _expected_offer(chat, city.agent_id, message, sent):
         await _say(city, message.sender, f"{head}.ack status=ignored reason=unexpected_partner")
         return
-    await _say(city, message.sender, f"{head}.ack status=received")
+    if not _early_agent_ack(message):  # OPS-14: main() may have sent it before the history read
+        await _say(city, message.sender, f"{head}.ack status=received")
     async with _need_gate(_GATES, key):
         request_id = f"cross-{key}"
         # Include replies that arrived while the original search held the lock.
@@ -8551,13 +8612,15 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
         return
     async with _receipt_turn(city, message, chat, booking_id) as fresh:
         if fresh is None:
-            await _say(city, message.sender, "booking.receipt.ack status=received")
+            if not _early_agent_ack(message):  # OPS-14
+                await _say(city, message.sender, "booking.receipt.ack status=received")
         elif not _expected_confirm_reply(fresh, city.agent_id, message.sender, fields):
             await _say(city, message.sender, "booking.receipt.ack status=ignored reason=unexpected_partner")
         else:
             # OPS-11: the ack to the facility and the receipt to the citizen go to different
             # parties; the ack does not wait for the GP notice and the route.
-            ack = asyncio.ensure_future(_say(city, message.sender, "booking.receipt.ack status=received"))
+            ack = asyncio.ensure_future(_nothing() if _early_agent_ack(message) else  # OPS-14
+                                        _say(city, message.sender, "booking.receipt.ack status=received"))
             try:
                 await _send_forwarded_receipt(city, message, fresh, booking_id, ledger_ref)
             finally:
@@ -8684,7 +8747,8 @@ async def _partner_cancel(
     if not _expected_confirm_reply(chat, city.agent_id, message.sender, fields):
         await _say(city, message.sender, "cancel.ack status=ignored reason=unexpected_partner")
         return
-    await _say(city, message.sender, "cancel.ack status=received")
+    if not _early_agent_ack(message):  # OPS-14
+        await _say(city, message.sender, "cancel.ack status=received")
     offer_id = fields.get("offer_id", "")
     if offer_id.lower() in {"none", "null", "-"}:
         offer_id = ""  # BK-32: "offer_id=none" from a partner means no offer of ours
@@ -9431,7 +9495,7 @@ async def _facility(
     kind = words(message.text)
     if head == "emergency.notice" and message.sender.startswith("agent:"):
         # X-28: the gp warns us of a red flag. Answer at once (clock +1), once per need.
-        if not _we(chat, city.agent_id, "emergency.ack", to=message.sender, word="emergency.ack"):
+        if not _early_agent_ack(message) and not _we(chat, city.agent_id, "emergency.ack", to=message.sender, word="emergency.ack"):
             await _say(
                 city,
                 message.sender,
