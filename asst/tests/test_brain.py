@@ -1126,6 +1126,9 @@ async def main() -> int:
             (LEDGER, FAMX, "held hold_id=h-1 slot_id=s1500 fence=3"),
             (FAMX, LEDGER, "commit hold_id=h-1 consent_ref=C-1 fence=3"),
             (LEDGER, FAMX, refusal),
+            # BK-62 already sent the commit once more without fence: this is the second refusal.
+            (FAMX, LEDGER, "commit hold_id=h-1 consent_ref=C-1"),
+            (LEDGER, FAMX, refusal),
         ]
         chat = [row(a2, b2, t2, i) for i, (a2, b2, t2) in enumerate(base)]
         brain._SENT.clear()
@@ -1135,6 +1138,8 @@ async def main() -> int:
         again = [t for t in out if t.startswith("offer ")]
         check(f"FA-23 {refusal[:36]}: nuova offerta senza lo slot rifiutato",
               len(again) == 1 and "slot_id=s1500" not in again[0], out)
+        check(f"FA-23 {refusal[:36]}: processo nuovo, nessun terzo commit dopo il retry BK-62",
+              not any(t.startswith("commit ") for t in to(c, LEDGER)), c.sent)
         more = base + [(FAMX, CITIZEN, t) for t in out] + [(CITIZEN, FAMX, "confirm offer_id=of-s1500 consent_ref=C-1")]
         chat = [row(a2, b2, t2, i) for i, (a2, b2, t2) in enumerate(more)]
         brain._SENT.clear()  # another process: only the history knows the refusal

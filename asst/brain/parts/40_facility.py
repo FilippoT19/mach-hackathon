@@ -407,7 +407,14 @@ async def _on_refused(
         notes = _sent(message.need_id or message.msg_id).notes
         if f"nofence:{hold_id}:{message.msg_id}" in notes:
             return True  # another turn already answered this same refusal
-        if not any(note.startswith(f"nofence:{hold_id}:") for note in notes):
+        # FA-23: also from the history, so a fresh process (restart, other replica) does not send
+        # the commit without fence a second time and leave the citizen without an answer.
+        retried = any(
+            row.sender == agent and row.recipient == LEDGER and first_word(row.text) == "commit"
+            and fields_of(row.text).get("hold_id") == hold_id and "fence" not in fields_of(row.text)
+            for row in chat
+        )
+        if not retried and not any(note.startswith(f"nofence:{hold_id}:") for note in notes):
             _, consent, number = _booking_of(chat, agent, slot)
             consent = consent or next(
                 (fields_of(row.text).get("consent_ref", "") for row in reversed(chat)
