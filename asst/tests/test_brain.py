@@ -16,6 +16,7 @@ spec = importlib.util.spec_from_file_location("brain", HERE / "brain" / "agent.p
 brain = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(brain)
 brain._PULL_TRIES = 1  # no waiting in tests
+brain._MEMORY_ON = False  # BK-67: the shared Ledger memory is on only inside test_bk67
 CITIZEN = "citizen:c-1"
 
 
@@ -1769,6 +1770,7 @@ async def main() -> int:
             brain._ASKED_AT.clear(); brain._PARTNER_DONE.clear()
 
         # (1) memory and harvest
+        brain._MEMORY_ON = True
         wipe()
         fis1 = row(LEDGER, bk, "slots page=1/2\n" + slot("A1", "h1", "2026-11-03T10:00:00Z", "tue"), 1)
         fis2 = row(LEDGER, bk, "slots page=2/2\n" + slot("B1", "h2", "2026-11-04T10:00:00Z", "wed"), 2)
@@ -1867,7 +1869,7 @@ async def main() -> int:
 
         # (3b) MACH-1.3 R1: our facility answers a partner's need.request from memory, in the same turn
         wipe()
-        brain._remember_ledger([row(LEDGER, hospital, "agenda agenda_now=2026-11-02T07:00:00Z", 90), row(LEDGER, hospital, p2, 92)], hospital)
+        brain._remember_ledger([row(LEDGER, hospital, "agenda agenda_now=2026-11-02T07:00:00Z", 90), row(LEDGER, hospital, p2.replace("page=2/2", "page=1/1"), 92)], hospital)
         req = row("agent:partner-bk", hospital, "need.request mach=1.3 service_type=hospital.physiatry procedure=VIS-FIS priority=D "
                   "deadline=2026-11-06T18:00:00Z lease_s=480 request_id=ring-N-77", 1)
         city = FakeCity(hospital)
@@ -1895,9 +1897,55 @@ async def main() -> int:
         city4 = FakeCity(bk)
         await brain._still_here(city4, ask, [ask, row(bk, CITIZEN, offer, 5)], fixed=None)
         check("BK-67 status: offerte partite DOPO il messaggio del cittadino, nessuna copia", to(city4, CITIZEN) == [], city4.sent)
+        # (5) findings of the branch review
+        wipe()  # only page 3 in memory (1-2 still in flight): not used, the search asks the Ledger
+        brain._remember_ledger([row(LEDGER, bk, "agenda agenda_now=2026-11-02T07:00:00Z", 90),
+                                row(LEDGER, bk, "slots page=3/3\n" + slot("Z1", "h2", "2026-11-11T10:00:00Z", "wed"), 93)], bk)
+        check("BK-67 revisione: pagine non contigue da 1 non sono usate",
+              [r.msg_id for r in brain._memory_rows("VIS-FIS")] == ["h90"], brain._memory_rows("VIS-FIS"))
+        wipe()  # the case has page 3 of its own: memory pages 1-2 still count
+        brain._remember_ledger(warm, bk)
+        own = row(LEDGER, bk, "slots page=3/3\n" + slot("Z1", "h2", "2026-11-11T10:00:00Z", "wed"), 50)
+        merged = brain._with_memory([ask, own], "VIS-FIS")
+        check("BK-67 revisione: le pagine in memoria restano anche se il caso ha una pagina sua",
+              {"h91", "h92", "h50"} <= {r.msg_id for r in merged}, [r.msg_id for r in merged])
+        wipe()  # a remembered agenda, read 30 minutes before the case began, does not shrink the window
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        t0 = _dt.now(_tz.utc)
+        iso_ = lambda t: t.isoformat().replace("+00:00", "Z")
+        old_ag = Message(type="chat", sender=LEDGER, msg_id="ag-old", need_id="N-0", recipient=bk,
+                         body={"text": "agenda agenda_now=2026-11-02T07:00:00Z"}, sent_at=iso_(t0 - _td(minutes=30)))
+        first = Message(type="chat", sender=CITIZEN, msg_id="c1", need_id="N-1", recipient=bk,
+                        body={"text": f"need.request prescription_number={rx_number}"}, sent_at=iso_(t0))
+        limit = brain._rx_deadline([first, old_ag], None, "B", rx_number)
+        want = _dt(2026, 11, 2, 7, tzinfo=_tz.utc) + _td(hours=30) + _td(days=2) - _td(minutes=30)
+        check("BK-67 revisione: agenda letta 30 minuti prima del caso, finestra B intera (48 ore dal caso)",
+              limit is not None and abs((limit - want).total_seconds()) < 5, (limit, want))
+        wipe()  # the refresh does not feed itself: one refresh per answer from memory
+        brain._remember_ledger(warm, bk)
+        city5 = FakeCity(bk)
+        await desk_turn(city5, ask, [ref, ask])
+        brain._ASKED_AT.clear()
+        push = row(LEDGER, bk, p1, 77)
+        before = len(to(city5, LEDGER))
+        await desk_turn(city5, push, [ref, ask, row(bk, CITIZEN, [t for t in to(city5, CITIZEN) if t.startswith("offer ")][0], 60), push])
+        check("BK-67 revisione: una spinta del Ledger non fa ripartire il rinfresco", len(to(city5, LEDGER)) == before, to(city5, LEDGER)[before:])
+        wipe()  # BK-45 still stops: pages after the deadline are not all read
+        pg1 = "slots page=1/8\n" + slot("F0", "h1", "2026-11-03T10:00:00Z", "tue").replace("free=1", "free=0")
+        pg2 = "slots page=2/8\n" + slot("L1", "h2", "2026-11-12T10:00:00Z", "thu")
+        case = [row(CITIZEN, bk, f"need.request lang=it prescription_number={rx_number}", 0),
+                row(LEDGER, bk, f"prescription prescription_number={rx_number} procedure=VIS-FIS priority=B state=issued issued_at=2026-11-02T07:00:00Z", 1),
+                row(LEDGER, bk, "agenda agenda_now=2026-11-02T07:00:00Z", 2), row(LEDGER, bk, pg1, 3),
+                row(bk, LEDGER, "world procedure=VIS-FIS page=2", 4), row(LEDGER, bk, pg2, 5)]
+        city5 = FakeCity(bk)
+        await brain._advance_alone(city5, case[5], case, "N-1", fixed=None, replacing=False)
+        check("BK-67 revisione: pagina intera oltre la scadenza, non si chiede la pagina 3 (BK-45)",
+              "world procedure=VIS-FIS page=3" not in to(city5, LEDGER), city5.sent)
+        wipe()
         check("BK-67 struttura: memoria vuota, domande al Ledger come prima",
               "agenda" in to(city, LEDGER) and any(t.startswith("world procedure=VIS-FIS") for t in to(city, LEDGER)), city.sent)
         wipe()
+        brain._MEMORY_ON = False
 
     await test_bk67(check)
     await test_francesco_15(check)

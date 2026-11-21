@@ -696,7 +696,7 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
     known = _has_agenda(chat) and _latest_slots(chat) is not None
     now_real = time.time()
     if not known or now_real - _ASKED_AT.get(f"facility:{procedure}", 0.0) >= _REFRESH_EVERY:
-        _ASKED_AT[f"facility:{procedure}"] = now_real
+        _note_asked(f"facility:{procedure}", now_real)
         if not _exact(chat, agent, "agenda"):
             await _say(city, LEDGER, "agenda")
         await _say(city, LEDGER, f"world procedure={procedure} facility={agent} page=1")
