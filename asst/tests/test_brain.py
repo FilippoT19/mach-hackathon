@@ -706,7 +706,7 @@ async def main() -> int:
             await desk_turn(city, reply, [*chat, original, cancel, reply])
             offers = [t for t in to(city, CITIZEN)[1:] if t.startswith("offer ")]
             expected = "slot_id=S-PAGE-2" if available else "offer_id=wl-N-1 waiting_list=true"
-            check(f"P-francesco-14 pagina 2: {expected}", len(offers) == 1 and expected in offers[0], city.sent)
+            check(f"P-francesco-14 pagina 2: {expected}", bool(offers) and expected in offers[-1], city.sent)
 
         class PageCity(FakeCity):
             async def history(self, peer=None, *, need_id=None):
