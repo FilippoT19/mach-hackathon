@@ -688,7 +688,49 @@ async def r18():
     return s, verdict(s, lang="en", max_messages=5, outcome="waiting_list", max_offer_messages=0)
 
 
-REPLAYS = [r18, r01, r02, r03, r04, r05, r06, r07, r08, r09, r10, r11, r12, r13, r14, r15, r16, r17]
+def warm(s: Sim) -> None:
+    """BK-67: an earlier case of this process already read agenda and catalogue from the Ledger."""
+    if os.environ.get("REPLAY_COLD"):
+        return
+    rows, size = s.catalogue(s.procedure), s.page_size
+    pages = max(1, -(-len(rows) // size))
+    texts = [f"agenda agenda_now={iso(s.agenda)}"] + [
+        "\n".join([f"slots page={n}/{pages}"] + rows[(n - 1) * size: n * size]) for n in range(1, pages + 1)]
+    brain._remember_ledger([Message(type="chat", sender=LEDGER, msg_id=f"warm{i}", need_id="N-EARLIER", recipient=BK,
+                                    body={"text": text}) for i, text in enumerate(texts)], BK)
+
+
+async def r19():
+    """0003250002 (L4, 21/11 05:15): Italian, back pain, B. The Ledger answered the catalogue after ~14
+    minutes: 'sto controllando', then the waiting list while 286 slots were acceptable. Here the Ledger
+    never answers a catalogue page: the offers come from the memory an earlier case filled (BK-67)."""
+    s = Sim("N-2026-11-02-8909120003250002", lang="it", procedure="VIS-FIS", agenda="2026-11-18T15:25:00Z",
+            first="Ancora qui, a quanto pare la mia schiena ha deciso di scioperare e non si decide a riprendere servizio.",
+            page_size=2, lost_pages=set(range(1, 40)))
+    warm(s)
+    await s.start()
+    out = verdict(s, lang="it", max_messages=6, outcome="booked", max_offer_messages=1)
+    first = s.to_citizen()[0].text if s.to_citizen() else ""
+    out.append(("BK-67 the first message to the citizen is the offers", brain.first_word(first) == "offer", first[:60]))
+    return s, out
+
+
+async def r20():
+    """000351 (L5, 05:15): Italian, knee, D, 'solo in giorni specifici'. Four offers, all on Monday with
+    the same doctor, all cancelled. With the remembered pages the first message covers several days."""
+    s = Sim("N-2026-11-02-890912000351", lang="it", procedure="VIS-FIS", agenda="2026-11-16T07:00:00Z", priority="D",
+            first="Le chiedo cortesemente di volermi indicare la disponibilità per una visita, tenendo presente che "
+            "potrei presentarmi solo in giorni specifici.", page_size=3, lost_pages=set(range(1, 40)))
+    warm(s)
+    await s.start()
+    out = verdict(s, lang="it", max_messages=6, outcome="booked", max_offer_messages=1)
+    msgs = s.offer_messages()
+    days = {o.get("agenda_day") for o in brain._offer_rows(msgs[0].text)} if msgs else set()
+    out.append(("BK-67 the first offer message covers at least two days", len(days) >= 2, f"{sorted(d or '' for d in days)}"))
+    return s, out
+
+
+REPLAYS = [r18, r19, r20, r01, r02, r03, r04, r05, r06, r07, r08, r09, r10, r11, r12, r13, r14, r15, r16, r17]
 
 
 async def main() -> int:
