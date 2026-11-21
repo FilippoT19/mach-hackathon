@@ -883,6 +883,49 @@ async def main() -> int:
     await brain._advance_alone(c, chat[3], chat, "N-1", fixed=None, replacing=False)
     got = brain._offer_rows(to(c, CITIZEN)[0]) if to(c, CITIZEN) else []
     check("P-francesco-31 la dottoressa chiesta viene prima", bool(got) and got[0]["doctor_id"] == "d-s2", got)
+    # BK-54: a wait ends on the clock even when every history() call is slow.
+    class SlowCity(FakeCity):
+        calls = 0
+        async def history(self, peer=None, *, need_id=None):
+            SlowCity.calls += 1
+            await asyncio.sleep(0.03)
+            return []
+    tries, seconds = brain._PULL_TRIES, brain._PULL_SECONDS
+    brain._PULL_TRIES, brain._PULL_SECONDS = 50, 0.05
+    await brain._until(SlowCity("agent:bk"), "N-1", [], lambda rows: False)
+    brain._PULL_TRIES, brain._PULL_SECONDS = tries, seconds
+    check("BK-54 attesa a tempo: poche letture anche con 50 tentativi", SlowCity.calls <= 4, SlowCity.calls)
+    # P-magesh-9 (N-...0001050002, consultorio): hold refused -> the slot is never offered again; a
+    # second confirm of it gets an answer and no second hold.
+    FAMX = "agent:mm18nddkfc5w"
+    def gin(sid, at):
+        return f"slot_id={sid} doctor_id=d-c1 facility={FAMX} procedure=CONS-GIN at={at} day=wed free=1"
+    world = "slots page=1/1\n" + "\n".join([gin("s1500", "2026-11-04T15:00:00Z"), gin("s1600", "2026-11-04T16:00:00Z"), gin("s1700", "2026-11-04T17:00:00Z")])
+    offers = "\n".join(f"offer offer_id=of-{x} slot_id={x} doctor_id=d-c1 facility={FAMX} procedure=CONS-GIN" for x in ("s1500", "s1600", "s1700"))
+    base = [
+        (CITIZEN, FAMX, "vorrei una visita al consultorio"),
+        (LEDGER, FAMX, f"agenda agenda_now={NOW}"),
+        (LEDGER, FAMX, world),
+        (FAMX, CITIZEN, offers),
+        (CITIZEN, FAMX, "confirm offer_id=of-s1500 consent_ref=C-1"),
+        (FAMX, LEDGER, f"hold slot_id=s1500 citizen={CITIZEN} consent_ref=C-1"),
+        (LEDGER, FAMX, "refused hold reason=NO_CAPACITY slot_id=s1500"),
+    ]
+    chat = [row(a2, b2, t2, i) for i, (a2, b2, t2) in enumerate(base)]
+    brain._SENT.clear()
+    c = FakeCity(FAMX)
+    await brain._on_refused(c, chat[-1], chat, hold_self=True)
+    out = to(c, CITIZEN)
+    check("P-magesh-9 hold rifiutato: cancel al cittadino", any(t.startswith("cancel offer_id=of-s1500") for t in out), c.sent)
+    again = [t for t in out if t.startswith("offer ")]
+    check("P-magesh-9 nuova offerta senza lo slot rifiutato",
+          len(again) == 1 and "slot_id=s1500" not in again[0] and "slot_id=s1600" in again[0], out)
+    more = base + [(FAMX, CITIZEN, t) for t in out] + [(CITIZEN, FAMX, "confirm offer_id=of-s1500 consent_ref=C-1")]
+    chat = [row(a2, b2, t2, i) for i, (a2, b2, t2) in enumerate(more)]
+    c = FakeCity(FAMX)
+    await brain._on_confirm(c, chat[-1], chat, hold_self=True)
+    check("P-magesh-9 seconda conferma dello slot rifiutato: risposta al cittadino, nessun secondo hold",
+          any("non è più disponibile" in t for t in to(c, CITIZEN)) and not any(t.startswith("hold ") for t in to(c, LEDGER)), c.sent)
     # 26. X-40/41, FA-20, BK-24, CO-20.
     def cm(t, to="agent:x"):
         return Message(type="chat", sender=CITIZEN, msg_id="m40", need_id="N-40", recipient=to, body={"text": t})

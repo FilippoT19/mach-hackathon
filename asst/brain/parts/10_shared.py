@@ -224,6 +224,7 @@ async def _until(
     """Re-read the case until ``ready`` or the short wait ends. The push may never arrive."""
 
     fresh = chat
+    started = time.monotonic()
     for attempt in range(_PULL_TRIES):
         try:
             fresh = await city.history(need_id=need_id)
@@ -232,6 +233,8 @@ async def _until(
         fresh = _keep(fresh, chat)
         if ready(fresh):
             return fresh
+        if time.monotonic() - started >= _PULL_SECONDS:  # BK-54: slow history() calls
+            break
         if attempt + 1 < _PULL_TRIES:
             await asyncio.sleep(_PULL_PAUSE)
     return fresh
@@ -258,7 +261,10 @@ async def _await_line(
 
     known = {row.msg_id for row in chat}
     fresh = chat
+    started = time.monotonic()
     for attempt in range(_PULL_TRIES):
+        if attempt and time.monotonic() - started >= 2 * _PULL_SECONDS:  # BK-54 (hold/commit: twice the wait)
+            break
         try:
             fresh = await city.history(need_id=need_id)
         except CapError:

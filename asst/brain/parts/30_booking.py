@@ -321,6 +321,18 @@ def _diverse(chosen: list[dict[str, str]], count: int) -> list[dict[str, str]]:
     return sorted(picks, key=chosen.index)
 
 
+def _refused_slots(chat: list[Message], agent: str, sent: _Sent) -> set[str]:
+    """P-magesh-9: slots whose hold or commit the Ledger refused to us. Never offered again."""
+
+    found = {note[8:] for note in sent.notes if note.startswith("refused:")}
+    for row in chat:
+        if row.sender == LEDGER and row.recipient == agent and first_word(row.text) == "refused":
+            slot = fields_of(row.text).get("slot_id", "")
+            if slot and words(row.text) & {"hold", "commit"}:
+                found.add(slot)
+    return found
+
+
 def _slot_ids(offers: set[str]) -> set[str]:
     """Slot ids among the offers this process remembers (not the waiting-list offer id)."""
 
@@ -1259,12 +1271,21 @@ async def _advance(
         # BK-45: a Ledger reply often lands only in the history and opens no turn. Whoever asked
         # for a catalogue page reads it here, in the same turn, until the search has an outcome
         # (offers, another ASST, waiting list). A push that also opens a turn finds it done.
+        started = time.monotonic()
         for _ in range(_MAX_PAGE + 1):
             page = sent.pending_page
             if page is None:
                 break
             sent.pending_page = None
+            if time.monotonic() - started >= _TURN_SECONDS:
+                # BK-54: this turn has searched long enough. The citizen gets an outcome now
+                # (another ASST or the waiting list) instead of waiting for the last page.
+                _trace("stop", message, why="turn_budget", page=page)
+                await _after_local(city, message, chat, key, fixed=fixed, replacing=sent.replacement_page is not None)
+                break
             for _try in range(4):  # BK-39: the Ledger can take well over 6 s; wait up to ~25 s
+                if _try and time.monotonic() - started >= _TURN_SECONDS:
+                    break
                 fresh = await _until(
                     city, message.need_id, chat, lambda rows: _slots_page(rows, city.agent_id, page) is not None,
                 )
@@ -1422,6 +1443,7 @@ async def _advance_alone(
         taken = _withdrawn(chat, agent) | sent.again
     else:
         taken = _offered(chat, agent) | _slot_ids(sent.offers)
+    taken = taken | _refused_slots(chat, agent, sent)  # P-magesh-9
     deadline = _rx_deadline(chat, reply, priority, number)
     lines = [line for line in world.splitlines() if "slot_id=" in line]
     chosen = [
@@ -1647,6 +1669,17 @@ async def _on_confirm(
     number = fields.get("prescription_number") or offer.get("prescription_number")
     procedure = fields.get("procedure") or offer.get("procedure", "")
     book_here = hold_self or message.sender.startswith("agent:") or facility == agent
+    if book_here and hold_self and message.sender.startswith("citizen:") and slot in _refused_slots(
+        chat, agent, _sent(message.need_id or message.msg_id)
+    ):
+        # P-magesh-9: the citizen confirms again a slot the Ledger already refused. No second hold
+        # and no silence: say it is gone and offer the ones still free (or the waiting list).
+        line = ("I am sorry, that appointment is no longer available. Here are the other free ones."
+                if _lang(chat) != "it" else
+                "Mi dispiace, quel posto non è più disponibile. Le propongo gli altri orari liberi.")
+        await _say(city, citizen, f"cancel offer_id={offer_id or 'of-' + slot} reason=no_capacity {line}")
+        await _advance(city, message, chat, fixed="CONS-GIN", replacing=True)
+        return
     if book_here:
         if message.sender.startswith("agent:"):
             _remember_booking_request(agent, message.need_id, slot, message.sender)
