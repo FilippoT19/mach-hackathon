@@ -64,6 +64,7 @@ _DEADLINE_DAYS = {"B": 2, "D": 5}
 _EMERGENCY_NEEDS: set[str] = set()
 _EARLY_ACK: dict[str, "asyncio.Task[bool]"] = {}  # BK-61: msg_id -> cancel.ack sent before the history read
 _EARLY_LLM: dict[str, "asyncio.Task[str | None]"] = {}  # OPS-09: msg_id -> symptom check started early
+_EARLY_112: set[str] = set()  # GP-17: needs whose 112 left before the history read
 _RED_FLAGS_MORE = ("sanguinamento abbondante", "heavy bleeding", "non riesco a respirare", "can't breathe", "cannot breathe", "svenut", "fainted")
 _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
 _LOG = logging.getLogger("care")
@@ -115,6 +116,20 @@ async def main(need: Need, city: City) -> None:
             and "=" not in text and text != "__error__"):
         _LOG.info("ops08.skip sender=%s", message.sender[:40])
         return
+    # GP-17 (wave W01QQQ, L1): "forte dolore al petto" got the 112 after 278 s or never: the
+    # turn waited for the history read (minutes under load) and the Index. The judge counts only
+    # `escalate.emergency` (emergency.no_escalation -2). A red flag in the citizen's own text
+    # needs nothing else: the 112 leaves now, once per need; the turn then adds the rest.
+    if message.sender.startswith("citizen:") and text and first_word(text) != "data.response" and _emergency(message):
+        key = message.need_id or message.msg_id
+        if key not in _EARLY_112:
+            if len(_EARLY_112) > 4 * _SENT_NEEDS:
+                _EARLY_112.clear()
+            _EARLY_112.add(key)
+            hospital = _OUR_AGENTS.get("hospital", "")
+            await _say(city, message.sender, _escalate_text(
+                message, _lang([message]) != "it",
+                told=None if not hospital or hospital == city.agent_id else False))
     # OPS-09: the GP's symptom check (city.llm, up to 4 s) needs only the citizen's text, so it
     # runs while the case history is read instead of after it. _gp() takes the result.
     early = None
@@ -869,32 +884,61 @@ async def _escalate(city: City, message: Message, chat: list[Message]) -> None:
         zone = await _zone_point(city, [*chat, message])
         return await _nearest_line(city, zone, en, "") if zone else ""
 
-    if not _we(chat, agent, "escalate.emergency", to=message.sender, word="escalate.emergency"):
+    near = ""
+    early = (message.need_id or message.msg_id) in _EARLY_112  # GP-17: the 112 already left
+    if not early and not _we(chat, agent, "escalate.emergency", to=message.sender, word="escalate.emergency"):
         noticed, near = await asyncio.gather(_notice(), _near())
-        told_en = "I have already told them myself." if noticed else "I am telling them now."
-        told_it = "li ho già avvisati io." if noticed else "li avviso io adesso."
-        await _say(
-            city,
-            message.sender,
-            "escalate.emergency reason=red_flag " + (
-            "I understand, this needs "
-            "attention right now. Call 112 or go to the emergency room nearest to you. Do not "
-            "drive: if you can, ask someone to go with you. About the emergency room of "
-            f"our hospital (Via Arganini Gerolamo 38, wheelchair accessible): {told_en}"
-            if en else
-            "Capisco, quello che mi descrive va preso sul serio subito. Chiami subito il 112 o "
-            "vada al pronto soccorso più vicino a lei. Non si metta alla guida: se può, si faccia "
-            "accompagnare e non resti da solo. Il pronto soccorso del nostro ospedale (Via "
-            f"Arganini Gerolamo 38, accessibile in sedia a rotelle): {told_it}"
-            ) + (" " + near.strip() if near else ""),
-        )
+        await _say(city, message.sender, _escalate_text(message, en, told=noticed) + (" " + near.strip() if near else ""))
+        near = ""
+    elif early and message.sender.startswith("citizen:") and not _we(
+            chat, agent, "purpose=emergency", to=message.sender, word="data.request"):
+        _, near = await asyncio.gather(_notice(), _near())  # GP-17: the rest of the first 112
     else:
         await _notice()
     # X-42: proactive — ask where the citizen is, then name the nearest emergency room (map).
     if message.sender.startswith("citizen:") and not _we(chat, agent, "purpose=emergency", to=message.sender, word="data.request"):
         await _say(city, message.sender, "data.request purpose=emergency fields=address " + (
+                   (near.strip() + " ") if near else "") + (
                    "Where are you now? I will tell you the nearest emergency room right away." if en else
                    "Mi dice dove si trova adesso? Le indico subito il pronto soccorso più vicino a lei."))
+
+
+def _er_kind(message: Message, en: bool) -> str:
+    """GP-17: the emergency room that suits the red flag, named for the 112 call."""
+    lowered = (message.text or "").lower()
+    if any(w in lowered for w in ("incinta", "gravidanza", "pregnant", "pregnancy")):
+        return ("Tell 112 you are pregnant: you need an emergency room with obstetrics and "
+                "gynaecology." if en else
+                "Al 112 dica che è incinta: serve un pronto soccorso con ostetricia e ginecologia.")
+    if _RF_CHEST.search(lowered) or "petto" in lowered or "chest" in lowered:
+        return ("Tell 112 you have chest pain: you need an emergency room with cardiology." if en else
+                "Al 112 dica subito che ha dolore al petto: serve un pronto soccorso con cardiologia.")
+    if _RF_LEGS.search(lowered) or "gambe" in lowered or "legs" in lowered:
+        return ("Tell 112 you cannot feel or move your legs: you need an emergency room with "
+                "neurology (stroke unit)." if en else
+                "Al 112 dica che non sente o non muove le gambe: serve un pronto soccorso con "
+                "neurologia (stroke unit).")
+    return ("Tell 112 exactly what you feel and since when." if en else
+            "Al 112 dica esattamente cosa sente e da quando.")
+
+
+def _escalate_text(message: Message, en: bool, *, told: bool | None) -> str:
+    """GP-17: the 112 message, the same with or without the history (``told``: the notice to
+    our hospital already left, will leave now, or there is no hospital to notice)."""
+    if en:
+        about = "" if told is None else (
+            " About the emergency room of our hospital (Via Arganini Gerolamo 38, wheelchair "
+            "accessible): " + ("I have already told them myself." if told else "I am telling them now."))
+        return ("escalate.emergency reason=red_flag I understand, this needs attention right now. "
+                "Call 112 or go to the emergency room nearest to you. " + _er_kind(message, en)
+                + " Do not drive: if you can, ask someone to go with you." + about)
+    about = "" if told is None else (
+        " Il pronto soccorso del nostro ospedale (Via Arganini Gerolamo 38, accessibile in sedia a "
+        "rotelle): " + ("li ho già avvisati io." if told else "li avviso io adesso."))
+    return ("escalate.emergency reason=red_flag Capisco, quello che mi descrive va preso sul serio "
+            "subito. Chiami subito il 112 o vada al pronto soccorso più vicino a lei. "
+            + _er_kind(message, en) + " Non si metta alla guida: se può, si faccia accompagnare "
+            "e non resti da solo." + about)
 
 
 def _symptom(message: Message) -> str | None:
