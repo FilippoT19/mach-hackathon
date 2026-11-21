@@ -304,6 +304,21 @@ def _local_doctor(procedure: str | None, lang: str) -> bool:
     return keys is None or any(_speaks("d-" + key, lang) for key in keys)
 
 
+# BK-55 (e19 "Mettete ogni slot nello stesso messaggio"): the citizen chooses only in the first
+# offer message; a later message does not enter that choice. Three offers left S slots unoffered
+# ("nessuna prenotazione mentre S non era vuoto", -1). Offer every fitting slot, up to this cap.
+_OFFER_MAX = 12
+_TEXT_MAX = 2000  # city_sdk MAX_TEXT: a longer message is refused, the citizen hears nothing
+
+
+def _fit(lines: list[str], tail: str) -> list[str]:
+    """BK-55: as many offer lines as fit in one message with ``tail`` (at least one line)."""
+    kept = list(lines)
+    while len(kept) > 1 and len("\n".join(kept + [tail])) > _TEXT_MAX:
+        kept.pop()
+    return kept
+
+
 def _diverse(chosen: list[dict[str, str]], count: int) -> list[dict[str, str]]:
     """P-francesco-48: ``count`` offers that differ. The first three by date are often the same day
     and doctor, so one hidden constraint of the citizen ("not that day") drops them all together.
@@ -1483,7 +1498,7 @@ async def _advance_alone(
     if chosen:
         # BK-14: every slot in ONE message, one offer per line. The citizen chooses in the turn of
         # the first message that names a place; a later message does not enter that choice.
-        picks = _diverse(chosen, 3)
+        picks = _diverse(chosen, _OFFER_MAX)
         line = None
         if fixed == "CONS-GIN":  # CO-20: the consultorio needs no prescription
             line = (
@@ -1507,7 +1522,9 @@ async def _advance_alone(
             "prefer and I will lock it straight away; if none suits you, tell me and I will look "
             "for other days or put you on the waiting list.",
         )
-        text = "\n".join([_offer_line(slot, number, priority) for slot in picks] + [line])
+        offer_lines = _fit([_offer_line(slot, number, priority) for slot in picks], line)
+        picks = picks[:len(offer_lines)]
+        text = "\n".join(offer_lines + [line])
         if await _say(city, citizen, text):
             if replacing:
                 sent.replacement_page = None
