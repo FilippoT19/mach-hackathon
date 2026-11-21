@@ -1878,6 +1878,23 @@ async def main() -> int:
         wipe()
         city = FakeCity(hospital)
         await brain._partner_request(city, req, [req])
+        # (4) the "offers already sent" status repeats the open offer lines (351, 310, 266: the
+        # citizen answered "Which offer_id, slot_id?" to a status that named none)
+        offer = "\n".join(f"offer offer_id=of-A{i} slot_id=A{i} doctor_id=asst-niguarda-h1 facility={hospital} procedure=VIS-FIS "
+                          f"agenda_date=2026-11-03T1{i}:00:00Z agenda_day=tue" for i in range(3)) + "\nEcco i posti liberi."
+        hist = [ask, row(bk, CITIZEN, offer, 5), row(CITIZEN, bk, "cancel offer_id=of-A0 reason=day", 6)]
+        again = row(CITIZEN, bk, "Allora? Mi fate sapere?", 7)
+        city4 = FakeCity(bk)
+        await brain._still_here(city4, again, [*hist, again], fixed=None)
+        out4 = to(city4, CITIZEN)
+        check("BK-67 status con offerte aperte: ripete le righe offer ancora aperte",
+              len(out4) == 1 and out4[0].startswith("offer ") and "offer_id=of-A1" in out4[0] and "slot_id=A1" in out4[0]
+              and "offer_id=of-A2" in out4[0], out4)
+        check("BK-67 status con offerte aperte: non ripete l'offerta annullata", out4 and "of-A0" not in out4[0], out4)
+        check("BK-67 status con offerte aperte: resta sotto 2000 caratteri", out4 and len(out4[0]) <= 2000, out4)
+        city4 = FakeCity(bk)
+        await brain._still_here(city4, ask, [ask, row(bk, CITIZEN, offer, 5)], fixed=None)
+        check("BK-67 status: offerte partite DOPO il messaggio del cittadino, nessuna copia", to(city4, CITIZEN) == [], city4.sent)
         check("BK-67 struttura: memoria vuota, domande al Ledger come prima",
               "agenda" in to(city, LEDGER) and any(t.startswith("world procedure=VIS-FIS") for t in to(city, LEDGER)), city.sent)
         wipe()

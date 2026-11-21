@@ -1503,6 +1503,39 @@ async def _still_here(city: City, message: Message, chat: list[Message], *, fixe
             "Le ho già mandato i posti liberi: mi risponda con quello che preferisce e lo blocco, "
             "oppure mi dica se nessuno le va bene e cerco ancora."
         )
+        # BK-67 (000351, 0003100002, 0002660003): to this status, which names no offer, the citizen
+        # answered "Which offer_id, slot_id?". The open offers go out again, line by line.
+        still = _open_offers(chat, agent, citizen)
+        again: dict[str, str] = {}
+        ids = [row.msg_id for row in chat]
+        asked_at = _when(message.sent_at or "")
+        for row in chat:
+            if row.sender != agent or row.recipient != citizen or first_word(row.text) != "offer":
+                continue
+            if not any(o in still and not o.startswith("wl-") for o in (f.get("offer_id", "") for f in _offer_rows(row.text))):
+                continue
+            offered_at = _when(row.sent_at or "")
+            after = (offered_at >= asked_at if offered_at is not None and asked_at is not None
+                     else message.msg_id in ids and ids.index(row.msg_id) > ids.index(message.msg_id))
+            if after:
+                # Another turn of this case (the Ledger's push) sent the offers while this one was
+                # waiting: they are the answer to this message. A second copy is noise (BK-46).
+                _mark_answered(message.msg_id)
+                _trace("still_here", message, state="offers_just_sent", lang="en" if en else "it")
+                return
+            for line in row.text.splitlines():
+                offer_id = fields_of(line).get("offer_id", "") if line.startswith("offer ") else ""
+                if offer_id in still and not offer_id.startswith("wl-"):
+                    again[offer_id] = line
+        if again:
+            tail = (
+                "Here are the appointments still open for you: reply with the one you prefer and I "
+                "will lock it at once."
+                if en else
+                "Le rimando i posti ancora liberi per lei: mi risponda con quello che preferisce e lo "
+                "blocco subito."
+            )
+            text = "\n".join(_fit(list(again.values()), tail) + [tail])
     elif fixed is None and _number(chat) is None and not any(
         "prescription_number=" in row.text for row in chat if row.sender != agent
     ):
