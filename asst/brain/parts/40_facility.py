@@ -48,7 +48,7 @@ async def _facility(
     kind = words(message.text)
     if head == "emergency.notice" and message.sender.startswith("agent:"):
         # X-28: the gp warns us of a red flag. Answer at once (clock +1), once per need.
-        if not _we(chat, city.agent_id, "emergency.ack", to=message.sender, word="emergency.ack"):
+        if not _early_agent_ack(message) and not _we(chat, city.agent_id, "emergency.ack", to=message.sender, word="emergency.ack"):
             await _say(
                 city,
                 message.sender,
