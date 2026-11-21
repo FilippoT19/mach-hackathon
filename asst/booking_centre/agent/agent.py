@@ -5536,17 +5536,33 @@ _DAY_ALIASES = {
 }
 
 
+_DAY_WORDS = re.compile(
+    r"\b(luned[iì]|marted[iì]|mercoled[iì]|gioved[iì]|venerd[iì]|monday|tuesday|wednesday|thursday|friday)s?\b")
+
+
 def _days(chat: list[Message]) -> frozenset[str] | None:
-    found: set[str] = set()
+    """The citizen's days. BK-56 (journey 249): the citizen may write them only in words
+    ("Posso venire solo lunedì o mercoledì"), with no ``days=`` token, and may tell the GP other
+    days than the booking centre. The latest citizen message that names days wins."""
+    latest: set[str] = set()
     for row in chat:
         if not row.sender.startswith("citizen:"):
             continue
+        found: set[str] = set()
         raw = fields_of(row.text).get("days", "")
         for value in raw.lower().replace(",", "/").split("/"):
             day = _DAY_ALIASES.get(value.strip())
             if day:
                 found.add(day)
-    return frozenset(found) or None
+        if not found:
+            for word in _DAY_WORDS.findall((row.text or "").lower()):
+                word = word[:-1] + "ì" if word.endswith("i") else word.removesuffix("s")
+                day = _DAY_ALIASES.get(word)
+                if day:
+                    found.add(day)
+        if found:
+            latest = found
+    return frozenset(latest) or None
 
 
 _RX_DATE_KEYS = ("issued_at", "issued", "issue_date", "prescribed_at", "created_at", "date")
