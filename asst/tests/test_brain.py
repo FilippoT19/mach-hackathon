@@ -2112,6 +2112,104 @@ async def main() -> int:
     await test_bk59_fa20(check)
     await test_bk66(check)
 
+    async def test_sp10_sp11(check):
+        """SP-10 / SP-11 (e19 'specialista → cittadino'): after the check-in the specialist asks
+        `consent purpose=report_sharing`, files `report ... consent_ref=` and, after a VIS-CARD visit,
+        the control `prescribe ... procedure=CTRL-CARD follow_up_of=<booking_id>` with
+        `report ... follow_up_prescription_number=`. A refusal in words files the report unshared."""
+        SPEC, GP = "agent:jmjfst55vgjz", "agent:fddgaqmp6kb0"
+
+        class LedgerCity(FakeCity):
+            """The specialist's view: history is the case log, the Ledger answers report/prescribe."""
+            def __init__(self, log):
+                super().__init__(SPEC, peers=[Peer(agent_id=GP, role="gp", capabilities=("gp",))])
+                self.log = log
+
+            async def say(self, to, text, *, status=None):
+                self.sent.append((to, text))
+                self.log.append(row(SPEC, to, text, 900 + len(self.log)))
+                f = brain.fields_of(text)
+                if to == LEDGER and text.startswith("report "):
+                    self.log.append(row(LEDGER, SPEC, f"reported booking_id={f['booking_id']} "
+                                        f"outcome_code={f.get('outcome_code', '')}", 900 + len(self.log)))
+                elif to == LEDGER and text.startswith("prescribe "):
+                    self.log.append(row(LEDGER, SPEC, f"prescribed prescription_number={f.get('prescription_number', '')} "
+                                        f"procedure={f.get('procedure', '')} priority={f.get('priority', '')}", 900 + len(self.log)))
+                return f"m-{len(self.sent)}"
+
+            async def history(self, peer=None, *, need_id=None):
+                return list(self.log)
+
+        async def visit(procedure, answer):
+            brain._PEERS.clear()
+            brain._CONSENT_ASKED.clear(); brain._REPORT_FILED.clear()
+            log = [row("agent:fn64xfq2jft4", SPEC, f"confirm offer_id=o-1 slot_id=S-1 consent_ref=cons-N-1-booking "
+                       f"prescription_number=prescription_number-RX-1 citizen={CITIZEN} procedure={procedure}", 1),
+                   row(CITIZEN, SPEC, "checkin booking_id=B-1", 2),
+                   row(SPEC, LEDGER, f"checkin booking_id=B-1 citizen={CITIZEN}", 3),
+                   row(LEDGER, SPEC, "checked_in booking_id=B-1 slot_id=S-1", 4)]
+            city = LedgerCity(log)
+            await brain._facility(city, log[-1], list(log), reports=True, hold_self=False)
+            asked = [t for t in to(city, CITIZEN) if t.startswith("consent ")]
+            early = [t for t in to(city, LEDGER) if t.startswith("report ")]
+            reply = row(CITIZEN, SPEC, answer, 50)
+            log.append(reply)
+            await brain._facility(city, reply, list(log), reports=True, hold_self=False)
+            again = row(CITIZEN, SPEC, answer, 51)
+            log.append(again)
+            await brain._facility(city, again, list(log), reports=True, hold_self=False)
+            return city, asked, early
+
+        city, asked, early = await visit("VIS-CARD", "consent consent_ref=cons-N-1-report purpose=report_sharing")
+        check("SP-10 dopo il check-in chiede consent purpose=report_sharing",
+              len(asked) == 1 and "purpose=report_sharing" in asked[0].split() and "booking_id=B-1" in asked[0].split(), city.sent)
+        check("SP-10 nessun referto prima della risposta al consenso", not early, early)
+        reports = [t for t in to(city, LEDGER) if t.startswith("report ")]
+        rx = [t for t in to(city, LEDGER) if t.startswith("prescribe ")]
+        check("SP-10 referto sul Ledger con il consent_ref del cittadino",
+              len(reports) == 1 and "consent_ref=cons-N-1-report" in reports[0].split()
+              and "booking_id=B-1" in reports[0].split() and "outcome_code=VISIT" in reports[0].split(), reports)
+        number = brain.fields_of(rx[0]).get("prescription_number", "") if rx else ""
+        check("SP-11 dopo VIS-CARD prescrive CTRL-CARD con follow_up_of=<booking_id>",
+              len(rx) == 1 and {"procedure=CTRL-CARD", "follow_up_of=B-1", f"patient={CITIZEN}"} <= set(rx[0].split())
+              and number.startswith("prescription_number-"), rx)
+        check("SP-11 il referto porta follow_up_prescription_number",
+              reports and f"follow_up_prescription_number={number}" in reports[0].split(), reports)
+        order = [t.split()[0] for r, t in city.sent if r == LEDGER or (r == CITIZEN and t.startswith(("report ", "prescription ")))]
+        check("SP-11 prima prescribe e report sul Ledger, poi il cittadino", order[:2] == ["prescribe", "report"] and len(order) >= 3, order)
+        cit = to(city, CITIZEN)
+        check("SP-11 il cittadino riceve la ricetta di controllo",
+              any(t.startswith("prescription ") and f"prescription_number={number}" in t.split() and "procedure=CTRL-CARD" in t.split() for t in cit), cit)
+        check("SP-10 il cittadino riceve il referto (una volta)",
+              len([t for t in cit if t.startswith("report ")]) == 1, cit)
+        check("SP-10 con il consenso il referto va al medico di base",
+              any(t.startswith("report.notice") for t in to(city, GP)), city.sent)
+
+        city, asked, _ = await visit("VIS-CARD", "No grazie, preferisco di no.")
+        reports = [t for t in to(city, LEDGER) if t.startswith("report ")]
+        check("SP-10 rifiuto a parole: referto archiviato senza consent_ref",
+              len(reports) == 1 and not any(t.startswith("consent_ref=") for t in reports[0].split()), reports)
+        check("SP-10 rifiuto: niente report.notice al medico di base", not to(city, GP), city.sent)
+        check("SP-10 rifiuto: il cittadino sa che il referto è archiviato",
+              len([t for t in to(city, CITIZEN) if t.startswith("report ")]) == 1, to(city, CITIZEN))
+
+        city, _, _ = await visit("CTRL-CARD", "consent consent_ref=cons-N-1-report purpose=report_sharing")
+        # e19: the booking's confirm carries no procedure; the slot's catalogue line tells it.
+        slot_rows = [row(LEDGER, SPEC, "slots page=1/1\nslot_id=S-9 doctor_id=d-s1 facility=agent:jmjfst55vgjz "
+                         "procedure=CTRL-CARD at=2026-11-05T09:00:00Z day=thu free=1", 0),
+                     row("agent:fn64xfq2jft4", SPEC, f"confirm offer_id=o-9 slot_id=S-9 consent_ref=c citizen={CITIZEN}", 1),
+                     row(LEDGER, SPEC, "committed booking_id=B-9 hold_id=H-9 slot_id=S-9", 2)]
+        check("SP-11 procedura della visita letta dal catalogo dello slot",
+              brain._visit_procedure(slot_rows, "B-9") == "CTRL-CARD" and brain._visit_procedure(slot_rows[1:], "B-9") == "VIS-CARD",
+              [brain._visit_procedure(slot_rows, "B-9")])
+        reports = [t for t in to(city, LEDGER) if t.startswith("report ")]
+        check("SP-11 dopo un CTRL-CARD niente nuovo controllo",
+              not [t for t in to(city, LEDGER) if t.startswith("prescribe ")] and len(reports) == 1
+              and "follow_up_prescription_number" not in reports[0], city.sent)
+        brain._PEERS.clear()
+
+    await test_sp10_sp11(check)
+
     async def test_gp17(check):
         """GP-17 (wave W01QQQ, L1): 'forte dolore al petto' got the 112 after 278 s or never
         (emergency.no_escalation -2 on 8 of 12). The 112 leaves before the history read."""

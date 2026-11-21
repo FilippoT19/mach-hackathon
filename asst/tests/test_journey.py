@@ -104,6 +104,9 @@ class World:
         elif head == "data.request":
             self.queue.append(self.post(self.citizen, msg.sender, "data.response address=Via_Ornato_10 lat=45.519 "
                                         "lon=9.19 disability=none car=false", msg.need_id))
+        elif head == "consent" and "purpose=report_sharing" in text.split():  # SP-10 (e19)
+            self.queue.append(self.post(self.citizen, msg.sender, f"consent consent_ref=cons-{msg.need_id}-report "
+                                        "purpose=report_sharing", msg.need_id))
         elif head == "booking.receipt" and self.facility:
             self.queue.append(self.post(self.citizen, self.facility, f"checkin booking_id={f['booking_id']}", msg.need_id))
 
@@ -183,6 +186,12 @@ def checks(w: World) -> list[tuple[str, bool, str]]:
                 and "ledger_ref=" in m.text for m in log), ""))
     route = [m for m in log if m.sender == BK and m.recipient == cz and " km " in m.text]
     out.append(("X-31 route message arrives", bool(route), ""))
+    if any(m.recipient == SPEC and m.sender == cz and m.text.startswith("checkin ") for m in log):
+        rep = [m.text for m in log if m.sender == SPEC and m.recipient == LEDGER and m.text.startswith("report ")]
+        out.append(("SP-10/11 specialist files report with consent_ref and follow-up",
+                    len(rep) == 1 and "consent_ref=" in rep[0] and "follow_up_prescription_number=" in rep[0], f"{rep}"))
+        out.append(("SP-10 report reaches the citizen", any(m.sender == SPEC and m.recipient == cz
+                    and m.text.startswith("report ") for m in log), ""))
     out.append(("no simulator errors / crashes", not w.errors, "; ".join(w.errors)))
     return out
 
