@@ -393,7 +393,7 @@ def verdict(s: Sim, *, lang: str, max_messages: int, outcome: str, max_offer_mes
 
 def reset() -> None:
     for name in ("_SENT", "_GATES", "_LANG_OF", "_PREF_BY_RX", "_ANSWERED", "_WHERE_OF", "_RECEIPT_SENT", "_RECEIPTS",
-                 "_BOOKED_AT", "_PEERS", "_DOORS", "_ZONES"):
+                 "_BOOKED_AT", "_PEERS", "_DOORS", "_ZONES", "_WORLD", "_AGENDA_ROW", "_ASKED_AT"):
         store = getattr(brain, name, None)
         if store is not None:
             store.clear()

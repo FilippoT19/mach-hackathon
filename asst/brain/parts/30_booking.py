@@ -175,6 +175,46 @@ def _with_memory(chat: list[Message], procedure: str) -> list[Message]:
     return [*chat, *extra] if extra else chat
 
 
+async def _refresh_memory(city: City, message: Message, procedure: str | None) -> None:
+    """Ask the Ledger again for the agenda and the first catalogue pages, at most once every
+    ``_REFRESH_EVERY`` seconds, without waiting: the answers come back through ``_remember_ledger``.
+    The questions are not an answer to anyone: the turn is not marked as having spoken (BK-33)."""
+    now = time.time()
+    asks: list[str] = []
+    if now - _ASKED_AT.get("agenda", 0.0) >= _REFRESH_EVERY:
+        _ASKED_AT["agenda"] = now
+        asks.append("agenda")
+    if procedure and now - _ASKED_AT.get(f"world:{procedure}", 0.0) >= _REFRESH_EVERY:
+        _ASKED_AT[f"world:{procedure}"] = now
+        asks.extend(f"world procedure={procedure} page={n}" for n in range(1, _WORLD_PAGES + 1))
+    if not asks:
+        return
+    while len(_ASKED_AT) > 4 * _WORLD_PROCEDURES:
+        del _ASKED_AT[next(iter(_ASKED_AT))]
+    said = _SAID.get()
+    had = said is not None and LEDGER in said
+    try:
+        await _ledger_asks(city, message, asks)
+    except Exception:  # noqa: BLE001 - a refresh never breaks the turn
+        _LOG.exception("booking.refresh_failed need_id=%s", message.need_id)
+    if said is not None and not had:
+        said.discard(LEDGER)
+
+
+async def _warm_memory(city: City) -> None:
+    """Empty memory: one read of our Ledger lines of every case fills it. Bounded in time, at most
+    once every ``_REFRESH_EVERY`` seconds; a slow or failed read changes nothing."""
+    now = time.time()
+    if now - _ASKED_AT.get("warm", 0.0) < _REFRESH_EVERY:
+        return
+    _ASKED_AT["warm"] = now
+    try:
+        rows = await asyncio.wait_for(city.history(LEDGER), timeout=_WARM_SECONDS)
+    except Exception:  # noqa: BLE001 - CapError, timeout: the search goes on as before
+        return
+    _remember_ledger(rows[-400:], city.agent_id)
+
+
 def _page(text: str) -> tuple[int, int]:
     raw = fields_of(text.splitlines()[0] if text else "").get("page", "")
     left, _, right = raw.partition("/")
@@ -1595,6 +1635,9 @@ async def _on_referral(city: City, message: Message, chat: list[Message]) -> Non
         message.sender,
         " ".join(parts) + " Ricevuto: quando il cittadino ci contatta gli proponiamo subito i posti liberi.",
     )
+    # BK-67: the citizen writes to us minutes after this referral. Agenda and catalogue are asked
+    # now, so they are in memory (and in this case's history) when the citizen's request arrives.
+    await _refresh_memory(city, message, procedure or None)
 
 
 @asynccontextmanager
@@ -1632,6 +1675,10 @@ async def _advance(
             sent.steps += 1
         sent.pending_page = None
         await _advance_alone(city, message, chat, key, fixed=fixed, replacing=replacing)
+        for note in [n for n in sent.notes if n.startswith("memory:")]:
+            # BK-67: this turn answered from memory. After its answer has left, the Ledger is asked
+            # again (at most once every two minutes) so the memory stays warm for the next citizen.
+            await _refresh_memory(city, message, note.partition(":")[2])
         # BK-45: a Ledger reply often lands only in the history and opens no turn. Whoever asked
         # for a catalogue page reads it here, in the same turn, until the search has an outcome
         # (offers, another ASST, waiting list). A push that also opens a turn finds it done.
@@ -1819,9 +1866,11 @@ async def _advance_alone(
             return
         if _latest_slots(chat) is None:
             # BK-67: agenda and catalogue the process already has, instead of a Ledger round.
+            if not any(first_word(row.text) == "slots" for row in _memory_rows(procedure)):
+                await _warm_memory(city)
             with_memory = _with_memory(chat, procedure)
             if _latest_slots(with_memory) is not None:
-                _sent(key).notes.add("memory")
+                _sent(key).notes.update({"memory", f"memory:{procedure}"})
                 _trace("memory", message, procedure=procedure, rows=len(with_memory) - len(chat))
             chat = with_memory
         else:
@@ -1876,6 +1925,11 @@ async def _advance_alone(
     # once per cancel: a second turn for the same cancel or refusal does not repeat them.
     sent = _sent(key)
     page, pages = _page(world)
+    if not replacing:
+        # BK-67: pages asked together (refresh) or taken from memory are not in page order in the
+        # case; the search has read up to the highest one.
+        page = max([page] + [_page(row.text)[0] for row in chat
+                             if row.sender == LEDGER and first_word(row.text) == "slots" and _row_procedure(row.text) == procedure])
     if replacing:
         trigger = message.msg_id
         if sent.trigger != trigger:
@@ -1899,8 +1953,9 @@ async def _advance_alone(
     deadline = _rx_deadline(chat, reply, priority, number)
     learned = _cancel_learned(chat)
     lines = [line for line in world.splitlines() if "slot_id=" in line]
-    if ("widen" in sent.notes or "memory" in sent.notes) and not replacing:
-        # BK-61: the pages read before offering count together. BK-67: so do the remembered pages.
+    if not replacing:
+        # BK-61: the pages read before offering count together. BK-67: so do the remembered pages
+        # and the pages the referral asked in advance, in whatever order they arrived.
         lines = _all_slot_lines(chat, agent)
     elif replacing and not replacement_reply:
         # BK-63: new offers after a cancel come first from the pages already read (no Ledger round:

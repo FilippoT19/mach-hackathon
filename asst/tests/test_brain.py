@@ -821,7 +821,11 @@ async def main() -> int:
     await brain._desk(city, msg, [msg], hold_self=False, fixed=None)
     ack = to(city, GP)
     check("X-27 booking risponde al gp", len(ack) == 1 and ack[0].startswith("referral.ack ") and "prescription_number=prescription_number-RX-1" in ack[0], city.sent)
-    check("X-27 booking non scrive al cittadino né al Ledger", all(r == GP for r, _ in city.sent), city.sent)
+    # BK-67: at the referral the booking also asks the Ledger for agenda and catalogue (refresh),
+    # after the ack and never to the citizen.
+    check("X-27 booking non scrive al cittadino; al Ledger solo il rinfresco BK-67, dopo l'ack",
+          city.sent[0][0] == GP and all(r in (GP, LEDGER) for r, _ in city.sent)
+          and all(t == "agenda" or t.startswith("world procedure=VIS-FIS page=") for t in to(city, LEDGER)), city.sent)
     done = [msg, Message(type="chat", sender=BK, msg_id="r2", need_id="N-1", body={"text": ack[0] if ack else ""}, recipient=GP)]
     city = FakeCity(BK)
     await brain._desk(city, msg, done, hold_self=False, fixed=None)
@@ -1795,8 +1799,9 @@ async def main() -> int:
         await desk_turn(city, ask, [ref, ask])
         offers = [t for t in to(city, CITIZEN) if t.startswith("offer ")]
         check("BK-67 memoria calda: UN messaggio di offerte nello stesso turno", len(offers) == 1, city.sent)
-        check("BK-67 memoria calda: nessuna domanda world page=1 al Ledger",
-              "world procedure=VIS-FIS page=1" not in to(city, LEDGER), to(city, LEDGER))
+        check("BK-67 memoria calda: al Ledger parte solo il rinfresco, dopo le offerte non si aspetta niente",
+              all(t == "agenda" or t.startswith("world procedure=VIS-FIS page=") for t in to(city, LEDGER))
+              and not any(t.startswith("status") for t in to(city, CITIZEN)), city.sent)
         check("BK-67 offerte su almeno due giorni e due medici",
               len(offers) == 1 and "agenda_day=tue" in offers[0] and ("agenda_day=wed" in offers[0] or "agenda_day=thu" in offers[0])
               and "h1" in offers[0] and "h2" in offers[0], offers)
@@ -1814,6 +1819,51 @@ async def main() -> int:
                 return [row(LEDGER, bk, p1, 91)]
         await brain._until(Hist(bk), "N-1", [], lambda rows: True)
         check("BK-67 raccolta: la storia riletta riempie la memoria", 1 in brain._WORLD.get("VIS-FIS", {}), brain._WORLD)
+
+        # (3) refresh at the referral, warm-up from the Ledger history of every case
+        wipe()
+        city = FakeCity(bk)
+        await brain._on_referral(city, ref, [ref])
+        asks = to(city, LEDGER)
+        check("BK-67 referral: parte il rinfresco di agenda e 4 pagine",
+              "agenda" in asks and all(f"world procedure=VIS-FIS page={n}" in asks for n in (1, 2, 3, 4)), asks)
+        check("BK-67 referral: l'ack al gp parte comunque",
+              any(t.startswith("referral.ack") for t in to(city, brain._OUR_AGENTS["gp"])), city.sent)
+        city2 = FakeCity(bk)
+        await brain._refresh_memory(city2, ref, "VIS-FIS")
+        check("BK-67 rinfresco: non si ripete entro 120 secondi", to(city2, LEDGER) == [], to(city2, LEDGER))
+        wipe()
+        said: set[str] = set()
+        token = brain._SAID.set(said)
+        try:
+            city2 = FakeCity(bk)
+            await brain._refresh_memory(city2, ask, "VIS-FIS")
+        finally:
+            brain._SAID.reset(token)
+        check("BK-67 rinfresco: scrive al Ledger ma il turno non risulta 'già parlato' (BK-33)",
+              len(to(city2, LEDGER)) == 5 and LEDGER not in said, (city2.sent, said))
+        wipe()
+
+        class All(FakeCity):
+            async def history(self, peer=None, *, need_id=None):
+                return list(warm) if peer == LEDGER and need_id is None else []
+        city = All(bk)
+        await desk_turn(city, ask, [ref, ask])
+        check("BK-67 memoria fredda: offerte dalla storia del Ledger di tutti i casi",
+              len([t for t in to(city, CITIZEN) if t.startswith("offer ")]) == 1, city.sent)
+        wipe()
+
+        class Slow(FakeCity):
+            async def history(self, peer=None, *, need_id=None):
+                if peer == LEDGER and need_id is None:
+                    await asyncio.sleep(30)
+                return []
+        brain._WARM_SECONDS, keep = 0.05, brain._WARM_SECONDS
+        city = Slow(bk)
+        started = _t.monotonic()
+        await brain._warm_memory(city)
+        brain._WARM_SECONDS = keep
+        check("BK-67 memoria fredda: una storia lenta non ferma il turno", _t.monotonic() - started < 2, _t.monotonic() - started)
         wipe()
 
     await test_bk67(check)
