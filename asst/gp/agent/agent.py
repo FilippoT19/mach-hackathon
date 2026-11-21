@@ -2280,6 +2280,8 @@ async def _partner_cancel(
         return
     await _say(city, message.sender, "cancel.ack status=received")
     offer_id = fields.get("offer_id", "")
+    if offer_id.lower() in {"none", "null", "-"}:
+        offer_id = ""  # BK-32: "offer_id=none" from a partner means no offer of ours
     citizen = _citizen(chat)
     if (
         offer_id
