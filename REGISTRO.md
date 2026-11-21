@@ -33,5 +33,6 @@ controllo se i gruppi "online" hanno un percorso nuovo che li verifica.
 | G11 | "Sto controllando" e poi silenzio: l'avviso contava come offerta aperta | 000180, 000179, 000187, 0001130004, 0001420003, 0000510005, 0000640006, 0001110004, 0001660002 | BK-45 | in PR | — |
 | G12 | Offerte fuori da S (lingua, scadenza dalla ricetta, passato) e raffiche offerta/annullo con le altre ASST | 0001660002, 0001110003, 000141, 0001420002, 000147, 0001160002 | BK-46, BK-47, BK-48 | in PR | — |
 | G13 | Consenso cross_asst chiesto senza fine ("Which consent_ref?") | 000172, 000160, 000165 | BK-49 (dopo BK-36) | in PR | — |
+| G14 | Palpitazioni lette come red flag: 112 invece della ricetta (booking no_booking −1, 11 su 14 percorsi chiusi alle 02:20–02:27) | 0001830004, 0001750007, 0002390004, 000275 | GP-15 | verificato (0001820006: "cuore che batte a mille" → ricetta VIS-CARD in 70 s, gp online dalle ~02:50 locali) | — |
 
 Macchina a stati del booking e cause con riga di codice: [docs/booking-flow.md](docs/booking-flow.md). Replay dei percorsi veri: `asst/tests/test_replay.py`.
