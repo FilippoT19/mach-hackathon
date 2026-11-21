@@ -217,7 +217,7 @@ def _rx_pref(chat: list[Message], key: str) -> str | None:
 
 
 def _gender(chat: list[Message]) -> str | None:
-    learned = _cancel_learned(chat)["gender"]  # BK-59: the cancels say more than the request
+    learned = _cancel_learned(chat)["gender"]  # BK-60: the cancels say more than the request
     if learned is not None:
         return learned
     pref = _gender_said(chat)
@@ -245,7 +245,7 @@ def _slot_day(fields: dict[str, str]) -> str:
 
 
 def _cancel_learned(chat: list[Message]) -> dict:
-    """BK-59 (journey 890912000304): what the citizen's cancels tell us. ``S`` is built from
+    """BK-60 (journey 890912000304): what the citizen's cancels tell us. ``S`` is built from
     constraints the citizen has not said yet; a cancel names the one the offer broke with
     ``reason=``. Five offers with the same doctor came back ``reason=gender``: the other gender is
     the citizen's constraint, and a new batch with that doctor is cancelled again.
@@ -289,7 +289,7 @@ def _cancel_learned(chat: list[Message]) -> dict:
 
 
 def _learned_out(fields: dict[str, str], learned: dict) -> bool:
-    """BK-59: True for a slot (catalogue line or offer) that a cancel already ruled out."""
+    """BK-60: True for a slot (catalogue line or offer) that a cancel already ruled out."""
 
     if learned["avoid_gender"] and _doctor_gender(fields) in learned["avoid_gender"] and learned["gender"]:
         return True
@@ -300,7 +300,7 @@ def _learned_out(fields: dict[str, str], learned: dict) -> bool:
 
 
 def _best_tier(chosen: list[dict[str, str]], days: frozenset[str] | None, gender: str | None) -> list[dict[str, str]]:
-    """BK-59: the slots that match every preference (days, doctor gender), when there are any.
+    """BK-60: the slots that match every preference (days, doctor gender), when there are any.
     "Posso solo lunedì o mercoledì": a Tuesday is not a choice to add for variety (P-francesco-48
     spreads days and doctors only inside this tier). With no match, all slots stay, best first."""
 
@@ -386,12 +386,12 @@ def _days(chat: list[Message]) -> frozenset[str] | None:
                 else:
                     found.add(day)
             if skipped and not found:
-                # BK-59: "non posso il lunedì" after "solo lunedì o mercoledì" leaves Wednesday,
+                # BK-60: "non posso il lunedì" after "solo lunedì o mercoledì" leaves Wednesday,
                 # not every other weekday.
                 found = (latest or set(_WEEKDAYS)) - skipped
         if found:
             latest = found
-    avoid = _cancel_learned(chat)["avoid_days"]  # BK-59: a day the citizen cancelled with reason=day
+    avoid = _cancel_learned(chat)["avoid_days"]  # BK-60: a day the citizen cancelled with reason=day
     if avoid:
         latest = (latest or set(_WEEKDAYS)) - avoid
     return frozenset(latest) or None
@@ -1114,7 +1114,7 @@ def _partner_pool(
                 continue
             if not _offer_speaks(fields, lang):  # BK-35: also from the doctor id (asst-bicocca-h2)
                 continue
-            if _learned_out(fields, learned):  # BK-59: a cancel already ruled this out
+            if _learned_out(fields, learned):  # BK-60: a cancel already ruled this out
                 continue
             doctor = _DOCTORS.get(fields.get("doctor_id", "").rsplit("-", 1)[-1])
             said = fields.get("doctor_gender", "") or (doctor[1] if doctor else "")
@@ -1672,7 +1672,7 @@ async def _advance_alone(
         if slot.get("slot_id") not in taken and _before_rx_deadline(slot, reply, priority)
         and _within(slot.get("at", ""), deadline) and not _learned_out(slot, learned)
     ]
-    chosen = _best_tier(chosen, _days(chat), _gender(chat))  # BK-59
+    chosen = _best_tier(chosen, _days(chat), _gender(chat))  # BK-60
     _trace(
         "slots", message, procedure=procedure, priority=priority, lang=_lang(chat),
         gender=_gender(chat), page=f"{page}/{pages}", fitting=len(chosen), taken=len(taken),
