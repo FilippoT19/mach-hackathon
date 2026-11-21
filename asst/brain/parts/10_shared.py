@@ -360,9 +360,9 @@ def fitting(
         day = slot.get("day", "")
         if day and day not in spec[2]:
             continue
-        if gender and spec[1] != gender:
-            continue
-        preferred = 0 if days and day in days else 1
+        # P-francesco-31: the doctor's gender is a preference like the days (S_pref), not a wall.
+        # Discarding the other gender left "no local slot" while S still had some (no_booking -1).
+        preferred = (0 if days and day in days else 1) + (1 if gender and spec[1] != gender else 0)
         chosen.append((preferred, at, slot))
     chosen.sort(key=lambda item: (item[0], item[1], item[2].get("slot_id", "")))
     return [slot for _, _, slot in chosen]

@@ -836,8 +836,50 @@ async def main() -> int:
     await brain._desk(c2, chat[-1], chat, hold_self=False, fixed=None)
     out = to(c2, CITIZEN)
     check("X-34 cancel del cittadino ha risposta", out and out[0].startswith("cancel.ack"), out)
-    nxt = [t for r2, t in c2.sent if r2 == LEDGER] + out[1:]
-    check("X-34 poi cerca altri posti o lista d attesa", nxt, c2.sent)
+    # BK-46: the citizen still holds the other two offers of the message: the ack is all it gets.
+    check("BK-46 un annullo con altre offerte aperte: solo la risposta, nessuna nuova raffica",
+          len(out) == 1 and not [t for r2, t in c2.sent if r2 == LEDGER], c2.sent)
+    rest = [f["offer_id"] for f in brain._offer_rows(first[0]) if f["offer_id"] != oid]
+    more = already + [("agent:bk", CITIZEN, out[0])] + [(CITIZEN, "agent:bk", f"cancel offer_id={o} reason=deadline") for o in rest]
+    chat = [row(s2, r2, t2, i) for i, (s2, r2, t2) in enumerate(texts[:4] + more)]
+    c3 = FakeCity("agent:bk")
+    await brain._desk(c3, chat[-1], chat, hold_self=False, fixed=None)
+    out = to(c3, CITIZEN)
+    check("X-34 cancel del cittadino ha risposta (ultimo annullo)", out and out[0].startswith("cancel.ack"), out)
+    nxt = [t for r2, t in c3.sent if r2 == LEDGER] + out[1:]
+    check("X-34 tutte le offerte annullate: poi cerca altri posti o lista d attesa", nxt, c3.sent)
+    # P-francesco-48: three offers that differ (not the first three by date: same day, same doctor).
+    def line(sid, doc, at, day):
+        return f"slot_id={sid} doctor_id={doc} facility=agent:spec procedure=VIS-CARD at={at} day={day} free=1"
+    thu = [line(f"S-T{h}", "d-s2", f"2026-11-05T{h}:00:00Z", "thu") for h in (10, 11, 12, 13, 14)]
+    fri = [line(f"S-F{h}", "d-s1", f"2026-11-06T0{h}:00:00Z", "fri") for h in (7, 8)]
+    city = await run_desk("slots page=1/1\n" + "\n".join(thu + fri))
+    got = brain._offer_rows(to(city, CITIZEN)[0]) if to(city, CITIZEN) else []
+    check("P-francesco-48 tre offerte, il posto più vicino resta il primo", len(got) == 3 and got[0]["slot_id"] == "S-T10", got)
+    check("P-francesco-48 almeno due giorni e due medici", len({g["agenda_day"] for g in got}) >= 2
+          and len({g["doctor_id"] for g in got}) >= 2, got)
+    # P-francesco-31: the doctor's gender orders the offers, it does not empty them.
+    def gender_case(slots):
+        texts = [
+            (CITIZEN, "agent:bk", "vorrei prenotare prescription_number=prescription_number-RX-1 gender=f"),
+            (LEDGER, "agent:bk", "prescription prescription_number=prescription_number-RX-1 procedure=VIS-CARD priority=B state=issued"),
+            (LEDGER, "agent:bk", f"agenda agenda_now={NOW}"),
+            (LEDGER, "agent:bk", slots),
+        ]
+        return [row(x[0], x[1], x[2], i) for i, x in enumerate(texts)]
+    brain._SENT.clear()
+    chat = gender_case("slots page=1/1\n" + "\n".join(fri))  # only s1, a man
+    c = FakeCity("agent:bk")
+    await brain._advance_alone(c, chat[3], chat, "N-1", fixed=None, replacing=False)
+    out = to(c, CITIZEN)
+    check("P-francesco-31 gender=f e solo medici uomini: offerta, nessun consenso cross",
+          len(out) == 1 and out[0].startswith("offer ") and "S-F7" in out[0] and "cross_asst" not in out[0], c.sent)
+    brain._SENT.clear()
+    chat = gender_case("slots page=1/1\n" + "\n".join(fri + thu[3:]))  # s1 (m) on Friday, s2 (f) on Thursday
+    c = FakeCity("agent:bk")
+    await brain._advance_alone(c, chat[3], chat, "N-1", fixed=None, replacing=False)
+    got = brain._offer_rows(to(c, CITIZEN)[0]) if to(c, CITIZEN) else []
+    check("P-francesco-31 la dottoressa chiesta viene prima", bool(got) and got[0]["doctor_id"] == "d-s2", got)
     # 26. X-40/41, FA-20, BK-24, CO-20.
     def cm(t, to="agent:x"):
         return Message(type="chat", sender=CITIZEN, msg_id="m40", need_id="N-40", recipient=to, body={"text": t})
@@ -910,17 +952,23 @@ async def main() -> int:
         if not initial:
             return
         original = row(booking, CITIZEN, initial[0], 4)
+        # BK-46 (real journeys 000141, 0001420002): the citizen cancels the offers of a message one by
+        # one. The other two stay valid in its hands: a cancel alone never sends them again.
         cancel = row(CITIZEN, booking, "cancel offer_id=of-S-1 reason=deadline", 5)
         await desk_turn(city, cancel, [*chat, original, cancel])
-        replacement = to(city, CITIZEN)[-1]
-        check("P-francesco-14 annullo: conserva solo gli altri due posti",
-              {r.get("slot_id") for r in brain._offer_rows(replacement)} == {"S-2", "S-3"}, replacement)
-        ack = row(booking, CITIZEN, to(city, CITIZEN)[1], 6)
-        again = row(CITIZEN, booking, "cancel offer_id=of-S-2 reason=deadline", 7)
-        await desk_turn(city, again, [*chat, original, cancel, ack, again])
+        after = to(city, CITIZEN)[1:]
+        check("P-francesco-14 annullo: gli altri due posti restano validi, nessuna offerta ripetuta",
+              len(after) == 1 and after[0].startswith("cancel.ack offer_id=of-S-1"), after)
+        ack = row(booking, CITIZEN, after[0], 6)
+        two = row(CITIZEN, booking, "cancel offer_id=of-S-2 reason=deadline", 7)
+        three = row(CITIZEN, booking, "cancel offer_id=of-S-3 reason=deadline", 8)
+        await desk_turn(city, two, [*chat, original, cancel, ack, two])
+        await desk_turn(city, three, [*chat, original, cancel, ack, two, three])
         wait = to(city, CITIZEN)[-1]
-        check("P-francesco-14 secondo annullo: lista d'attesa è un'offerta",
+        check("P-francesco-14 tutti annullati e catalogo finito: lista d'attesa è un'offerta",
               wait.startswith("offer offer_id=wl-N-1 waiting_list=true procedure=VIS-CARD priority=B "), wait)
+        check("P-francesco-14 una sola lista d'attesa", sum("waiting_list=true" in t for t in to(city, CITIZEN)) == 1,
+              to(city, CITIZEN))
 
         for available in (True, False):
             brain._SENT.clear()

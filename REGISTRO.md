@@ -30,3 +30,8 @@ controllo se i gruppi "online" hanno un percorso nuovo che li verifica.
 | G7 | Booking muto fino a 48 s su catalogo lungo, consenso in italiano a cittadino inglese | 0164 | BK-30 | verificato | 000176, 650004: "sto controllando" subito |
 | G8 | Consenso cross_asst dato come data.response: domanda ripetuta (000175, 21 msg) | 000175 | BK-36 | online (booking 1.0.11) | — |
 | G9 | Mappa: fermata sempre M5 Ca Granda, porte di riserva sbagliate | — | X-50 | verificato | 000195: indirizzo chiesto, km, fermata metro |
+| G11 | "Sto controllando" e poi silenzio: l'avviso contava come offerta aperta | 000180, 000179, 000187, 0001130004, 0001420003, 0000510005, 0000640006, 0001110004, 0001660002 | BK-45 | in PR | — |
+| G12 | Offerte fuori da S (lingua, scadenza dalla ricetta, passato) e raffiche offerta/annullo con le altre ASST | 0001660002, 0001110003, 000141, 0001420002, 000147, 0001160002 | BK-46, BK-47, BK-48 | in PR | — |
+| G13 | Consenso cross_asst chiesto senza fine ("Which consent_ref?") | 000172, 000160, 000165 | BK-49 (dopo BK-36) | in PR | — |
+
+Macchina a stati del booking e cause con riga di codice: [docs/booking-flow.md](docs/booking-flow.md). Replay dei percorsi veri: `asst/tests/test_replay.py`.
