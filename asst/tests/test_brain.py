@@ -1360,7 +1360,53 @@ async def main() -> int:
                                                      "procedure=VIS-CARD priority=P prescription_number="),
                   out)
 
+    async def test_bk59(check):
+        """BK-59 (journey N-2026-11-02-890912000304): "solo lunedì o mercoledì", then five offers
+        with the same doctor all cancelled reason=gender."""
+        brain._SENT.clear()
+        now = "2026-11-02T07:00:00Z"  # a Monday; priority D = five days
+        def slot(sid, doc, at, day):
+            return f"slot_id={sid} doctor_id=asst-niguarda-{doc} facility={hospital} procedure=VIS-FIS at={at} day={day} free=1"
+        slots = "slots page=1/1\n" + "\n".join([
+            slot("A1", "h1", "2026-11-02T15:00:00Z", "mon"), slot("A2", "h1", "2026-11-02T16:00:00Z", "mon"),
+            slot("A3", "h1", "2026-11-03T10:00:00Z", "tue"), slot("A4", "h1", "2026-11-04T10:00:00Z", "wed"),
+            slot("C1", "h3", "2026-11-03T11:00:00Z", "tue"), slot("B2", "h2", "2026-11-05T10:00:00Z", "thu"),
+        ])
+        chat = [
+            row(CITIZEN, booking, "Ho un dolore al ginocchio. Vorrei prenotare una visita, posso solo lunedì o "
+                f"mercoledì. need.request lang=it prescription_number={rx_number}", 0),
+            row(LEDGER, booking, f"prescription prescription_number={rx_number} procedure=VIS-FIS priority=D state=issued", 1),
+            row(LEDGER, booking, f"agenda agenda_now={now}", 2),
+            row(LEDGER, booking, slots, 3),
+        ]
+        city = FakeCity(booking)
+        await desk_turn(city, chat[0], chat)
+        first = [t for t in to(city, CITIZEN) if t.startswith("offer ")]
+        days = {brain.fields_of(line)["agenda_day"] for line in first[0].splitlines() if "offer_id=" in line} if first else set()
+        check("BK-59 solo lunedì o mercoledì: nessun martedì o giovedì aggiunto per varietà",
+              len(first) == 1 and days == {"mon", "wed"}, first)
+        if not first:
+            return
+        sent = row(booking, CITIZEN, first[0], 4)
+        rows = [r for r in brain._offer_rows(first[0])]
+        cancels = [row(CITIZEN, booking, f"Per il ginocchio quel giorno non posso. cancel offer_id={r['offer_id']} reason=gender", 5 + i)
+                   for i, r in enumerate(rows)]
+        history = [*chat, sent, *cancels]
+        check("BK-59 cancel reason=gender su una dottoressa -> medico uomo", brain._gender(history) == "m", brain._gender(history))
+        for cancel in cancels:
+            await desk_turn(city, cancel, history)
+        again = [t for t in to(city, CITIZEN) if t.startswith("offer ")][1:]
+        doctors = {brain.fields_of(line)["doctor_id"] for line in again[0].splitlines() if "offer_id=" in line} if again else set()
+        check("BK-59 nuove offerte solo con medici uomini (h2/h3), mai più h1",
+              len(again) == 1 and doctors and all(not d.endswith("-h1") for d in doctors), city.sent)
+        # Days: a later exclusion narrows the stated days; a cancel reason=day drops that day.
+        narrow = [row(CITIZEN, booking, "posso solo lunedì o mercoledì", 1), row(CITIZEN, booking, "non posso il lunedì", 2)]
+        check("BK-59 'solo lun/mer' poi 'non posso il lunedì' -> mercoledì", brain._days(narrow) == frozenset({"wed"}), brain._days(narrow))
+        day_cancel = [chat[0], sent, row(CITIZEN, booking, f"cancel offer_id={rows[0]['offer_id']} reason=day", 9)]
+        check("BK-59 cancel reason=day toglie quel giorno", brain._days(day_cancel) == frozenset({"wed"}), brain._days(day_cancel))
+
     await test_francesco_14(check)
+    await test_bk59(check)
     await test_francesco_15(check)
     await test_francesco_16(check)
     await test_francesco_18(check)
