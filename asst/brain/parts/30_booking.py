@@ -1076,6 +1076,14 @@ _RARE_LANG_HOSPITAL = {
     "si": ("agent:xtj1dk9x3qej", "Greco", "singalese", "Sinhala"),
     "ti": ("agent:bb01ggxymm05", "Bicocca", "tigrino", "Tigrinya"),
     "bn": ("agent:k2nwktpp02xx", "San Siro", "bengalese", "Bengali"),  # X-52
+    # MACH2-3: the rest of the MACH-2.0 ring table (h3 of the ASST that speaks the language).
+    "tr": ("agent:ytprhckwyw4t", "Città Studi", "turco", "Turkish"),
+    "de": ("agent:aycbxayckhrd", "Forlanini", "tedesco", "German"),
+    "sq": ("agent:m6py14a1ej77", "Gorla", "albanese", "Albanian"),
+    "tl": ("agent:d6cxxmh767k3", "Isola", "tagalog", "Tagalog"),
+    "wo": ("agent:vs1bs4485dcn", "Ortica", "wolof", "Wolof"),
+    "ro": ("agent:s1twcdzg3296", "Precotto", "rumeno", "Romanian"),
+    "fa": ("agent:ndrnnjwxttmb", "Brera", "persiano", "Persian"),
 }
 
 
@@ -1208,6 +1216,10 @@ async def _cross_asst(
         if (not target or target == city.agent_id or _ours(target) or target in sent.cross_peers
                 or any(target == asked_to for asked_to, _ in requests)):
             continue
+        if not _trusted(target):  # MACH2-1 (R17): never ask, nor give criteria, outside the ring
+            continue
+        if len(requests) >= _MACH_ROUND:  # MACH2-2 (R3): at most 12 facilities per round
+            break
         if not isinstance(peer, str):
             role = _peer_value(peer, "role")
             capabilities = _peer_value(peer, "capabilities")
@@ -1215,6 +1227,7 @@ async def _cross_asst(
                 continue
         parts = [
             "need.request",
+            f"mach={_MACH}",  # MACH2-2: we speak 2.0 (the lease goes to whoever declares mach=)
             f"service_type={service_type}",
             f"procedure={procedure}",
             f"request_id={request_id}",
@@ -1237,6 +1250,7 @@ async def _cross_asst(
         limit = _rx_deadline(chat, _prescription_reply(chat, number), priority, number)
         if limit is not None:
             parts.append("deadline=" + limit.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        parts.append(f"lease_s={_MACH_LEASE}")  # R14: our chain is consent + confirm, well under 900 s
         requests.append((target, " ".join(parts)))
     # OPS-11: one need.request per partner, all at once (each say costs seconds under load).
     done = await asyncio.gather(*(_say(city, target, text) for target, text in requests))
@@ -1309,7 +1323,9 @@ _PARTNER_OFFER_FIELDS = ("offer_id", "slot_id", "doctor_id", "facility", "proced
 
 
 def _expected_offer(chat: list[Message], agent: str, message: Message, sent: _Sent) -> bool:
-    if not _TRUSTED_PARTNERS:
+    # P-magesh-24: no "empty list = everyone" shortcut. Our own agents always pass (the sender is
+    # signed and the chat history may be incomplete); anyone else only if we asked them.
+    if _ours(message.sender):
         return True
     request_id = fields_of(message.text).get("request_id", "")
     return message.sender in sent.cross_peers or (
@@ -1320,7 +1336,8 @@ def _expected_offer(chat: list[Message], agent: str, message: Message, sent: _Se
 def _expected_confirm_reply(
     chat: list[Message], agent: str, sender: str, fields: dict[str, str],
 ) -> bool:
-    if not _TRUSTED_PARTNERS:
+    # P-magesh-24: receipts and cancels from an unknown agent are ignored even with an empty list.
+    if _ours(sender):
         return True
     return any(
         row.sender == agent and row.recipient == sender
@@ -1331,6 +1348,8 @@ def _expected_confirm_reply(
 
 
 _PARTNER_BATCH = 3
+_MACH_ROUND = 12  # MACH-2.0 R3
+_MACH_LEASE = 900  # MACH-2.0 R14 default
 _PARTNER_ROUNDS = 3
 _PARTNER_LEAD = timedelta(minutes=30)
 
@@ -1380,12 +1399,21 @@ def _partner_pool(
     for reply in chat:
         if not reply.sender.startswith("agent:") or reply.recipient != agent or _ours(reply.sender):
             continue
-        if first_word(reply.text) != "offer" or not _expected_offer(chat, agent, reply, sent):
+        # MACH2-4 (R20, R8): a cancel can carry the alternatives in the same message.
+        # R17: only ring members are asked (_cross_asst), and only the asked ones get here.
+        if first_word(reply.text) not in {"offer", "cancel"}:
+            continue
+        if not (_expected_offer(chat, agent, reply, sent) or (
+                first_word(reply.text) == "cancel" and _expected_confirm_reply(chat, agent, reply.sender, {}))):
             continue
         for line in reply.text.splitlines():
+            if first_word(line) != "offer":
+                continue
             fields = fields_of(line)
             offer_id = fields.get("offer_id", "")
             if not offer_id or not fields.get("slot_id") or not fields.get("facility") or offer_id in pool:
+                continue
+            if not _same_asst(fields["facility"], reply.sender):  # MACH2-1: facility= is the sender (or its ASST)
                 continue
             if any(mark in offer_id for mark in "<>"):  # a template line, not an offer (Bovisa)
                 continue
@@ -1397,7 +1425,9 @@ def _partner_pool(
             said = fields.get("doctor_gender", "") or (doctor[1] if doctor else "")
             miss = "1" if gender and said and said != gender else "0"  # P-francesco-31: order, not filter
             at = _when(fields.get("agenda_date", "") or fields.get("at", "") or fields.get("expiry", ""))
-            if at is not None and now is not None and at <= now + _PARTNER_LEAD:
+            if at is None:  # MACH2-4 (R7): a slot without a readable date never reaches the citizen
+                continue
+            if now is not None and at <= now + _PARTNER_LEAD:
                 continue
             if at is not None and limit is not None and at > limit:
                 continue
@@ -1420,8 +1450,8 @@ async def _partner_round(
 
     agent = city.agent_id
     sent = _sent(key)
-    if _we(chat, agent, "waiting_list=true", to=citizen, word="offer"):
-        return False
+    if _we(chat, agent, "", to=citizen, word="booking.receipt"):
+        return False  # MACH2-5 (R13): on the waiting list a late offer still goes; booked, never
     done = _cross_offered(chat, agent, citizen, sent)
     if again:
         done -= set(_open_offers(chat, agent, citizen))
@@ -1472,8 +1502,15 @@ async def _partner_offer(city: City, replies: list[Message], chat: list[Message]
     if not citizen:
         return False
     sent = _sent(key)
-    if _cross_offered(chat, city.agent_id, citizen, sent):
+    if _cross_offered(chat, city.agent_id, citizen, sent) and (
+        _open_offers(chat, city.agent_id, citizen)
+        # the batch went out in this process but is not in the history yet: still held
+        or not any(row.sender == city.agent_id and row.recipient == citizen and first_word(row.text) == "offer"
+                   and "cross_asst=true" in row.text.split() for row in chat)
+    ):
         return True  # BK-47: one batch at a time; a late reply only joins the pool
+    # MACH2-5 (R13): the citizen holds no offer any more (all cancelled, or on the waiting list):
+    # a late partner offer goes out in a new message.
     seen = {row.msg_id for row in chat}
     chat = [*chat, *(row for row in replies if row.msg_id not in seen)]
     number = _number(chat)
