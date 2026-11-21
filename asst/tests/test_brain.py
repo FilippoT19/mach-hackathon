@@ -1878,6 +1878,7 @@ async def main() -> int:
         brain._HELD_FOR.clear()
 
     await test_bk62(check)
+    await test_bk72(check)
     await test_bk63(check)
 
     async def test_bk67(check):
@@ -2278,7 +2279,6 @@ async def main() -> int:
                 os.environ["CITY_ROLE"] = old_role
 
     await test_gp17(check)
-    await test_bk72(check)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 
