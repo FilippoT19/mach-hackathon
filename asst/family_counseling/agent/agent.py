@@ -465,6 +465,7 @@ async def _await_line(
     *,
     op: str,
     refusal_matches: Callable[[Message], bool] | None = None,
+    seconds: float | None = None,
 ) -> tuple[Message, list[Message]] | None:
     """The ledger line for ``token``, or a refusal of ``op`` that was not already in ``chat``."""
 
@@ -472,7 +473,7 @@ async def _await_line(
     fresh = chat
     started = time.monotonic()
     for attempt in range(_PULL_TRIES):
-        if attempt and time.monotonic() - started >= 2 * _PULL_SECONDS:  # BK-54 (hold/commit: twice the wait)
+        if attempt and time.monotonic() - started >= (seconds or 2 * _PULL_SECONDS):  # BK-54, FA-21
             break
         try:
             fresh = await city.history(need_id=need_id)
@@ -6653,6 +6654,15 @@ async def _desk_route(
     if message.sender.startswith("citizen:") and _citizen_cancels(message.text):
         await _citizen_cancel(city, message, chat, fixed=fixed)
         return
+    if message.sender == LEDGER and message.recipient == city.agent_id and first_word(message.text) in {"held", "committed"}:
+        # FA-21: a held/committed line that came after the wait of the confirm turn. Our hold
+        # (BK-57) is committed now, and the citizen gets the receipt, instead of a hold that expires.
+        if first_word(message.text) == "held" and _we(chat, city.agent_id, f"slot_id={fields_of(message.text).get('slot_id', '')}", to=LEDGER, word="hold"):
+            await _on_held(city, message, chat)
+            return
+        if first_word(message.text) == "committed" and _we(chat, city.agent_id, f"hold_id={fields_of(message.text).get('booking_id', '')}", to=LEDGER, word="commit"):
+            await _on_committed(city, message, chat)
+            return
     if message.sender == LEDGER or message.sender.startswith("citizen:"):
         await _advance(city, message, chat, fixed=fixed, replacing=False)
 
@@ -7842,10 +7852,49 @@ async def _citizen_cancel(
             ack = None
             if await _cancel_next(city, message, chat, need_key, citizen, offer_id, fixed):
                 return
+            if fixed is None and _cancel_reason(chat, message, "deadline") and _clock_jumped(chat, city.agent_id, offer_id):
+                # BK-59 (0169, 0223): the citizen refused for the deadline. Every later slot is past
+                # it too, and a B or D window that ran out means the prescription is expired (P1):
+                # send the citizen to the GP for a renewal, then book with the new number.
+                await _ask_renewal(city, message, chat, citizen, _number(chat))
+                return
+            if _cancel_reason(chat, message, "past"):
+                chat = await _fresh_agenda(city, message, chat)
     finally:
         if ack is not None:
             await ack
     await _advance(city, message, chat, fixed=fixed, replacing=True)
+
+
+def _clock_jumped(chat: list[Message], agent: str, offer_id: str) -> bool:
+    """BK-59: our clock put the refused slot inside the prescription window, the citizen says it is
+    past the deadline. So the agenda ran ahead of our reading and the window is really over."""
+    offer = _our_offer(chat, agent, offer_id) if offer_id else {}
+    at = _when(offer.get("agenda_date") or offer.get("at") or "")
+    number = _number(chat)
+    reply = _prescription_reply(chat, number)
+    priority = (reply or {}).get("priority") or offer.get("priority")
+    deadline = _rx_deadline(chat, reply, priority, number)
+    return at is not None and deadline is not None and at <= deadline
+
+
+def _cancel_reason(chat: list[Message], message: Message, reason: str) -> bool:
+    """True when the citizen cancelled an offer with ``reason`` after our latest agenda reading."""
+    rows = [*chat, message] if all(row.msg_id != message.msg_id for row in chat) else chat
+    last_agenda = max((i for i, row in enumerate(rows) if row.sender == LEDGER and first_word(row.text) == "agenda"), default=-1)
+    return any(
+        row.sender.startswith("citizen:") and _citizen_cancels(row.text) and fields_of(row.text).get("reason") == reason
+        for row in rows[last_agenda + 1:]
+    )
+
+
+async def _fresh_agenda(city: City, message: Message, chat: list[Message]) -> list[Message]:
+    """BK-59 (0308): the citizen says a slot is in the past, so our agenda clock is behind (the
+    agenda jumps at a level change). Read the agenda again before the next offers."""
+    before = {row.msg_id for row in chat if row.sender == LEDGER and first_word(row.text) == "agenda"}
+    await _ledger_ask(city, message, "agenda")
+    return await _until(city, message.need_id, chat, lambda rows: any(
+        row.sender == LEDGER and first_word(row.text) == "agenda" and row.msg_id not in before for row in rows))
 
 
 async def _cancel_next(
@@ -8149,6 +8198,11 @@ def _our_commit(chat: list[Message], agent: str, hold_id: str) -> bool:
     return False
 
 
+# FA-21 (0308): under load the held line came after the 12 s wait, so no commit left and the hold
+# expired 10 minutes later. A hold lives minutes: wait for its line up to this many seconds.
+_HOLD_WAIT = 30.0
+
+
 async def _finish_booking(
     city: City, message: Message, chat: list[Message], slot: str, *, hold_self: bool,
     before: "asyncio.Future | None" = None,
@@ -8159,7 +8213,7 @@ async def _finish_booking(
     address question). It runs while the held line is read and ends before the next message."""
 
     found = await _await_line(
-        city, message.need_id, chat, "held", f"slot_id={slot}", op="hold",
+        city, message.need_id, chat, "held", f"slot_id={slot}", op="hold", seconds=_HOLD_WAIT,
         refusal_matches=lambda row: row.recipient == city.agent_id
         and fields_of(row.text).get("slot_id", slot) == slot,
     )
@@ -8176,7 +8230,7 @@ async def _finish_booking(
         return
     hold_id = fields_of(reply.text)["hold_id"]
     done = await _await_line(
-        city, message.need_id, fresh, "committed", f"booking_id={hold_id}", op="commit",
+        city, message.need_id, fresh, "committed", f"booking_id={hold_id}", op="commit", seconds=_HOLD_WAIT,
         refusal_matches=lambda row: row.recipient == city.agent_id
         and fields_of(row.text).get("slot_id", slot) == slot
         and fields_of(row.text).get("hold_id", hold_id) == hold_id,

@@ -197,6 +197,11 @@ def _our_commit(chat: list[Message], agent: str, hold_id: str) -> bool:
     return False
 
 
+# FA-21 (0308): under load the held line came after the 12 s wait, so no commit left and the hold
+# expired 10 minutes later. A hold lives minutes: wait for its line up to this many seconds.
+_HOLD_WAIT = 30.0
+
+
 async def _finish_booking(
     city: City, message: Message, chat: list[Message], slot: str, *, hold_self: bool,
     before: "asyncio.Future | None" = None,
@@ -207,7 +212,7 @@ async def _finish_booking(
     address question). It runs while the held line is read and ends before the next message."""
 
     found = await _await_line(
-        city, message.need_id, chat, "held", f"slot_id={slot}", op="hold",
+        city, message.need_id, chat, "held", f"slot_id={slot}", op="hold", seconds=_HOLD_WAIT,
         refusal_matches=lambda row: row.recipient == city.agent_id
         and fields_of(row.text).get("slot_id", slot) == slot,
     )
@@ -224,7 +229,7 @@ async def _finish_booking(
         return
     hold_id = fields_of(reply.text)["hold_id"]
     done = await _await_line(
-        city, message.need_id, fresh, "committed", f"booking_id={hold_id}", op="commit",
+        city, message.need_id, fresh, "committed", f"booking_id={hold_id}", op="commit", seconds=_HOLD_WAIT,
         refusal_matches=lambda row: row.recipient == city.agent_id
         and fields_of(row.text).get("slot_id", slot) == slot
         and fields_of(row.text).get("hold_id", hold_id) == hold_id,

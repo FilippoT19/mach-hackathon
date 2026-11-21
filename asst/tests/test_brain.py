@@ -476,6 +476,40 @@ async def test_p17_never_silent(check) -> None:
         brain._desk_route, brain._EARLY_STATUS = real, early
 
 
+async def test_bk59_fa20(check) -> None:
+    """BK-59: agenda jump at a level change (deadline -> renewal, past -> read the agenda again).
+    FA-21: a held line after the wait still gets its commit."""
+    import dataclasses
+
+    def at(n, minute):
+        return dataclasses.replace(row(*n), sent_at=f"2026-11-21T03:{minute:02d}:00Z")
+    offer = ("offer offer_id=of-S-1 slot_id=S-1 doctor_id=d-s1 facility=agent:spec procedure=VIS-CARD "
+             "agenda_date=2026-11-05T10:00:00Z priority=B prescription_number=prescription_number-RX-9")
+    base = [
+        at(("agent:gp", CITIZEN, "prescription prescription_number=prescription_number-RX-9 procedure=VIS-CARD priority=B", 1), 0),
+        at((CITIZEN, "agent:bk", "need.request prescription_number=prescription_number-RX-9", 2), 2),
+        at((LEDGER, "agent:bk", "prescription prescription_number=prescription_number-RX-9 procedure=VIS-CARD priority=B state=issued", 3), 2),
+        at((LEDGER, "agent:bk", f"agenda agenda_now={NOW}", 4), 2),
+        at(("agent:bk", CITIZEN, offer, 5), 3),
+    ]
+    for reason, want in (("deadline", "renewal"), ("past", "agenda")):
+        brain._SENT.clear() if hasattr(brain, "_SENT") else None
+        cancel = at((CITIZEN, "agent:bk", f"cancel offer_id=of-S-1 reason={reason}", 6), 4)
+        cancel = dataclasses.replace(cancel, need_id=f"N-59-{reason}")
+        city = FakeCity("agent:bk")
+        await brain._desk(city, cancel, [*base, cancel], hold_self=False, fixed=None)
+        if want == "renewal":
+            ok = any("purpose=prescription_renewal" in t for t in to(city, CITIZEN))
+        else:
+            ok = any(r == LEDGER and t == "agenda" for r, t in city.sent)
+        check(f"BK-59 cancel reason={reason}: {want}", ok, city.sent)
+    hold = at(("agent:bk", LEDGER, "hold slot_id=S-7 citizen=citizen:c-1 consent_ref=c-7", 7), 5)
+    held = at((LEDGER, "agent:bk", "held hold_id=H-7 slot_id=S-7", 8), 6)
+    city = FakeCity("agent:bk")
+    await brain._desk(city, held, [*base, hold, held], hold_self=False, fixed=None)
+    check("FA-21 held in ritardo: commit sul Ledger", any(r == LEDGER and t.startswith("commit hold_id=H-7") for r, t in city.sent), city.sent)
+
+
 async def test_x49(check) -> None:
     """X-49: the address is asked when the citizen confirms, before the booking.receipt."""
     BKX, HOSP = "agent:bk", "agent:jdj692g4145e"
@@ -1411,6 +1445,7 @@ async def main() -> int:
     await test_000113(check)
     await test_x49(check)
     await test_p17_never_silent(check)
+    await test_bk59_fa20(check)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 
