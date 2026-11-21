@@ -34,6 +34,10 @@ controllo se i gruppi "online" hanno un percorso nuovo che li verifica.
 | G12 | Offerte fuori da S (lingua, scadenza dalla ricetta, passato) e raffiche offerta/annullo con le altre ASST | 0001660002, 0001110003, 000141, 0001420002, 000147, 0001160002 | BK-46, BK-47, BK-48 | in PR | — |
 | G13 | Consenso cross_asst chiesto senza fine ("Which consent_ref?") | 000172, 000160, 000165 | BK-49 (dopo BK-36) | in PR | — |
 | G14 | Palpitazioni lette come red flag: 112 invece della ricetta (booking no_booking −1, 11 su 14 percorsi chiusi alle 02:20–02:27) | 0001830004, 0001750007, 0002390004, 000275 | GP-15 | verificato (0001820006: "cuore che batte a mille" → ricetta VIS-CARD in 70 s, gp online dalle ~02:50 locali) | — |
-| G15 | Red flag: 112 giusto ma avviso all ospedale non partito ("li avviso io adesso"), domanda sulla posizione mancante | 0000540007 | X-55 non risolto → X-56 | fix su main (non rilasciato) | — |
+| G15 | Red flag: 112 giusto ma avviso all ospedale non partito ("li avviso io adesso"), domanda sulla posizione mancante | 0000540007 | X-55 non risolto → X-56 | online (gp, 03:40Z) | — |
+
+| G16 | Booking muto o lento: need.request e cancel senza risposta per minuti (0131, 0228, 278) | 0001310003, 0002280005, 000278 | P-magesh-17, OPS-11 | online (booking 1.0.23 03:40Z, 1.0.24 03:55Z); P-17 verificato (0001820007, 0002040005, 0002400003: `status` alle 03:56:55); latenza ancora alta (p50 222 s alle 03:42–03:55, ~15 msg/min) | — |
+| G17 | Agenda saltata al cambio livello: offerte fuori scadenza o passate; held in ritardo al consultorio; preferenze di giorni/genere | 0001690003, 0002230003, 0912000308, 0912000304 | BK-59, FA-21, BK-60, BK-60b | online (booking 1.0.24, family 03:55–03:57Z), da verificare | — |
+| G18 | Revisione booking: pagina 1 sola, raffica dopo cancel, ricevuta spoglia, orologio, cross-ASST dopo rifiuto, cancel.ack lento | 0912000304 | BK-61 | fix su main (non rilasciato) | — |
 
 Macchina a stati del booking e cause con riga di codice: [docs/booking-flow.md](docs/booking-flow.md). Replay dei percorsi veri: `asst/tests/test_replay.py`.
