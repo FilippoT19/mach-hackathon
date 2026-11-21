@@ -321,6 +321,16 @@ async def _on_committed(city: City, message: Message, chat: list[Message]) -> No
                 return
             sender = next(iter(centres), "")
         target = sender or _citizen(fresh)
+        if (target and target.startswith("citizen:") and agent == _OUR_AGENTS["booking_centre"]
+                and not _we(fresh, agent, token, to=target, word="booking.receipt")):
+            # BK-61: the booking centre held this slot itself (BK-57). The citizen gets the same
+            # receipt as when the facility books: sentence, GP notice, route, what to bring.
+            facility = _BOOKED_AT.get(message.need_id or "") or next(
+                (f.get("facility", "") for row in fresh if row.sender == agent and first_word(row.text) == "offer"
+                 for f in _offer_rows(row.text) if slot and f.get("slot_id") == slot), "")
+            if facility:
+                await _send_forwarded_receipt(city, message, fresh, booking_id, ledger_ref, facility=facility, zone_route=False)
+                return
         if target and await _say(city, target, f"booking.receipt {token} ledger_ref={ledger_ref}"):
             _remember_receipt(agent, message.need_id, booking_id)
 
