@@ -297,6 +297,7 @@ async def _on_committed(city: City, message: Message, chat: list[Message]) -> No
     if not booking_id or not ledger_ref:
         return
     agent = city.agent_id
+    _HELD_FOR.pop(fields.get("slot_id", ""), None)  # BK-63: booked; the catalogue no longer lists it
     async with _receipt_turn(city, message, chat, booking_id) as fresh:
         if fresh is None:
             return
@@ -420,6 +421,9 @@ async def _on_refused(
                 if await _say(city, LEDGER, " ".join(parts)):
                     _LOG.info("bk62.commit_without_fence hold_id=%s", hold_id[:48])
                     return True
+    held = _HELD_FOR.get(slot)
+    if held and held[0] == (message.need_id or message.msg_id):
+        _HELD_FOR.pop(slot, None)  # BK-63: our hold is gone, the slot is not ours to keep back
     await _cancel_booking(city, chat, slot, reason=reason, hold_id=hold_id if commit_refused else "")
     desk = agent == _OUR_AGENTS["booking_centre"]  # BK-57: the booking centre now holds our slots
     if desk and any(w in reason or w in message.text.lower() for w in _PERMISSION_WORDS):
