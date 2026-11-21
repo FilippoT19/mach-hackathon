@@ -557,7 +557,7 @@ async def main() -> int:
     city4 = FakeCity("agent:bk")
     await brain._desk(city4, no, chat2 + [no], hold_self=False, fixed=None)
     out = to(city4, CITIZEN)
-    check("X-31 rifiuto: indicazioni generiche", out and out[0].startswith("Nessun problema.") and "M5" in out[0], out)
+    check("X-31 rifiuto: indicazioni generiche", out and out[0].startswith("Nessun problema.") and "metro M" in out[0], out)
     # 23. X-32: nearest hospital in the whole city from Index doors.
     from city_sdk.city import CivicAddress
     near = Peer(agent_id="agent:far1", role="hospital", address=CivicAddress(label="Via Vicina 1", lat=45.5191, lon=9.1901))
