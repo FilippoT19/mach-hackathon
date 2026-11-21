@@ -2995,6 +2995,10 @@ async def _ask_where(city: City, message: Message, chat: list[Message], citizen:
     """X-31/X-49: one data.request per case for address, assistance and car, with its purpose."""
     if _we(chat, city.agent_id, "purpose=booking", to=citizen, word="data.request"):
         return
+    asked = _sent(message.need_id or message.msg_id).notes
+    if "where_asked" in asked:
+        return  # BK-75: asked in this process; the case history does not show it yet (two questions, 12:27:51/52Z)
+    asked.add("where_asked")
     en = _lang(chat) != "it"
     if early:
         line = (
@@ -3443,10 +3447,33 @@ async def _on_where(city: City, message: Message, chat: list[Message]) -> None:
         _ANSWERED_WHERE.discard(key)  # BK-61
 
 
-# BK-57: False once the Ledger refuses a booking-centre hold for a permission reason; the
-# booking centre then forwards the confirm to the facility again (the path before BK-57).
-_DESK_HOLDS = [True]
+# BK-57: True = the booking centre holds and commits the slots of our own hospital and specialist.
+# BK-75 (21/11, 11:15-11:35Z): the Ledger refuses every such hold with reason=
+# grant_permission_denied (e19: a booking-centre grant cannot hold or commit), minutes after the
+# confirm. The switch went off at the first refusal but came back on at every deploy, and each
+# time the citizens who had just confirmed lost their slot (...0003640002, ...0003490005,
+# ...0002590007, ...000402, ...0002980006: no_booking). Off from the start: the confirm goes to
+# the facility at once, the path before BK-57.
+_DESK_HOLDS = [False]
 _PERMISSION_WORDS = ("owner", "forbidden", "not_allowed", "unauthori", "permission", "scope", "role", "not_your")
+
+
+async def _desk_forward(city: City, chat: list[Message], slot: str) -> bool:
+    """BK-75: our hold of ``slot`` was refused for permissions, the slot itself is still free. The
+    citizen's confirm goes to the facility, as if the booking centre had never tried the hold."""
+
+    agent = city.agent_id
+    for row in reversed(chat):
+        if not row.sender.startswith("citizen:") or not (
+                "confirm" in words(row.text) or first_word(row.text) == "consent"):
+            continue
+        fields = fields_of(row.text)
+        offer = _our_offer(chat, agent, fields["offer_id"]) if fields.get("offer_id") else {}
+        if (fields.get("slot_id") or offer.get("slot_id", "")) == slot:
+            _event("booking.confirm", row.need_id, step="forward_after_denied", slot_id=slot)
+            await _on_confirm(city, row, chat, hold_self=False)
+            return True
+    return False
 
 
 async def _nearest_hospital(city: City, point: tuple[float, float]) -> tuple[str, str, float] | None:

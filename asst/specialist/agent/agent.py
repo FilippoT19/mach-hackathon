@@ -8634,6 +8634,10 @@ async def _ask_where(city: City, message: Message, chat: list[Message], citizen:
     """X-31/X-49: one data.request per case for address, assistance and car, with its purpose."""
     if _we(chat, city.agent_id, "purpose=booking", to=citizen, word="data.request"):
         return
+    asked = _sent(message.need_id or message.msg_id).notes
+    if "where_asked" in asked:
+        return  # BK-75: asked in this process; the case history does not show it yet (two questions, 12:27:51/52Z)
+    asked.add("where_asked")
     en = _lang(chat) != "it"
     if early:
         line = (
@@ -9082,10 +9086,33 @@ async def _on_where(city: City, message: Message, chat: list[Message]) -> None:
         _ANSWERED_WHERE.discard(key)  # BK-61
 
 
-# BK-57: False once the Ledger refuses a booking-centre hold for a permission reason; the
-# booking centre then forwards the confirm to the facility again (the path before BK-57).
-_DESK_HOLDS = [True]
+# BK-57: True = the booking centre holds and commits the slots of our own hospital and specialist.
+# BK-75 (21/11, 11:15-11:35Z): the Ledger refuses every such hold with reason=
+# grant_permission_denied (e19: a booking-centre grant cannot hold or commit), minutes after the
+# confirm. The switch went off at the first refusal but came back on at every deploy, and each
+# time the citizens who had just confirmed lost their slot (...0003640002, ...0003490005,
+# ...0002590007, ...000402, ...0002980006: no_booking). Off from the start: the confirm goes to
+# the facility at once, the path before BK-57.
+_DESK_HOLDS = [False]
 _PERMISSION_WORDS = ("owner", "forbidden", "not_allowed", "unauthori", "permission", "scope", "role", "not_your")
+
+
+async def _desk_forward(city: City, chat: list[Message], slot: str) -> bool:
+    """BK-75: our hold of ``slot`` was refused for permissions, the slot itself is still free. The
+    citizen's confirm goes to the facility, as if the booking centre had never tried the hold."""
+
+    agent = city.agent_id
+    for row in reversed(chat):
+        if not row.sender.startswith("citizen:") or not (
+                "confirm" in words(row.text) or first_word(row.text) == "consent"):
+            continue
+        fields = fields_of(row.text)
+        offer = _our_offer(chat, agent, fields["offer_id"]) if fields.get("offer_id") else {}
+        if (fields.get("slot_id") or offer.get("slot_id", "")) == slot:
+            _event("booking.confirm", row.need_id, step="forward_after_denied", slot_id=slot)
+            await _on_confirm(city, row, chat, hold_self=False)
+            return True
+    return False
 
 
 async def _nearest_hospital(city: City, point: tuple[float, float]) -> tuple[str, str, float] | None:
@@ -9804,11 +9831,15 @@ async def _on_refused(
     held = _HELD_FOR.get(slot)
     if held and held[0] == (message.need_id or message.msg_id):
         _HELD_FOR.pop(slot, None)  # BK-63: our hold is gone, the slot is not ours to keep back
-    await _cancel_booking(city, chat, slot, reason=reason, hold_id=hold_id if commit_refused else "")
-    desk = agent == _OUR_AGENTS["booking_centre"]  # BK-57: the booking centre now holds our slots
+    desk = agent == _OUR_AGENTS["booking_centre"]  # BK-57: the booking centre held our slots
     if desk and any(w in reason or w in message.text.lower() for w in _PERMISSION_WORDS):
         _DESK_HOLDS[0] = False
         _LOG.info("bk57.desk_holds_off reason=%s", reason[:40])
+        # BK-75: the slot is not gone, only our grant cannot hold it. No cancel to the citizen:
+        # the confirm goes to the facility now.
+        if slot and not commit_refused and await _desk_forward(city, chat, slot):
+            return False
+    await _cancel_booking(city, chat, slot, reason=reason, hold_id=hold_id if commit_refused else "")
     if slot and (hold_self or desk):
         # P-magesh-9: the cancel just sent is not in ``chat`` yet, so the refused slot looked free
         # and went out again with the next offers. Remember it: it is never offered again.

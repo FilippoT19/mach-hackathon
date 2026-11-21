@@ -34,6 +34,7 @@ brain = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(brain)
 brain._PULL_TRIES = 2
 brain._PULL_PAUSE = 0.0
+_DESK_HOLDS_AT_START = brain._DESK_HOLDS[0]
 
 GP, BK, HOS, SPEC = "agent:fddgaqmp6kb0", "agent:fn64xfq2jft4", "agent:jdj692g4145e", "agent:jmjfst55vgjz"
 ROLE = {BK: "booking_centre", HOS: "hospital", SPEC: "specialist_care"}
@@ -208,7 +209,10 @@ class Sim:
                 return  # BK-39: the Ledger never answers this page
             reply = "\n".join([f"slots page={page}/{pages}"] + rows[(page - 1) * size: page * size])
         elif head == "hold":
-            if f["slot_id"] in self.refuse_hold:
+            if agent == BK:
+                # BK-75: production (21/11) refuses EVERY hold of the booking centre, minutes later.
+                reply = f"refused hold reason=grant_permission_denied slot_id={f['slot_id']}"
+            elif f["slot_id"] in self.refuse_hold:
                 reply = f"refused hold reason=NO_CAPACITY slot_id={f['slot_id']}"
             else:
                 hold = "bk-" + f["slot_id"].removeprefix(WAVE + "-asst-")  # the real hold id is the booking id
@@ -398,6 +402,8 @@ def reset() -> None:
         if store is not None:
             store.clear()
     brain._ANSWERED_WHERE.clear()
+    brain._HELD_FOR.clear()
+    brain._DESK_HOLDS[0] = _DESK_HOLDS_AT_START
 
 
 def at(day: str, hour: str) -> datetime:
@@ -731,7 +737,52 @@ async def r20():
     return s, out
 
 
-REPLAYS = [r18, r19, r20, r01, r02, r03, r04, r05, r06, r07, r08, r09, r10, r11, r12, r13, r14, r15, r16, r17]
+def _booking_chain(s: Sim) -> list[tuple[str, bool, str]]:
+    """BK-75: who did what between the confirm and the receipt."""
+    sent = [(m.sender, m.recipient, brain.first_word(m.text), m.text) for m in s.log]
+    desk_holds = [t for a, b, h, t in sent if a == BK and b == LEDGER and h == "hold"]
+    to_facility = [t for a, b, h, t in sent if a == BK and b in (HOS, SPEC) and h == "confirm"]
+    facility_holds = [t for a, b, h, t in sent if a in (HOS, SPEC) and b == LEDGER and h == "hold"]
+    commits = [t for a, b, h, t in sent if a in (HOS, SPEC) and b == LEDGER and h == "commit"]
+    cancels = [t for a, b, h, t in sent if a == BK and b == s.citizen and h == "cancel"]
+    return [
+        ("BK-75 the facility gets the citizen's confirm (slot, consent, citizen)",
+         len(to_facility) == 1 and "slot_id=" in to_facility[0] and "consent_ref=" in to_facility[0]
+         and f"citizen={s.citizen}" in to_facility[0], f"{to_facility}"),
+        ("BK-75 the facility holds and commits on the Ledger", len(facility_holds) == 1 and len(commits) == 1,
+         f"holds {facility_holds} commits {commits}"),
+        ("BK-75 the citizen never loses the chosen slot (no cancel from the booking centre)", not cancels, f"{cancels}"),
+        ("BK-75 the receipt names the slot the citizen confirmed",
+         any(m.sender == BK and m.recipient == s.citizen and brain.first_word(m.text) == "booking.receipt" for m in s.log)
+         and s.chosen is not None, f"chosen {s.chosen}"),
+    ], desk_holds
+
+
+async def r21():
+    """BK-75 (…0003640002, …000402, 21/11): the booking centre starts WITHOUT its own hold. The confirm goes to
+    the facility at once; the facility holds, commits and the citizen gets the receipt."""
+    s = await Sim("N-2026-11-02-8909120003640002", lang="it", procedure="VIS-CARD", agenda="2026-11-18T07:00:00Z",
+                  first="Buongiorno, ho le palpitazioni da qualche giorno e vorrei prenotare la visita.").start()
+    out = verdict(s, lang="it", max_messages=6, outcome="booked", max_offer_messages=1)
+    chain, desk_holds = _booking_chain(s)
+    return s, out + chain + [("BK-75 no hold from the booking centre", not desk_holds, f"{desk_holds}")]
+
+
+async def r22():
+    """BK-75 (…0003490005, 21/11 11:27Z): a hold of the booking centre is already on its way (the build before) and
+    the Ledger refuses it with grant_permission_denied. The slot is not lost: the confirm goes to the facility."""
+    s = Sim("N-2026-11-02-8909120003490005", lang="it", procedure="VIS-FIS", agenda="2026-11-18T07:00:00Z",
+            first="Buongiorno, ho mal di schiena da settimane e vorrei prenotare la visita.")
+    brain._DESK_HOLDS[0] = True  # the state of the builds up to 1.0.36
+    await s.start()
+    out = verdict(s, lang="it", max_messages=6, outcome="booked", max_offer_messages=1)
+    chain, desk_holds = _booking_chain(s)
+    return s, out + chain + [
+        ("BK-75 the refused hold was tried once and switched the booking-centre hold off",
+         len(desk_holds) == 1 and brain._DESK_HOLDS[0] is False, f"{desk_holds}")]
+
+
+REPLAYS = [r21, r22, r18, r19, r20, r01, r02, r03, r04, r05, r06, r07, r08, r09, r10, r11, r12, r13, r14, r15, r16, r17]
 
 
 async def main() -> int:
