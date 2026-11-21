@@ -443,6 +443,81 @@ async def test_000113(check) -> None:
     check("OPS-07 nessun testo del cittadino nei log", not any("English-speaking" in l for l in lines), lines)
 
 
+async def test_x49(check) -> None:
+    """X-49: the address is asked when the citizen confirms, before the booking.receipt."""
+    BKX, HOSP = "agent:bk", "agent:jdj692g4145e"
+    RX = "prescription_number-RX-49"
+    offer = (f"offer offer_id=of-S-49 slot_id=S-49 doctor_id=asst-niguarda-h1 facility={HOSP} procedure=VIS-FIS "
+             f"agenda_date=2026-11-04T15:00:00Z agenda_day=wed priority=B prescription_number={RX}")
+
+    def fresh():
+        brain._SENT.clear()
+        brain._ANSWERED.clear()
+        brain._ANSWERED_WHERE.clear()
+        brain._WHERE_OF.clear()
+        brain._RECEIPT_SENT.clear()
+        brain._RECEIPTS.clear()
+
+    for lang, word in (("it", "Mentre blocco"), ("en", "While I lock")):
+        fresh()
+        base = [
+            row(CITIZEN, BKX, f"need.request lang={lang} prescription_number={RX}", 0),
+            row(LEDGER, BKX, f"prescription prescription_number={RX} procedure=VIS-FIS priority=B state=issued", 1),
+            row(BKX, CITIZEN, offer, 2),
+            row(CITIZEN, BKX, "confirm offer_id=of-S-49 consent_ref=cons-N-1-booking", 3),
+        ]
+        c = FakeCity(BKX)
+        await brain._desk(c, base[-1], base, hold_self=False, fixed=None)
+        check(f"X-49 [{lang}] confirm inoltrato alla struttura", any(t.startswith("confirm ") and "slot_id=S-49" in t for t in to(c, HOSP)), c.sent)
+        cit = to(c, CITIZEN)
+        check(f"X-49 [{lang}] indirizzo chiesto alla conferma, con scopo",
+              len(cit) == 1 and cit[0].startswith("data.request purpose=booking fields=address") and word in cit[0], cit)
+
+    # The answer comes before the receipt: short thanks, the route waits for the receipt.
+    sent = [row(BKX, r, t, 10 + i) for i, (r, t) in enumerate(c.sent)]
+    chat = base + sent
+    ans = row(CITIZEN, BKX, "data.response purpose=booking address=Via_Ornato_10 lat=45.5190 lon=9.1900 disability=motor car=true car_euro_class=EURO-3", 20)
+    c = FakeCity(BKX)
+    await brain._desk(c, ans, chat + [ans], hold_self=False, fixed=None)
+    out = to(c, CITIZEN)
+    check("X-49 risposta prima della ricevuta: solo grazie", len(out) == 1 and out[0].startswith("data.response.ack") and " km " not in out[0], out)
+    check("X-49 risposta conservata per la ricevuta", "N-1" in brain._WHERE_OF and brain._WHERE_OF["N-1"][0] is not None, brain._WHERE_OF)
+
+    # The receipt carries the exact route and asks nothing more.
+    chat = chat + [ans] + [row(BKX, r, t, 30 + i) for i, (r, t) in enumerate(c.sent)]
+    rec = row(HOSP, BKX, "booking.receipt booking_id=B-49 ledger_ref=L-49 offer_id=of-S-49 slot_id=S-49", 40)
+    c = FakeCity(BKX)
+    await brain._desk(c, rec, chat + [rec], hold_self=False, fixed=None)
+    out = to(c, CITIZEN)
+    check("X-49 ricevuta con distanza, accessibilità e Area B",
+          len(out) == 1 and out[0].startswith("booking.receipt") and " km " in out[0] and "Area B" in out[0]
+          and ("wheelchair" in out[0] or "sedia a rotelle" in out[0]), out)
+    check("X-49 niente seconda domanda e niente 'le dico dopo come arrivare'",
+          not any(t.startswith("data.request") for t in out) and "right away" not in out[0] and "Subito dopo" not in out[0], out)
+
+    # No answer yet: the receipt does not wait, has the district route, and asks nothing again.
+    fresh()
+    chat = base + [row(BKX, CITIZEN, "data.request purpose=booking fields=address,disability,car,car_euro_class While I lock...", 10)]
+    c = FakeCity(BKX)
+    await brain._desk(c, rec, chat + [rec], hold_self=False, fixed=None)
+    out = to(c, CITIZEN)
+    check("X-49 senza risposta la ricevuta parte lo stesso", len(out) == 1 and out[0].startswith("booking.receipt"), out)
+    # The late answer (after the receipt) still gets the full route.
+    chat = chat + [rec] + [row(BKX, r, t, 50 + i) for i, (r, t) in enumerate(c.sent)]
+    c = FakeCity(BKX)
+    await brain._desk(c, ans, chat + [ans], hold_self=False, fixed=None)
+    out = to(c, CITIZEN)
+    check("X-49 risposta dopo la ricevuta: percorso completo", out and " km " in out[0] and "Area B" in out[0], out)
+
+    # The consultorio (stricter on personal data) does not ask at confirm time.
+    fresh()
+    c = FakeCity("agent:mm18nddkfc5w")
+    await brain._on_confirm(c, base[-1], base, hold_self=True)
+    check("X-49 consultorio: nessuna domanda di indirizzo alla conferma",
+          not any(t.startswith("data.request") for t in to(c, CITIZEN)), c.sent)
+    fresh()
+
+
 async def main() -> int:
     failures = 0
 
@@ -1096,6 +1171,7 @@ async def main() -> int:
     await test_francesco_22(check)
     await test_francesco_23(check)
     await test_000113(check)
+    await test_x49(check)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 
