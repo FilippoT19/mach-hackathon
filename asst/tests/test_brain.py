@@ -1617,7 +1617,62 @@ async def main() -> int:
 
     await test_francesco_14(check)
     await test_bk59(check)
+    async def test_bk62(check):
+        """BK-62: 14 failed journeys of 21/11 (03:19-04:11 UTC)."""
+        from datetime import datetime, timedelta, timezone
+        fam = brain._OUR_AGENTS["family_counseling"]
+
+        # (a) commit refused stale_fence: one more commit without fence, no cancel to the citizen.
+        brain._SENT.clear()
+        chat = [row(CITIZEN, fam, "confirm offer_id=of-C1 slot_id=C1 consent_ref=cons-1", 1),
+                row(fam, LEDGER, f"hold slot_id=C1 citizen={CITIZEN} consent_ref=cons-1", 2),
+                row(LEDGER, fam, "held hold_id=H-C1 slot_id=C1 fence=7", 3),
+                row(fam, LEDGER, "commit hold_id=H-C1 consent_ref=cons-1 fence=7", 4)]
+        no = row(LEDGER, fam, "refused commit reason=stale_fence hold_id=H-C1 slot_id=C1", 5)
+        city = FakeCity(fam)
+        again = await brain._on_refused(city, no, [*chat, no], hold_self=True, slot="C1", hold_id="H-C1")
+        check("BK-62 commit stale_fence: riprova senza fence, nessun cancel al cittadino",
+              again is True and to(city, LEDGER) == ["commit hold_id=H-C1 consent_ref=cons-1"] and not to(city, CITIZEN), city.sent)
+        same = await brain._on_refused(city, no, [*chat, no], hold_self=True, slot="C1", hold_id="H-C1")
+        check("BK-62 lo stesso rifiuto visto da un altro turno: niente doppio commit, niente cancel",
+              same is True and len(to(city, LEDGER)) == 1 and not to(city, CITIZEN), city.sent)
+        retry = row(fam, LEDGER, "commit hold_id=H-C1 consent_ref=cons-1", 6)
+        no2 = row(LEDGER, fam, "refused commit reason=stale_fence hold_id=H-C1 slot_id=C1", 7)
+        await brain._on_refused(city, no2, [*chat, no, retry, no2], hold_self=True, slot="C1", hold_id="H-C1")
+        check("BK-62 secondo rifiuto: il posto si lascia e il cittadino lo sa",
+              any(t.startswith("cancel ") for t in to(city, CITIZEN)) and sum(t.startswith("commit") for t in to(city, LEDGER)) == 1, city.sent)
+
+        # (b) five slots, two doctors, ONE day: the next page is read before the offer.
+        def slot(sid, doc, at, day):
+            return f"slot_id={sid} doctor_id=asst-niguarda-{doc} facility={hospital} procedure=VIS-FIS at={at} day={day} free=1"
+        brain._SENT.clear()
+        p1 = "slots page=1/2\n" + "\n".join([slot("T1", "h1", "2026-11-03T10:30:00Z", "tue"), slot("T2", "h3", "2026-11-03T10:30:00Z", "tue"),
+                                             slot("T3", "h1", "2026-11-03T12:00:00Z", "tue")])
+        city = FakeCity("agent:bk")
+        chat = [row(CITIZEN, "agent:bk", f"posso solo in certi giorni need.request lang=it prescription_number={rx_number}", 0),
+                row(LEDGER, "agent:bk", f"prescription prescription_number={rx_number} procedure=VIS-FIS priority=D state=issued", 1),
+                row(LEDGER, "agent:bk", "agenda agenda_now=2026-11-02T07:00:00Z", 2), row(LEDGER, "agent:bk", p1, 3)]
+        await brain._advance_alone(city, chat[0], chat, "N-1", fixed=None, replacing=False)
+        check("BK-62 offerte tutte in un giorno: chiede la pagina dopo prima di offrire",
+              to(city, LEDGER) == ["world procedure=VIS-FIS page=2"] and not to(city, CITIZEN), city.sent)
+
+        # (c) the agenda time counts the real minutes since the Ledger wrote the agenda line.
+        wrote = datetime.now(timezone.utc) - timedelta(minutes=10)
+        iso = lambda t: t.strftime("%Y-%m-%dT%H:%M:%SZ")
+        anchor = Message(type="chat", sender=LEDGER, msg_id="a1", need_id="N-1", recipient="agent:bk",
+                         body={"text": "agenda agenda_now=2026-12-01T07:00:00Z"}, sent_at=iso(wrote))
+        opened = Message(type="chat", sender=CITIZEN, msg_id="c1", need_id="N-1", recipient="agent:bk",
+                         body={"text": "vorrei una visita"}, sent_at=iso(wrote + timedelta(minutes=1)))
+        now = brain._agenda_now([anchor, opened], opened)
+        hours = (now - datetime(2026, 12, 1, 7, tzinfo=timezone.utc)).total_seconds() / 3600
+        check("BK-62 orologio: 10 minuti reali dopo la riga agenda = 10 ore di agenda (non 1)", 9.9 <= hours <= 10.2, hours)
+        old = Message(type="chat", sender=LEDGER, msg_id="a0", need_id="N-1", recipient="agent:bk",
+                      body={"text": "agenda agenda_now=2026-12-01T07:00:00Z"}, sent_at="2026-11-16T09:00:00Z")
+        check("BK-62 riga agenda di un'altra sessione: l'orologio reale non si usa",
+              brain._agenda_now([old], row(CITIZEN, "agent:bk", "ciao", 9)) == datetime(2026, 12, 1, 7, tzinfo=timezone.utc), "")
+
     await test_bk61(check)
+    await test_bk62(check)
     await test_francesco_15(check)
     await test_francesco_16(check)
     await test_francesco_18(check)
