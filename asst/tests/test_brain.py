@@ -259,6 +259,37 @@ async def test_facility_proposals(check) -> None:
           to(city, LEDGER) == [f"checkin booking_id=B-QUESTION citizen={CITIZEN}"]
           and to(city, CITIZEN)[0].startswith("checkin booking_id=B-QUESTION "), city.sent)
 
+    # FA-24: after the visit the hospital tells our gp (report.notice), then says so to the citizen.
+    gp_id = brain._OUR_AGENTS["gp"]
+    brain._CHECKIN_REQUESTS.clear()
+    brain._PEERS.clear()
+    city = FacilityCity({"checkin": ["checked_in slot_id=S7 booking_id=B-FA24"]})
+    city.peers = [Peer(agent_id="agent:other-team-gp", role="gp"), Peer(agent_id=gp_id, role="gp")]
+    await city.turn("checkin booking_id=B-FA24 ledger_ref=L1")
+    notice = to(city, gp_id)
+    order = [r for r, _ in city.sent]
+    check("FA-24 ospedale avvisa il gp dopo la visita",
+          len(notice) == 1 and notice[0].startswith("report.notice booking_id=B-FA24 outcome_code=VISIT ")
+          and "citizen:" not in notice[0] and not to(city, "agent:other-team-gp"), city.sent)
+    check("FA-24 prima il gp, poi il cittadino lo legge",
+          order.index(gp_id) < order.index(CITIZEN)
+          and to(city, CITIZEN)[-1].startswith("checkin booking_id=B-FA24 slot_id=S7 ")
+          and "medico di base" in to(city, CITIZEN)[-1], city.sent)
+    check("FA-24 nessun referto al Ledger dall'ospedale",
+          all(brain.first_word(t) != "report" for t in to(city, LEDGER)), city.sent)
+    again = city.post(LEDGER, hospital, "checked_in slot_id=S7 booking_id=B-FA24")  # Ledger redelivers
+    await brain.handle("hospital", city, again, await city.history())
+    check("FA-24 un solo avviso al gp per visita", len(to(city, gp_id)) == 1, city.sent)
+    brain._CHECKIN_REQUESTS.clear()
+    city = FacilityCity({"checkin": ["checked_in booking_id=B-FA24B"]})
+    city.peers = []
+    brain._PEERS.clear()
+    await city.turn("checkin booking_id=B-FA24B")
+    check("FA-24 gp non trovato: check-in confermato senza dire 'avvisato'",
+          to(city, CITIZEN) and "medico di base" not in to(city, CITIZEN)[-1]
+          and to(city, CITIZEN)[-1].startswith("checkin booking_id=B-FA24B "), city.sent)
+    brain._PEERS.clear()
+
     city = FacilityCity()
     city.post(booking, hospital, f"confirm offer_id=O1 slot_id=S1 citizen={CITIZEN}")
     city.post(hospital, LEDGER, "hold slot_id=S2 consent_ref=cons-other")

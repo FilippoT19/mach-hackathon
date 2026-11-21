@@ -630,13 +630,19 @@ async def _on_checkin(
         "Ho inviato il suo check-in al registro. Le confermo appena arriva la risposta."))
 
 
-async def _confirm_checkin(city: City, message: Message, chat: list[Message], citizen: str) -> None:
+async def _confirm_checkin(
+    city: City, message: Message, chat: list[Message], citizen: str, *, gp_told: bool = False,
+) -> None:
     fallback = "Check-in registrato, benvenuto. Se ha bisogno di assistenza, lo dica pure al nostro personale."
     en = "You are checked in, welcome. If you need assistance, please ask our staff."
     if city.agent_id == _OUR_AGENTS["hospital"]:
         fallback += " L'ospedale è accessibile anche in sedia a rotelle."
         en += " The hospital is wheelchair accessible."
     line = await _human(city, chat, f"The register confirmed the citizen's arrival. {en}", fallback, en=en)
+    if gp_told:  # FA-24: the notice to the gp has left; the citizen reads it (G10)
+        line += (" I have told your GP about this visit myself, so they can plan any follow-up with you."
+                 if _lang(chat) != "it" else
+                 " Ho avvisato io il suo medico di base di questa visita, così potrà seguirla nel controllo.")
     booking_id = fields_of(message.text)["booking_id"]
     tokens = [
         token for token in message.text.split()[1:] if "=" in token and not token.startswith("booking_id=")
@@ -657,8 +663,11 @@ async def _on_checked_in(
         citizen = fields.get("citizen") or (
             fields_of(attempts[-1].text).get("citizen") if attempts else _citizen(chat)
         )
+    told = False
+    if not reports and city.agent_id == _OUR_AGENTS["hospital"]:
+        told = await _visit_notice(city, chat, token)
     if citizen and not _we(chat, city.agent_id, token, to=citizen, word="checkin"):
-        await _confirm_checkin(city, message, chat, citizen)
+        await _confirm_checkin(city, message, chat, citizen, gp_told=told)
     if reports and not _we(chat, city.agent_id, token, to=LEDGER, word="report"):
         await _say(city, LEDGER, f"report booking_id={booking_id} outcome_code=VISIT")
     if not reports:
@@ -670,6 +679,16 @@ async def _on_checked_in(
     reply, fresh = found
     if first_word(reply.text) == "reported":
         await _on_reported(city, reply, fresh)
+
+
+async def _visit_notice(city: City, chat: list[Message], token: str) -> bool:
+    """FA-24: the hospital files no report (e19: only the specialist does), but it tells the gp
+    the patient was seen, as the specialist does with its report (G5-b). True if it left now."""
+    gp = await _peer(city, "gp", "medico di base gp asst-niguarda")
+    if not gp or gp == city.agent_id or _we(chat, city.agent_id, token, to=gp, word="report.notice"):
+        return False
+    return await _say(city, gp, f"report.notice {token} outcome_code=VISIT Paziente visitato in "
+                      "fisiatria: check-in registrato in ospedale. Potete decidere voi il controllo.")
 
 
 async def _on_reported(city: City, message: Message, chat: list[Message]) -> None:
