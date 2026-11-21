@@ -220,6 +220,12 @@ async def _finish_booking(
         await before
     if found is None:
         _LOG.info("care.held.missing", extra={"need_id": (message.need_id or "")[:48]})
+        # BK-72: no silence and no slot kept back for 15 minutes. The held/refused line is worked
+        # when it comes (its push, or the next message of the case).
+        _hold_unanswered(slot, message.need_id or message.msg_id)
+        if message.sender.startswith("citizen:") and message.sender not in (_SAID.get() or ()):
+            # (the address question "while I lock your appointment" is already a word to the citizen)
+            await _say(city, message.sender, _pending_text(chat, slot))
         return
     reply, fresh = found
     if first_word(reply.text) == "refused":
@@ -237,6 +243,8 @@ async def _finish_booking(
         )
         if done is None:
             _LOG.info("care.commit.missing", extra={"need_id": (message.need_id or "")[:48]})
+            if message.sender.startswith("citizen:") and message.sender not in (_SAID.get() or ()):  # BK-72
+                await _say(city, message.sender, _pending_text(fresh, slot))
             return
         reply, fresh = done
         if first_word(reply.text) == "committed":
@@ -277,6 +285,7 @@ async def _on_held(city: City, message: Message, chat: list[Message]) -> bool:
     parts = ["commit", f"hold_id={hold_id}", f"consent_ref={consent}"] + ([f"fence={fence}"] if fence else [])
     if number:
         parts.append(f"prescription_number={number}")
+    _hold_answered(slot, message.need_id or message.msg_id)  # BK-72: ours now, kept back in full
     return await _say(city, LEDGER, " ".join(parts))
 
 
@@ -421,6 +430,10 @@ async def _on_refused(
                 if await _say(city, LEDGER, " ".join(parts)):
                     _LOG.info("bk62.commit_without_fence hold_id=%s", hold_id[:48])
                     return True
+    seen = _sent(message.need_id or message.msg_id).notes
+    if f"refusal:{message.msg_id}" in seen:
+        return False  # BK-72: the confirm turn and the Ledger's push read the same refusal
+    seen.add(f"refusal:{message.msg_id}")
     held = _HELD_FOR.get(slot)
     if held and held[0] == (message.need_id or message.msg_id):
         _HELD_FOR.pop(slot, None)  # BK-63: our hold is gone, the slot is not ours to keep back
