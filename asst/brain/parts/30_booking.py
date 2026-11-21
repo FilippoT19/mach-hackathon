@@ -865,6 +865,11 @@ def _cx_head(chat: list[Message]) -> str:
     """BK-58 (journey 0002040003): the citizen answered our cross-ASST question twice with
     "Which consent_ref?" and went to the waiting list (no_booking -1). The question now carries
     the reference the citizen can answer with, as the local booking consent does."""
+    # BK-64 (P-magesh-22): with our consent_ref in every question, no citizen answered any more
+    # (L4: 7 journeys of 9 without a booking). Before BK-58 they answered "data.response
+    # purpose=cross_asst". The reference goes in only after the citizen asked which one.
+    if not any(row.sender.startswith("citizen:") and _WHICH_REF.search(row.text or "") for row in chat):
+        return "consent purpose=cross_asst "
     need = next((row.need_id for row in chat if row.need_id), "") or "case"
     return f"consent purpose=cross_asst consent_ref=cx-{need} "
 
