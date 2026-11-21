@@ -5996,6 +5996,14 @@ async def _ledger_ask(city: City, message: Message, text: str) -> bool:
     return await _say(city, LEDGER, text)
 
 
+async def _ledger_asks(city: City, message: Message, texts: list[str]) -> None:
+    """OPS-11: independent Ledger questions of one step go out together (each costs seconds)."""
+    if len(texts) == 1:
+        await _ledger_ask(city, message, texts[0])
+    elif texts:
+        await asyncio.gather(*(_ledger_ask(city, message, text) for text in texts))
+
+
 def _citizen_dropped(chat: list[Message], offer_id: str) -> bool:
     if not offer_id:
         return False
@@ -6175,9 +6183,11 @@ async def _cross_asst(
     sent_any = False
     rare = _rare_hospital(chat, procedure)
     ordered: list[object] = [rare[0]] if rare else []  # X-51: the rare-language ASST first
+    requests: list[tuple[str, str]] = []
     for peer in [*ordered, *(peers or [])]:
         target = peer if isinstance(peer, str) else _peer_id(peer)
-        if not target or target == city.agent_id or _ours(target) or target in sent.cross_peers:
+        if (not target or target == city.agent_id or _ours(target) or target in sent.cross_peers
+                or any(target == asked_to for asked_to, _ in requests)):
             continue
         if not isinstance(peer, str):
             role = _peer_value(peer, "role")
@@ -6202,7 +6212,11 @@ async def _cross_asst(
         want_days = _days(chat)
         if want_days:
             parts.append("days=" + "/".join(sorted(want_days)))
-        if await _say(city, target, " ".join(parts)):
+        requests.append((target, " ".join(parts)))
+    # OPS-11: one need.request per partner, all at once (each say costs seconds under load).
+    done = await asyncio.gather(*(_say(city, target, text) for target, text in requests))
+    for (target, _), ok in zip(requests, done):
+        if ok:
             sent.cross_peers.add(target)
             sent_any = True
     sent.cross_sent = sent_any
@@ -6787,13 +6801,15 @@ async def _advance_alone(
                         "Ho la sua richiesta e sto verificando la ricetta nel registro regionale. "
                         "Tra un momento le mando i posti liberi adatti a lei."))
                 return
+            asks = []
             if not any(
                 row.sender == agent and f"prescription_number={number}" in row.text.split()
                 for row in chat
             ):
-                await _ledger_ask(city, message, f"prescription prescription_number={number}")
+                asks.append(f"prescription prescription_number={number}")
             if not _exact(chat, agent, "agenda"):
-                await _ledger_ask(city, message, "agenda")
+                asks.append("agenda")
+            await _ledger_asks(city, message, asks)  # OPS-11: both questions at once
             chat = await _until(
                 city,
                 message.need_id,
@@ -6837,10 +6853,12 @@ async def _advance_alone(
         if _pass == 2:
             _trace("stop", message, why="ledger_slow", agenda=now is not None, world=world is not None)
             return
+        asks = []
         if now is None and not _exact(chat, agent, "agenda"):
-            await _ledger_ask(city, message, "agenda")
+            asks.append("agenda")
         if world is None and not _asked(chat, agent, procedure, 1):
-            await _ledger_ask(city, message, f"world procedure={procedure} page=1")
+            asks.append(f"world procedure={procedure} page=1")
+        await _ledger_asks(city, message, asks)  # OPS-11
         chat = await _until(
             city,
             message.need_id,
@@ -7135,12 +7153,19 @@ async def _on_confirm(
             parts.append(f"consent_ref={consent}")
             if not await _ledger_ask(city, message, " ".join(parts)):
                 return
+        early = None
         if not hold_self and message.sender.startswith("citizen:"):
             # X-49 kept for BK-57: ask where the citizen comes from while the Ledger locks the slot.
+            # OPS-11: the question goes out while the held line is read; _finish_booking waits
+            # for it before its next message, so the order to the citizen does not change.
             if message.need_id:
                 _BOOKED_AT[message.need_id] = facility
-            await _ask_where(city, message, chat, citizen, early=True)
-        await _finish_booking(city, message, chat, slot, hold_self=hold_self)
+            early = asyncio.ensure_future(_ask_where(city, message, chat, citizen, early=True))
+        try:
+            await _finish_booking(city, message, chat, slot, hold_self=hold_self, before=early)
+        finally:
+            if early is not None:
+                await early
         return
     if not facility or not citizen:
         return
@@ -7188,14 +7213,19 @@ _RECEIPTS: OrderedDict[tuple[str, str | None, str], None] = OrderedDict()
 @asynccontextmanager
 async def _receipt_turn(city: City, message: Message, chat: list[Message], booking_id: str):
     key = (city.agent_id, message.need_id, booking_id)
-    async with _need_gate(_RECEIPT_GATES, (city.agent_id, message.need_id or booking_id)):
+    gate_key = (city.agent_id, message.need_id or booking_id)
+    # OPS-11: ``chat`` was read moments ago in this turn. Read the case again only when another
+    # turn of this need held the gate (it may have written the receipt meanwhile).
+    shared = gate_key in _RECEIPT_GATES
+    async with _need_gate(_RECEIPT_GATES, gate_key):
         if key in _RECEIPTS:
             yield None
             return
-        try:
-            chat = _keep(await city.history(need_id=message.need_id), chat)
-        except CapError:
-            pass
+        if shared:
+            try:
+                chat = _keep(await city.history(need_id=message.need_id), chat)
+            except CapError:
+                pass
         yield chat
 
 
@@ -7218,8 +7248,13 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
         elif not _expected_confirm_reply(fresh, city.agent_id, message.sender, fields):
             await _say(city, message.sender, "booking.receipt.ack status=ignored reason=unexpected_partner")
         else:
-            await _say(city, message.sender, "booking.receipt.ack status=received")
-            await _send_forwarded_receipt(city, message, fresh, booking_id, ledger_ref)
+            # OPS-11: the ack to the facility and the receipt to the citizen go to different
+            # parties; the ack does not wait for the GP notice and the route.
+            ack = asyncio.ensure_future(_say(city, message.sender, "booking.receipt.ack status=received"))
+            try:
+                await _send_forwarded_receipt(city, message, fresh, booking_id, ledger_ref)
+            finally:
+                await ack
 
 
 async def _send_forwarded_receipt(
@@ -7247,7 +7282,13 @@ async def _send_forwarded_receipt(
     )
     # G5 / G10 collaboration: tell the GP first, then say it in the receipt (the review reads only
     # the citizen chat, so the agent-to-agent step must be visible there).
-    gp = await _peer(city, "gp", "medico di base gp asst-niguarda")
+    # OPS-11: the route (Index doors) does not depend on the GP notice: both run at once.
+    route = asyncio.ensure_future(_where_route(city, message, chat, message.sender))
+    try:
+        gp = await _peer(city, "gp", "medico di base gp asst-niguarda")
+    except BaseException:
+        route.cancel()
+        raise
     if gp and gp != city.agent_id and not _we(chat, city.agent_id, token, to=gp, word="booking.notice"):
         number = _number(chat) or ""
         if await _say(city, gp, f"booking.notice {token} ledger_ref={ledger_ref} facility={message.sender} "
@@ -7260,7 +7301,7 @@ async def _send_forwarded_receipt(
         city,
         citizen,
         f"booking.receipt booking_id={booking_id} ledger_ref={ledger_ref} {line} "
-        + await _where_route(city, message, chat, message.sender)
+        + await route
         + _prep_line((_prescription_reply(chat, _number(chat)) or {}).get("procedure", ""), _lang(chat) != "it",
                      route_given=(message.need_id or "") in _WHERE_OF),  # P-02, X-49
     ):
@@ -7310,12 +7351,12 @@ async def _where_route(city: City, message: Message, chat: list[Message], facili
     if known is None:
         return await _zone_route(city, chat, facility)
     point, fields = known
-    door = await _door(city, facility)
+    en = _lang(chat) != "it"
+    door, extra = await asyncio.gather(  # OPS-11: two Index reads at once
+        _door(city, facility), _nearest_line(city, point, en, facility) if point else _nothing())
     if not door:
         return ""
-    en = _lang(chat) != "it"
     km = _km(point, door[:2]) if point else None
-    extra = await _nearest_line(city, point, en, facility) if point else ""
     exact = bool(fields.get("_exact"))
     return _route_line(en, km, door, fields, point, ours=_ours(facility), exact=exact) + (extra if exact else _zone_words(extra)) + " "
 
@@ -7701,15 +7742,19 @@ async def _on_where(city: City, message: Message, chat: list[Message]) -> None:
         (row.sender for row in reversed(chat) if row.sender.startswith("agent:") and "booking.receipt" in words(row.text)),
         "agent:jdj692g4145e",
     )
-    door = await _door(city, facility)
     exact_point = _citizen_point(message.text)
-    point = exact_point or await _zone_point(city, chat)  # X-45
-    km = _km(point, door[:2]) if point and door else None
     en = _lang(chat) != "it"
+
+    async def point_and_nearest() -> tuple[tuple[float, float] | None, str]:
+        point = exact_point or await _zone_point(city, chat)  # X-45
+        return point, (await _nearest_line(city, point, en, facility) if point else "")
+
+    # OPS-11: the facility door and the citizen's point (+ nearest hospital) are read at once.
+    door, (point, extra) = await asyncio.gather(_door(city, facility), point_and_nearest())
+    km = _km(point, door[:2]) if point and door else None
     head = "Thank you." if en else "Grazie."
     if km is None and "address" not in fields_of(message.text):
         head = "No problem." if en else "Nessun problema."
-    extra = await _nearest_line(city, point, en, facility) if point else ""
     # BK-53: the citizen's address is a street name without coordinates, so the distance is from
     # the district and the sentence says "from your area".
     exact = exact_point is not None
@@ -7752,6 +7797,10 @@ def _nearest_words(best: tuple[str, str, float] | None, en: bool) -> str:
     return f" Per qualsiasi urgenza, l'ospedale più vicino a lei è in {best[1]}, a circa {best[2]:.1f} km; in emergenza chiami sempre il 112."
 
 
+async def _nothing() -> str:
+    return ""
+
+
 async def _nearest_line(city: City, point: tuple[float, float], en: bool, booked: str) -> str:
     """X-32: the nearest hospital in the whole city (any ASST), from the Index doors."""
     return _nearest_words(await _nearest_hospital(city, point), en)
@@ -7776,44 +7825,63 @@ async def _citizen_cancel(
         return
     mark.notes.add("ack")
     en = _lang(chat) != "it"
-    await _say(
+    # OPS-11: the ack goes out while the case is read again; it is out before any next message.
+    ack = asyncio.ensure_future(_say(
         city,
         citizen,
         "cancel.ack " + (f"offer_id={offer_id} " if offer_id else "")
         + ("Understood, I have withdrawn that offer." if en else "Capito, ho ritirato quell'offerta."),
-    )
-    async with _need_gate(_GATES, need_key):
-        try:  # cancels of one batch run at the same time: read what the others already wrote
-            chat = _keep(await city.history(need_id=message.need_id), chat)
-        except CapError:
-            pass
-        sent = _sent(need_key)
-        unseen = _slot_ids(sent.offers) - _offered(chat, agent) - set(sent.partner_offers)
-        if (
-            unseen
-            or _open_offers(chat, agent, citizen)
-            or _we(chat, agent, "", to=citizen, word="booking.receipt")
-            or _we(chat, agent, "waiting_list=true", to=citizen, word="offer")
-        ):
-            _trace("stop", message, why="cancel_ack_only")
-            return
-        number = _number(chat)
-        rx = _prescription_reply(chat, number) or _our_offer(chat, agent, offer_id)
-        procedure, priority = fixed or rx.get("procedure"), rx.get("priority")
-        batches = [row for row in chat if row.sender == agent and row.recipient == citizen
-                   and first_word(row.text) == "offer" and "slot_id=" in row.text]
-        last_cross = bool(batches) and "cross_asst=true" in batches[-1].text.split()
-        if last_cross:
-            if not await _partner_round(city, message, chat, need_key, citizen, priority):
-                await _relaxed(city, message, chat, need_key, citizen, procedure, number, priority)
-            return
-        local = sum(1 for row in batches if "cross_asst=true" not in row.text.split())
-        if local >= 2:
-            # BK-29 (journey 129): two local batches refused end the ping-pong with the waiting list.
-            sent.replacement_page = None
-            await _relaxed(city, message, chat, need_key, citizen, procedure, number, priority)
-            return
+    ))
+    try:
+        async with _need_gate(_GATES, need_key):
+            try:  # cancels of one batch run at the same time: read what the others already wrote
+                chat = _keep(await city.history(need_id=message.need_id), chat)
+            except CapError:
+                pass
+            await ack
+            ack = None
+            if await _cancel_next(city, message, chat, need_key, citizen, offer_id, fixed):
+                return
+    finally:
+        if ack is not None:
+            await ack
     await _advance(city, message, chat, fixed=fixed, replacing=True)
+
+
+async def _cancel_next(
+    city: City, message: Message, chat: list[Message], need_key: str, citizen: str, offer_id: str,
+    fixed: str | None,
+) -> bool:
+    """The next step after a citizen cancel, inside its gate. True: done (no new search)."""
+
+    agent = city.agent_id
+    sent = _sent(need_key)
+    unseen = _slot_ids(sent.offers) - _offered(chat, agent) - set(sent.partner_offers)
+    if (
+        unseen
+        or _open_offers(chat, agent, citizen)
+        or _we(chat, agent, "", to=citizen, word="booking.receipt")
+        or _we(chat, agent, "waiting_list=true", to=citizen, word="offer")
+    ):
+        _trace("stop", message, why="cancel_ack_only")
+        return True
+    number = _number(chat)
+    rx = _prescription_reply(chat, number) or _our_offer(chat, agent, offer_id)
+    procedure, priority = fixed or rx.get("procedure"), rx.get("priority")
+    batches = [row for row in chat if row.sender == agent and row.recipient == citizen
+               and first_word(row.text) == "offer" and "slot_id=" in row.text]
+    last_cross = bool(batches) and "cross_asst=true" in batches[-1].text.split()
+    if last_cross:
+        if not await _partner_round(city, message, chat, need_key, citizen, priority):
+            await _relaxed(city, message, chat, need_key, citizen, procedure, number, priority)
+        return True
+    local = sum(1 for row in batches if "cross_asst=true" not in row.text.split())
+    if local >= 2:
+        # BK-29 (journey 129): two local batches refused end the ping-pong with the waiting list.
+        sent.replacement_page = None
+        await _relaxed(city, message, chat, need_key, citizen, procedure, number, priority)
+        return True
+    return False
 
 
 _PREP = {
@@ -7878,8 +7946,7 @@ async def _zone_point(city: City, chat: list[Message]) -> tuple[float, float] | 
 async def _zone_route(city: City, chat: list[Message], facility: str) -> str:
     """X-45: how to get there, inside the receipt (the review reads it), from the citizen's zone."""
 
-    zone = await _zone_point(city, chat)
-    door = await _door(city, facility)
+    zone, door = await asyncio.gather(_zone_point(city, chat), _door(city, facility))  # OPS-11
     if not door:
         return ""
     km = _km(zone, door[:2]) if zone else None
@@ -8083,15 +8150,21 @@ def _our_commit(chat: list[Message], agent: str, hold_id: str) -> bool:
 
 
 async def _finish_booking(
-    city: City, message: Message, chat: list[Message], slot: str, *, hold_self: bool
+    city: City, message: Message, chat: list[Message], slot: str, *, hold_self: bool,
+    before: "asyncio.Future | None" = None,
 ) -> None:
-    """Hold is in the mailbox. Read the held line and commit before this turn ends."""
+    """Hold is in the mailbox. Read the held line and commit before this turn ends.
+
+    OPS-11: ``before`` is a message to the citizen already on its way (the booking centre's
+    address question). It runs while the held line is read and ends before the next message."""
 
     found = await _await_line(
         city, message.need_id, chat, "held", f"slot_id={slot}", op="hold",
         refusal_matches=lambda row: row.recipient == city.agent_id
         and fields_of(row.text).get("slot_id", slot) == slot,
     )
+    if before is not None:
+        await before
     if found is None:
         _LOG.info("care.held.missing", extra={"need_id": (message.need_id or "")[:48]})
         return

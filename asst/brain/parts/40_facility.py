@@ -198,15 +198,21 @@ def _our_commit(chat: list[Message], agent: str, hold_id: str) -> bool:
 
 
 async def _finish_booking(
-    city: City, message: Message, chat: list[Message], slot: str, *, hold_self: bool
+    city: City, message: Message, chat: list[Message], slot: str, *, hold_self: bool,
+    before: "asyncio.Future | None" = None,
 ) -> None:
-    """Hold is in the mailbox. Read the held line and commit before this turn ends."""
+    """Hold is in the mailbox. Read the held line and commit before this turn ends.
+
+    OPS-11: ``before`` is a message to the citizen already on its way (the booking centre's
+    address question). It runs while the held line is read and ends before the next message."""
 
     found = await _await_line(
         city, message.need_id, chat, "held", f"slot_id={slot}", op="hold",
         refusal_matches=lambda row: row.recipient == city.agent_id
         and fields_of(row.text).get("slot_id", slot) == slot,
     )
+    if before is not None:
+        await before
     if found is None:
         _LOG.info("care.held.missing", extra={"need_id": (message.need_id or "")[:48]})
         return
