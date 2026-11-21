@@ -5790,6 +5790,19 @@ def _before_rx_deadline(slot: dict[str, str], reply: dict[str, str] | None, prio
 _PROC_DOCTORS = {"VIS-FIS": ("h1", "h2", "h3"), "VIS-CARD": ("s1", "s2"), "CTRL-CARD": ("s1", "s2"), "CONS-GIN": ("c1",)}
 
 
+# BK-63: service types that name exactly one procedure (cardiology has two: visit and check).
+_SERVICE_PROCEDURE = {"hospital.physiatry": "VIS-FIS"}
+
+
+def _service_procedure(chat: list[Message]) -> str | None:
+    for row in reversed(chat):
+        if row.sender.startswith("citizen:"):
+            guess = _SERVICE_PROCEDURE.get(fields_of(row.text).get("service_type", ""))
+            if guess:
+                return guess
+    return None
+
+
 def _local_doctor(procedure: str | None, lang: str) -> bool:
     """True when one of our doctors for this procedure speaks ``lang`` (unknown procedure: True)."""
 
@@ -5924,7 +5937,11 @@ def _agenda_stale(chat: list[Message], message: Message) -> bool:
         return False
     anchor = next((row for row in reversed(chat) if row.sender == LEDGER and first_word(row.text) == "agenda"), None)
     read_at, turn_at = (_when(anchor.sent_at) if anchor else None), _when(message.sent_at)
-    return read_at is not None and turn_at is not None and turn_at - read_at > _AGENDA_STALE
+    if read_at is None or turn_at is None or turn_at - read_at <= _AGENDA_STALE:
+        return False
+    # BK-63: a Ledger round costs minutes. When the real clock gives the agenda time (BK-62) the
+    # line is not read again; a jump of the agenda still shows as reason=past (BK-59).
+    return not timedelta(0) < datetime.now(read_at.tzinfo) - read_at <= _AGENDA_REAL_MAX
 
 
 def _within(at: str, deadline: datetime | None) -> bool:
@@ -7029,7 +7046,13 @@ async def _advance_alone(
                 asks.append(f"prescription prescription_number={number}")
             if not _exact(chat, agent, "agenda"):
                 asks.append("agenda")
-            await _ledger_asks(city, message, asks)  # OPS-11: both questions at once
+            guess = _service_procedure(chat)
+            if guess and _latest_slots(chat) is None and not _asked(chat, agent, guess, 1):
+                # BK-63: one Ledger round took minutes on 21/11 (request 03:36, prescription
+                # 03:40, slots 03:47). The citizen's request names the service, so the catalogue
+                # is asked in the same round as the prescription instead of the next one.
+                asks.append(f"world procedure={guess} page=1")
+            await _ledger_asks(city, message, asks)  # OPS-11: the questions go out at once
             chat = await _until(
                 city,
                 message.need_id,
@@ -7113,7 +7136,10 @@ async def _advance_alone(
             sent.trigger = trigger
             sent.again.clear()
             sent.replacement_page = None
-            sent.citizen_replacement = message.sender == citizen
+            # BK-63: only a citizen CANCEL refuses offers one by one. A confirm of a slot that is
+            # gone (000248, 000290) is not a refusal of the others: they are offered again, where
+            # before the citizen got the waiting list at once.
+            sent.citizen_replacement = message.sender == citizen and _citizen_cancels(message.text)
     elif message.sender == LEDGER and first_word(message.text) == "slots":
         replacing = sent.replacement_page == _page(message.text)[0] == page
     if replacing and sent.citizen_replacement:
@@ -7129,6 +7155,10 @@ async def _advance_alone(
     lines = [line for line in world.splitlines() if "slot_id=" in line]
     if "widen" in sent.notes and not replacing:
         lines = _all_slot_lines(chat, agent)  # BK-61: the pages read before offering count together
+    elif replacing and not replacement_reply:
+        # BK-63: new offers after a cancel come first from the pages already read (no Ledger round:
+        # the verdict came five minutes after the cancels). The next page is asked only if none fits.
+        lines = _all_slot_lines(chat, agent)
     chosen = [
         slot
         for slot in fitting(
@@ -7143,6 +7173,7 @@ async def _advance_alone(
         )
         if slot.get("slot_id") not in taken and _before_rx_deadline(slot, reply, priority)
         and _within(slot.get("at", ""), deadline) and not _learned_out(slot, learned)
+        and not _held_elsewhere(slot.get("slot_id", ""), key)  # BK-63
     ]
     chosen = _best_tier(chosen, _days(chat), _gender(chat))  # BK-60
     _trace(
@@ -7381,16 +7412,20 @@ async def _on_confirm(
             and facility in (_OUR_AGENTS["hospital"], _OUR_AGENTS["specialist"])
             and offer.get("cross_asst") != "true"):
         book_here = True
-    if book_here and hold_self and message.sender.startswith("citizen:") and slot in _refused_slots(
-        chat, agent, _sent(message.need_id or message.msg_id)
-    ):
+    need_key = message.need_id or message.msg_id
+    busy = book_here and message.sender.startswith("citizen:") and _held_elsewhere(slot, need_key)
+    if busy:
+        _sent(need_key).notes.add("refused:" + slot)  # BK-63: never offered to this citizen again
+    if book_here and message.sender.startswith("citizen:") and (busy or (hold_self and slot in _refused_slots(
+        chat, agent, _sent(need_key)
+    ))):
         # P-magesh-9: the citizen confirms again a slot the Ledger already refused. No second hold
         # and no silence: say it is gone and offer the ones still free (or the waiting list).
         line = ("I am sorry, that appointment is no longer available. Here are the other free ones."
                 if _lang(chat) != "it" else
                 "Mi dispiace, quel posto non è più disponibile. Le propongo gli altri orari liberi.")
         await _say(city, citizen, f"cancel offer_id={offer_id or 'of-' + slot} reason=no_capacity {line}")
-        await _advance(city, message, chat, fixed="CONS-GIN", replacing=True)
+        await _advance(city, message, chat, fixed="CONS-GIN" if hold_self else None, replacing=True)
         return
     if book_here:
         if message.sender.startswith("agent:"):
@@ -7402,7 +7437,11 @@ async def _on_confirm(
             if number:
                 parts.append(f"prescription_number={number}")
             parts.append(f"consent_ref={consent}")
+            _HELD_FOR[slot] = (need_key, time.monotonic())  # BK-63
+            while len(_HELD_FOR) > _SENT_NEEDS:
+                _HELD_FOR.popitem(last=False)
             if not await _ledger_ask(city, message, " ".join(parts)):
+                _HELD_FOR.pop(slot, None)
                 return
         early = None
         if not hold_self and message.sender.startswith("citizen:"):
@@ -7455,6 +7494,18 @@ async def _on_confirm(
         if message.need_id:
             _BOOKED_AT[message.need_id] = target
         await _ask_where(city, message, chat, citizen, early=True)
+
+
+# BK-63 (journeys 000149, 000290, 000193): three citizens confirmed the same counselling slot,
+# one after the other. The Ledger gives it to one; the others waited minutes for a refusal. A
+# slot this process is holding for one need is not offered to another need and not held again.
+_HELD_FOR: OrderedDict[str, tuple[str, float]] = OrderedDict()
+_HELD_SECONDS = 900.0  # a hold that was never committed has expired by then
+
+
+def _held_elsewhere(slot: str, need_key: str) -> bool:
+    entry = _HELD_FOR.get(slot)
+    return bool(entry) and entry[0] != need_key and time.monotonic() - entry[1] < _HELD_SECONDS
 
 
 _RECEIPT_GATES: dict[tuple[str, str], _Gate] = {}
@@ -8576,6 +8627,7 @@ async def _on_committed(city: City, message: Message, chat: list[Message]) -> No
     if not booking_id or not ledger_ref:
         return
     agent = city.agent_id
+    _HELD_FOR.pop(fields.get("slot_id", ""), None)  # BK-63: booked; the catalogue no longer lists it
     async with _receipt_turn(city, message, chat, booking_id) as fresh:
         if fresh is None:
             return
@@ -8699,6 +8751,9 @@ async def _on_refused(
                 if await _say(city, LEDGER, " ".join(parts)):
                     _LOG.info("bk62.commit_without_fence hold_id=%s", hold_id[:48])
                     return True
+    held = _HELD_FOR.get(slot)
+    if held and held[0] == (message.need_id or message.msg_id):
+        _HELD_FOR.pop(slot, None)  # BK-63: our hold is gone, the slot is not ours to keep back
     await _cancel_booking(city, chat, slot, reason=reason, hold_id=hold_id if commit_refused else "")
     desk = agent == _OUR_AGENTS["booking_centre"]  # BK-57: the booking centre now holds our slots
     if desk and any(w in reason or w in message.text.lower() for w in _PERMISSION_WORDS):
