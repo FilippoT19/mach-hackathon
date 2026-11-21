@@ -16,6 +16,7 @@ spec = importlib.util.spec_from_file_location("brain", HERE / "brain" / "agent.p
 brain = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(brain)
 brain._PULL_TRIES = 1  # no waiting in tests
+brain._ER_WAIT = 0.05  # X-53: no 3 s wait for the hospital ack in tests
 CITIZEN = "citizen:c-1"
 
 
@@ -740,6 +741,25 @@ async def main() -> int:
     city = FakeCity(HO)
     await brain._facility(city, msg, [msg], reports=False, hold_self=False)
     check("X-28 l'ospedale risponde al gp", [t for r, t in city.sent if r == "agent:fddgaqmp6kb0" and t.startswith("emergency.ack")], city.sent)
+
+    # 17b. X-53: notice to the hospital BEFORE the 112; "mi ha confermato" only with a real ack.
+    check("X-53 senza ack nessuna conferma promessa", cit and "mi ha confermato" not in cit[0] and "li avviso" not in cit[0], cit)
+
+    class AckCity(FakeCity):
+        async def history(self, peer=None, *, need_id=None):
+            if any(r == HO for r, _ in self.sent):
+                return [Message(type="chat", sender=HO, msg_id="ack1", need_id=need_id,
+                                body={"text": "emergency.ack ready=true Ricevuto, siamo pronti"}, recipient=self.agent_id)]
+            return []
+
+    brain._PEERS.clear()
+    city = AckCity("agent:gp", peers=[Peer(agent_id=HO, role="facility")])
+    await brain._gp(city, citizen_msg("ho dolore al petto"), [])
+    first_ho = next((i for i, (r, _) in enumerate(city.sent) if r == HO), None)
+    first_cit = next((i for i, (r, _) in enumerate(city.sent) if r == CITIZEN), None)
+    check("X-53 avviso all'ospedale prima del 112", first_ho is not None and first_cit is not None and first_ho < first_cit, city.sent)
+    cit53 = to(city, CITIZEN)
+    check("X-53 con ack il 112 dice che l'ospedale è pronto", cit53 and cit53[0].startswith("escalate.emergency reason=red_flag") and "mi ha confermato" in cit53[0] and "112" in cit53[0], cit53)
 
     # 18. X-28: the prescription names the symptom, the place and what to bring.
     c = await run_gp("ho mal di schiena da tre giorni")

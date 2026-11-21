@@ -31,6 +31,13 @@ async def _escalate(city: City, message: Message, chat: list[Message]) -> None:
     """X-41: 112 + notice to our hospital, from any role."""
     agent = city.agent_id
     en = _lang([*chat, message]) != "it"
+    # X-53: warn OUR hospital BEFORE the 112 message (the journey closes on escalate.emergency),
+    # wait a moment for its emergency.ack and, only if it came, say so to the citizen.
+    ready = False
+    try:
+        ready = await asyncio.wait_for(_warn_hospital(city, message, chat), timeout=_ER_WAIT + 1.5)
+    except Exception:  # Index slow, history slow, hospital silent: the 112 message goes anyway
+        ready = False
     if not _we(chat, agent, "escalate.emergency", to=message.sender, word="escalate.emergency"):
         # X-45: nearest hospital to the citizen's zone (Index doors), inside the 112 message.
         zone = await _zone_point(city, [*chat, message])
@@ -41,14 +48,21 @@ async def _escalate(city: City, message: Message, chat: list[Message]) -> None:
             "escalate.emergency reason=red_flag " + (
             "I understand, this needs "
             "attention right now. Call 112 or go to the nearest emergency room. Do not drive: if "
-            "you can, ask someone to go with you. The nearest emergency room in our area is our "
-            "hospital at Via Arganini Gerolamo 38 (wheelchair accessible): I am telling them now."
+            "you can, ask someone to go with you. "
+            + ("I have already warned the emergency room of our hospital at Via Arganini Gerolamo 38 "
+               "(wheelchair accessible): they confirmed they are ready to receive you."
+               if ready else
+               "The nearest emergency room in our area is our hospital at Via Arganini Gerolamo 38 "
+               "(wheelchair accessible).")
             if en else
             "Capisco, quello che mi descrive va preso sul serio subito. Chiami subito il 112 o "
             "vada al pronto soccorso più vicino. Non si metta alla guida: se può, si faccia "
-            "accompagnare e non resti da solo. Il pronto soccorso più vicino nella nostra zona è "
-            "il nostro ospedale in Via Arganini Gerolamo 38 (accessibile in sedia a rotelle): "
-            "li avviso io adesso."
+            "accompagnare e non resti da solo. "
+            + ("Ho già avvisato il pronto soccorso del nostro ospedale in Via Arganini Gerolamo 38 "
+               "(accessibile in sedia a rotelle): mi ha confermato che è pronto ad accoglierla."
+               if ready else
+               "Il pronto soccorso più vicino nella nostra zona è il nostro ospedale in Via Arganini "
+               "Gerolamo 38 (accessibile in sedia a rotelle).")
             ) + (" " + near.strip() if near else ""),
         )
     # X-42: proactive — ask where the citizen is, then name the nearest emergency room (map).
@@ -56,14 +70,44 @@ async def _escalate(city: City, message: Message, chat: list[Message]) -> None:
         await _say(city, message.sender, "data.request purpose=emergency fields=address " + (
                    "Where are you now? I will tell you the nearest emergency room right away." if en else
                    "Mi dice dove si trova adesso? Le indico subito il pronto soccorso più vicino a lei."))
+
+
+_ER_WAIT = 3.0  # X-53: at most 3 s between the red flag and the 112 message
+
+
+async def _warn_hospital(city: City, message: Message, chat: list[Message]) -> bool:
+    """X-53: emergency.notice to OUR hospital (no citizen data), then True if its emergency.ack
+    is in the case. False if there is no hospital, we are the hospital, or it has not answered."""
+
+    agent = city.agent_id
     hospital = await _peer(city, "hospital", "ospedale hospital asst-niguarda")
-    if hospital and hospital != agent and not _we(chat, agent, "emergency.notice", to=hospital, word="emergency.notice"):
+    if not hospital or hospital == agent:
+        return False
+
+    def acked(rows: list[Message]) -> bool:
+        return any(row.sender == hospital and first_word(row.text) == "emergency.ack" for row in rows)
+
+    if acked(chat):
+        return True
+    if not _we(chat, agent, "emergency.notice", to=hospital, word="emergency.notice"):
+        district = _citizen_district([*chat, message])
         await _say(
             city,
             hospital,
-            "emergency.notice reason=red_flag Un cittadino con red flag è stato indirizzato "
-            "al 112 o al pronto soccorso. Vi avviso in caso arrivi da voi.",
+            "emergency.notice reason=red_flag" + (f" district={district}" if district is not None else "")
+            + " Un cittadino con una red flag sta per essere indirizzato al 112 o al vostro pronto "
+            "soccorso. Mi confermate che siete pronti ad accoglierlo?",
         )
+    started = time.monotonic()
+    while time.monotonic() - started < _ER_WAIT:
+        try:
+            rows = await city.history(need_id=message.need_id)
+        except Exception:
+            rows = []
+        if acked(rows):
+            return True
+        await asyncio.sleep(_PULL_PAUSE)
+    return False
 
 
 def _symptom(message: Message) -> str | None:

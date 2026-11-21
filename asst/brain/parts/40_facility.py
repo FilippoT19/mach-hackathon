@@ -52,8 +52,9 @@ async def _facility(
             await _say(
                 city,
                 message.sender,
-                "emergency.ack Ricevuto: se il cittadino arriva da noi lo accogliamo subito e lo "
-                "accompagniamo al pronto soccorso.",
+                "emergency.ack ready=true Ricevuto, siamo pronti: pronto soccorso in Via Arganini "
+                "Gerolamo 38, ingresso accessibile in sedia a rotelle. Se il cittadino arriva da noi "
+                "lo accogliamo subito.",
             )
         return
     if head == "need.request" and message.sender.startswith("agent:"):
