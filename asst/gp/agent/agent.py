@@ -6473,6 +6473,9 @@ async def _partner_reply(city: City, message: Message, chat: list[Message], fixe
 _ANSWERED: OrderedDict[str, None] = OrderedDict()
 
 
+_EARLY_STATUS = 8.0  # P-magesh-17: seconds before a slow booking turn sends a status line
+
+
 def _mark_answered(msg_id: str) -> None:
     _ANSWERED[msg_id] = None
     _ANSWERED.move_to_end(msg_id)
@@ -6496,7 +6499,20 @@ async def _desk(
     said: set[str] = set()
     token = _SAID.set(said)
     try:
-        await _desk_route(city, message, chat, hold_self=hold_self, fixed=fixed)
+        # P-magesh-17: a slow turn (Ledger, catalogue, model) never leaves the citizen in silence.
+        # After _EARLY_STATUS seconds without a word to the citizen, say where the case stands;
+        # the route goes on and its answer follows. An error in the route ends in that line too.
+        route = asyncio.ensure_future(_desk_route(city, message, chat, hold_self=hold_self, fixed=fixed))
+        done, _ = await asyncio.wait({route}, timeout=_EARLY_STATUS)
+        if not done and message.sender not in said and message.msg_id not in _ANSWERED:
+            await _still_here(city, message, [*chat, message] if all(
+                row.msg_id != message.msg_id for row in chat) else chat, fixed=fixed)
+        try:
+            await route
+        except Exception:  # noqa: BLE001 - the citizen still gets a line below
+            _LOG.exception("booking.route_failed need_id=%s", message.need_id)
+            if message.sender not in said and message.msg_id not in _ANSWERED:
+                said.clear()
     finally:
         _SAID.reset(token)
     if message.sender in said:
