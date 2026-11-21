@@ -99,6 +99,14 @@ async def main(need: Need, city: City) -> None:
     # it in words and goes on with the journey (red flag first).
     if getattr(need, "is_emergency", False) is True and message.sender.startswith("citizen:"):
         _EMERGENCY_NEEDS.add(message.need_id or message.msg_id)
+    # OPS-08: a message from another agent with no key=value token is not part of any MACH
+    # exchange (the deploy conformance probe "visit" is one). End the turn at once: the Relay's
+    # custody.ack check waits ~5 s, and a slow remote history read made the turn miss it.
+    text = (message.text or "").strip()
+    if (not message.sender.startswith("citizen:") and message.sender != LEDGER
+            and "=" not in text and text != "__error__"):
+        _LOG.info("ops08.skip sender=%s", message.sender[:40])
+        return
     case = await city.history(need_id=message.need_id)
     await handle(role_of(), city, message, case)
 
