@@ -290,6 +290,12 @@ async def main() -> int:
         print(("PASS " if ok else "FAIL ") + name + ("" if ok else f"  -> {detail}"))
         failures += 0 if ok else 1
 
+    # BK-36: the citizen grants cross-ASST consent as "data.response purpose=cross_asst" (000175).
+    cc = [row("agent:bk", CITIZEN, "consent purpose=cross_asst Posso cercare?", 1),
+          row(CITIZEN, "agent:bk", "data.response purpose=cross_asst", 2)]
+    got = brain._cross_consent(cc, "agent:bk")
+    check("BK-36 data.response cross_asst = consenso", got[0] is True and bool(got[1]), got)
+
     # 1. Fixed phrase, no model: prescription with the fallback sentence.
     c = await run_gp("ho mal di schiena da tre giorni")
     led, cit = to(c, LEDGER), to(c, CITIZEN)
