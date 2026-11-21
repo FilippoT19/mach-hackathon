@@ -903,7 +903,23 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     emergency = _emergency(message)
     code = None if emergency else _symptom(message)
     if not emergency and code is None and "prescription_number" in fields:
-        await _renew_prescription(city, message, chat, fields["prescription_number"])
+        number = fields["prescription_number"]
+        wants = re.search(r"rinnov|scadut|renew|expired|nuova ricetta|new prescription", message.text.lower())
+        wants = wants or any(
+            row.sender == LEDGER and number in row.text
+            and re.search(r"expired|scadut|used|PRESCRIPTION_EXPIRED", row.text) for row in chat
+        )
+        ours = _we(chat, agent, f"prescription_number={number}", to=message.sender, word="prescription")
+        if ours and not wants:
+            # P-francesco-37: a valid prescription we just issued is not a renewal request.
+            if not _we(chat, agent, "", to=message.sender, word="prescription.valid"):
+                en = _lang([*chat, message]) != "it"
+                await _say(city, message.sender, f"prescription.valid prescription_number={number} " + (
+                    "Your prescription is valid: please use it with the booking centre to book your visit."
+                    if en else
+                    "La sua ricetta è valida: la usi con il centro prenotazioni per prenotare la visita."))
+            return
+        await _renew_prescription(city, message, chat, number)
         return
     if not emergency:
         assessed = await _llm_symptom(city, message.text, emergency_only=code is not None)

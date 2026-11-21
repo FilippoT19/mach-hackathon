@@ -296,6 +296,12 @@ async def main() -> int:
     got = brain._cross_consent(cc, "agent:bk")
     check("BK-36 data.response cross_asst = consenso", got[0] is True and bool(got[1]), got)
 
+    # P-francesco-37: a prescription number we issued, no renewal words -> no new prescription.
+    gp = FakeCity("agent:gp")
+    issued = row("agent:gp", CITIZEN, "prescription prescription_number=prescription_number-N-1 procedure=VIS-FIS priority=B", 1)
+    await brain._gp(gp, citizen_msg("Ho la ricetta prescription_number=prescription_number-N-1, cosa faccio?"), [issued])
+    check("P-F37 ricetta valida non si rinnova", not any(t.startswith("prescription ") or "data.request" in t for t in to(gp, LEDGER)) and any("prescription.valid" in t for t in to(gp, CITIZEN)), gp.sent)
+
     # 1. Fixed phrase, no model: prescription with the fallback sentence.
     c = await run_gp("ho mal di schiena da tre giorni")
     led, cit = to(c, LEDGER), to(c, CITIZEN)
