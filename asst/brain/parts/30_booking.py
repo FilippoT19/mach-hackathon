@@ -1258,12 +1258,21 @@ async def _advance(
         # BK-45: a Ledger reply often lands only in the history and opens no turn. Whoever asked
         # for a catalogue page reads it here, in the same turn, until the search has an outcome
         # (offers, another ASST, waiting list). A push that also opens a turn finds it done.
+        started = time.monotonic()
         for _ in range(_MAX_PAGE + 1):
             page = sent.pending_page
             if page is None:
                 break
             sent.pending_page = None
+            if time.monotonic() - started >= _TURN_SECONDS:
+                # BK-54: this turn has searched long enough. The citizen gets an outcome now
+                # (another ASST or the waiting list) instead of waiting for the last page.
+                _trace("stop", message, why="turn_budget", page=page)
+                await _after_local(city, message, chat, key, fixed=fixed, replacing=sent.replacement_page is not None)
+                break
             for _try in range(4):  # BK-39: the Ledger can take well over 6 s; wait up to ~25 s
+                if _try and time.monotonic() - started >= _TURN_SECONDS:
+                    break
                 fresh = await _until(
                     city, message.need_id, chat, lambda rows: _slots_page(rows, city.agent_id, page) is not None,
                 )

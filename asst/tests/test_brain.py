@@ -880,6 +880,18 @@ async def main() -> int:
     await brain._advance_alone(c, chat[3], chat, "N-1", fixed=None, replacing=False)
     got = brain._offer_rows(to(c, CITIZEN)[0]) if to(c, CITIZEN) else []
     check("P-francesco-31 la dottoressa chiesta viene prima", bool(got) and got[0]["doctor_id"] == "d-s2", got)
+    # BK-54: a wait ends on the clock even when every history() call is slow.
+    class SlowCity(FakeCity):
+        calls = 0
+        async def history(self, peer=None, *, need_id=None):
+            SlowCity.calls += 1
+            await asyncio.sleep(0.03)
+            return []
+    tries, seconds = brain._PULL_TRIES, brain._PULL_SECONDS
+    brain._PULL_TRIES, brain._PULL_SECONDS = 50, 0.05
+    await brain._until(SlowCity("agent:bk"), "N-1", [], lambda rows: False)
+    brain._PULL_TRIES, brain._PULL_SECONDS = tries, seconds
+    check("BK-54 attesa a tempo: poche letture anche con 50 tentativi", SlowCity.calls <= 4, SlowCity.calls)
     # 26. X-40/41, FA-20, BK-24, CO-20.
     def cm(t, to="agent:x"):
         return Message(type="chat", sender=CITIZEN, msg_id="m40", need_id="N-40", recipient=to, body={"text": t})

@@ -14,6 +14,7 @@ import logging
 import math
 import os
 import re
+import time
 from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -65,6 +66,11 @@ _LOG = logging.getLogger("care")
 # the case history and never opens a turn. Wait briefly and read it back from history.
 _PULL_TRIES = 24
 _PULL_PAUSE = 0.25
+# BK-54: a wait is bounded by the clock, not by the number of tries. Under load one history()
+# call takes seconds, so 24 tries became minutes and one booking turn lasted 950-1150 s.
+_PULL_SECONDS = 6.0
+# The whole search of one turn (catalogue pages) must end well inside the citizen's patience.
+_TURN_SECONDS = 40.0
 # Needs whose sent offers this process remembers; the oldest is forgotten first.
 _SENT_NEEDS = 4096
 
@@ -405,6 +411,7 @@ async def _until(
     """Re-read the case until ``ready`` or the short wait ends. The push may never arrive."""
 
     fresh = chat
+    started = time.monotonic()
     for attempt in range(_PULL_TRIES):
         try:
             fresh = await city.history(need_id=need_id)
@@ -413,6 +420,8 @@ async def _until(
         fresh = _keep(fresh, chat)
         if ready(fresh):
             return fresh
+        if time.monotonic() - started >= _PULL_SECONDS:  # BK-54: slow history() calls
+            break
         if attempt + 1 < _PULL_TRIES:
             await asyncio.sleep(_PULL_PAUSE)
     return fresh
@@ -439,7 +448,10 @@ async def _await_line(
 
     known = {row.msg_id for row in chat}
     fresh = chat
+    started = time.monotonic()
     for attempt in range(_PULL_TRIES):
+        if attempt and time.monotonic() - started >= 2 * _PULL_SECONDS:  # BK-54 (hold/commit: twice the wait)
+            break
         try:
             fresh = await city.history(need_id=need_id)
         except CapError:
@@ -2359,12 +2371,21 @@ async def _advance(
         # BK-45: a Ledger reply often lands only in the history and opens no turn. Whoever asked
         # for a catalogue page reads it here, in the same turn, until the search has an outcome
         # (offers, another ASST, waiting list). A push that also opens a turn finds it done.
+        started = time.monotonic()
         for _ in range(_MAX_PAGE + 1):
             page = sent.pending_page
             if page is None:
                 break
             sent.pending_page = None
+            if time.monotonic() - started >= _TURN_SECONDS:
+                # BK-54: this turn has searched long enough. The citizen gets an outcome now
+                # (another ASST or the waiting list) instead of waiting for the last page.
+                _trace("stop", message, why="turn_budget", page=page)
+                await _after_local(city, message, chat, key, fixed=fixed, replacing=sent.replacement_page is not None)
+                break
             for _try in range(4):  # BK-39: the Ledger can take well over 6 s; wait up to ~25 s
+                if _try and time.monotonic() - started >= _TURN_SECONDS:
+                    break
                 fresh = await _until(
                     city, message.need_id, chat, lambda rows: _slots_page(rows, city.agent_id, page) is not None,
                 )

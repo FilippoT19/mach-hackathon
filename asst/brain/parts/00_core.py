@@ -16,6 +16,7 @@ import logging
 import math
 import os
 import re
+import time
 from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -67,6 +68,11 @@ _LOG = logging.getLogger("care")
 # the case history and never opens a turn. Wait briefly and read it back from history.
 _PULL_TRIES = 24
 _PULL_PAUSE = 0.25
+# BK-54: a wait is bounded by the clock, not by the number of tries. Under load one history()
+# call takes seconds, so 24 tries became minutes and one booking turn lasted 950-1150 s.
+_PULL_SECONDS = 6.0
+# The whole search of one turn (catalogue pages) must end well inside the citizen's patience.
+_TURN_SECONDS = 40.0
 # Needs whose sent offers this process remembers; the oldest is forgotten first.
 _SENT_NEEDS = 4096
 
