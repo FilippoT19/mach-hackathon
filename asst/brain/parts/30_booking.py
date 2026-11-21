@@ -677,6 +677,24 @@ async def _ledger_asks(city: City, message: Message, texts: list[str]) -> None:
         await asyncio.gather(*(_ledger_ask(city, message, text) for text in texts))
 
 
+async def _fresh_slots(city: City, message: Message, chat: list[Message], procedure: str) -> list[Message]:
+    """FA-22 (journey 000308): after the Ledger refused a slot, the next offers must come from the
+    agenda and slots of now, not from the list read when the case opened (minutes ago = hours of
+    agenda): ask both again and wait for the new lines. If the Ledger is slow, the old view stays
+    and ``_agenda_now`` still moves the clock forward."""
+
+    if not procedure:
+        return chat
+    seen = {row.msg_id for row in chat}
+    await _ledger_asks(city, message, ["agenda", f"world procedure={procedure} page=1"])
+
+    def ready(rows: list[Message]) -> bool:
+        new = {first_word(row.text) for row in rows if row.sender == LEDGER and row.msg_id not in seen}
+        return {"agenda", "slots"} <= new
+
+    return await _until(city, message.need_id, chat, ready)
+
+
 def _citizen_dropped(chat: list[Message], offer_id: str) -> bool:
     if not offer_id:
         return False
@@ -1380,11 +1398,16 @@ async def _advance(
     *,
     fixed: str | None,
     replacing: bool,
+    refresh: str = "",
 ) -> None:
     key = message.need_id or message.msg_id
     async with _need_gate(_GATES, key):
         sent = _sent(key)
         sent.pending_page = None
+        if refresh:
+            # FA-22: inside the gate, so a pushed slots turn of this need waits and then finds the
+            # new offers already sent (BK-46) instead of sending a second batch.
+            chat = await _fresh_slots(city, message, chat, refresh)
         await _advance_alone(city, message, chat, key, fixed=fixed, replacing=replacing)
         # BK-45: a Ledger reply often lands only in the history and opens no turn. Whoever asked
         # for a catalogue page reads it here, in the same turn, until the search has an outcome
@@ -1812,7 +1835,7 @@ async def _on_confirm(
                 if _lang(chat) != "it" else
                 "Mi dispiace, quel posto non è più disponibile. Le propongo gli altri orari liberi.")
         await _say(city, citizen, f"cancel offer_id={offer_id or 'of-' + slot} reason=no_capacity {line}")
-        await _advance(city, message, chat, fixed="CONS-GIN", replacing=True)
+        await _advance(city, message, chat, fixed="CONS-GIN", replacing=True, refresh="CONS-GIN")
         return
     if book_here:
         if message.sender.startswith("agent:"):

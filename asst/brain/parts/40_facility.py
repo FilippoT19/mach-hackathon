@@ -390,7 +390,15 @@ async def _on_refused(
         # P-magesh-9: the cancel just sent is not in ``chat`` yet, so the refused slot looked free
         # and went out again with the next offers. Remember it: it is never offered again.
         _sent(message.need_id or message.msg_id).notes.add("refused:" + slot)
-        await _advance(city, message, chat, fixed=None if desk else "CONS-GIN", replacing=True)
+        # FA-22 (journey 000308): the new offers came from the slot list read minutes earlier, so
+        # slots already past went out again (reason=past). Read agenda and slots again first.
+        if desk:
+            reply = _prescription_reply(chat, _number(chat)) or {}
+            procedure = reply.get("procedure", "")
+        else:
+            procedure = "CONS-GIN"
+        await _advance(city, message, chat, fixed=None if desk else "CONS-GIN", replacing=True,
+                       refresh=procedure)
 
 
 _CHECKIN_LIMIT = 3

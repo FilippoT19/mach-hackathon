@@ -1083,6 +1083,55 @@ async def main() -> int:
         check(f"FA-21 {refusal[:36]}: conferma ripetuta, risposta e nessun hold sul posto morto",
               any("non è più disponibile" in t for t in to(c, CITIZEN))
               and not any(t.startswith("hold ") for t in to(c, LEDGER)), c.sent)
+    # FA-22 (journey 000308, consultorio): the Ledger refuses the confirmed slot (expired) minutes
+    # later. The new offers must come from agenda and slots read again, never the old list: no
+    # refused slot, no slot already past (the citizen cancelled them all with reason=past).
+    class LedgerCity(FakeCity):
+        def __init__(self, agent_id, base_rows, later_rows):
+            super().__init__(agent_id)
+            self.base_rows, self.later_rows = base_rows, later_rows
+        async def history(self, peer=None, *, need_id=None):
+            asked = {t.split()[0] for r, t in self.sent if r == LEDGER}
+            return self.base_rows + (self.later_rows if {"agenda", "world"} <= asked else [])
+    base = [
+        (CITIZEN, FAMX, "Consultorio, un appuntamento. Subito, per favore."),
+        (LEDGER, FAMX, f"agenda agenda_now={NOW}"),
+        (LEDGER, FAMX, world),
+        (FAMX, CITIZEN, offers),
+        (CITIZEN, FAMX, "confirm offer_id=of-s1500 consent_ref=C-1"),
+        (FAMX, LEDGER, f"hold slot_id=s1500 citizen={CITIZEN} consent_ref=C-1"),
+        (LEDGER, FAMX, "refused hold code=EXPIRED detail=slot_s1500_has_passed slot_id=s1500"),
+    ]
+    later_world = "slots page=1/1\n" + "\n".join([gin("s1700", "2026-11-04T17:00:00Z"), gin("s0510", "2026-11-05T10:00:00Z"), gin("s0512", "2026-11-05T12:00:00Z")])
+    chat = [row(a2, b2, t2, i) for i, (a2, b2, t2) in enumerate(base)]
+    later = [row(LEDGER, FAMX, "agenda agenda_now=2026-11-04T15:00:00Z", 50), row(LEDGER, FAMX, later_world, 51)]
+    tries, seconds = brain._PULL_TRIES, brain._PULL_SECONDS
+    brain._PULL_TRIES, brain._PULL_SECONDS = 3, 0.05
+    brain._SENT.clear()
+    c = LedgerCity(FAMX, chat, later)
+    await brain._on_refused(c, chat[-1], chat, hold_self=True)
+    brain._PULL_TRIES, brain._PULL_SECONDS = tries, seconds
+    asked = to(c, LEDGER)
+    out = [t for t in to(c, CITIZEN) if t.startswith("offer ")]
+    check("FA-22 dopo il rifiuto rilegge agenda e slot dal Ledger",
+          "agenda" in asked and any(t.startswith("world procedure=CONS-GIN") for t in asked), asked)
+    check("FA-22 una sola nuova offerta, senza slot rifiutati o passati, con quelli di adesso",
+          len(out) == 1 and not any(f"slot_id={x}" in out[0] for x in ("s1500", "s1600", "s1700"))
+          and "slot_id=s0510" in out[0], to(c, CITIZEN))
+    # FA-22: nothing valid left locally -> first the citizen's consent for another ASST, and no
+    # partner is contacted before it.
+    empty_world = "slots page=1/1\n" + gin("s1700", "2026-11-04T17:00:00Z")
+    later = [row(LEDGER, FAMX, "agenda agenda_now=2026-11-04T15:00:00Z", 50), row(LEDGER, FAMX, empty_world, 51)]
+    brain._PULL_TRIES, brain._PULL_SECONDS = 3, 0.05
+    brain._SENT.clear()
+    c = LedgerCity(FAMX, chat, later)
+    c.peers = [Peer(agent_id="agent:partnerfc", role="family_counseling")]
+    await brain._on_refused(c, chat[-1], chat, hold_self=True)
+    brain._PULL_TRIES, brain._PULL_SECONDS = tries, seconds
+    said = to(c, CITIZEN)
+    check("FA-22 nessuno slot valido: prima il consenso cross-ASST al cittadino, nessun partner contattato",
+          any("purpose=cross_asst" in t for t in said) and not any(t.startswith("offer ") for t in said)
+          and not any(r.startswith("agent:") for r, _ in c.sent), c.sent)
     # 26. X-40/41, FA-20, BK-24, CO-20.
     def cm(t, to="agent:x"):
         return Message(type="chat", sender=CITIZEN, msg_id="m40", need_id="N-40", recipient=to, body={"text": t})
