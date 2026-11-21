@@ -273,6 +273,29 @@ async def test_facility_proposals(check) -> None:
     check("P-francesco-6 recupera il consenso dall'hold nella storia del Ledger",
           to(city, LEDGER) == ["commit hold_id=H1 consent_ref=C1 fence=2"], city.sent)
 
+    # BK-74 (rule P2): a confirm from another ASST's booking centre puts the citizen's cross_asst
+    # consent on our hold; alone it is the consent; our own booking's hold stays as before.
+    partner = "agent:partner-booking"
+    city = FacilityCity({"hold": ["held hold_id=H74 slot_id=S74 fence=1"]})
+    await city.turn(f"confirm offer_id=O74 slot_id=S74 citizen={CITIZEN} consent_ref=C-BK "
+                    "cross_asst_consent_ref=C-CROSS prescription_number=RX74", sender=partner)
+    holds = [t for t in to(city, LEDGER) if t.startswith("hold ")]
+    check("BK-74 (P2) hold per un'altra ASST porta cross_asst_consent_ref",
+          len(holds) == 1 and "consent_ref=C-BK" in holds[0].split()
+          and "cross_asst_consent_ref=C-CROSS" in holds[0].split(), city.sent)
+    city = FacilityCity()
+    await city.turn(f"confirm offer_id=O75 slot_id=S75 citizen={CITIZEN} cross_asst_consent_ref=C-CROSS",
+                    sender=partner)
+    check("BK-74 (P2) solo cross_asst_consent_ref: hold con quel consenso, nessun missing_consent_ref",
+          any(t.startswith("hold slot_id=S75") and "consent_ref=C-CROSS" in t.split() for t in to(city, LEDGER))
+          and not any("missing_consent_ref" in t for t in to(city, partner)), city.sent)
+    city = FacilityCity()
+    await city.turn(f"confirm offer_id=O76 slot_id=S76 citizen={CITIZEN} consent_ref=C-OURS "
+                    "cross_asst_consent_ref=C-X", sender=booking)
+    check("BK-74 must not break: confirm del nostro booking, hold senza cross_asst_consent_ref",
+          any(t.startswith("hold slot_id=S76") and "consent_ref=C-OURS" in t.split()
+              and "cross_asst_consent_ref" not in t for t in to(city, LEDGER)), city.sent)
+
     city = FacilityCity({
         "hold": ["held hold_id=H1 slot_id=S1 fence=9"],
         "commit": ["refused commit hold_id=H2 NO_CAPACITY", "refused commit hold_id=H1 PRESCRIPTION_EXPIRED"],
