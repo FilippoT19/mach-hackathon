@@ -60,14 +60,14 @@ async def _facility(
         if not _trusted(message.sender):  # X-13: unknown agent, no slots and no data
             if not _we(chat, city.agent_id, "", to=message.sender, word="cancel"):
                 rid = fields_of(message.text).get("request_id", "")
-                await _say(city, message.sender, f"cancel reason=unknown_partner request_id={rid}")
+                await _say(city, message.sender, f"cancel reason=not_listed mach={_MACH} request_id={rid}")
             return
         await _partner_request(city, message, chat)  # FA-12
         return
     if message.sender.startswith("agent:") and not _ours(message.sender) and not _trusted(message.sender):
         # X-13: an unknown agent never books here, but it always gets an answer (conformance needs an effect).
         if not _we(chat, city.agent_id, "", to=message.sender, word="cancel"):
-            await _say(city, message.sender, "cancel reason=unknown_partner Non risultate tra le ASST partner: "
+            await _say(city, message.sender, "cancel reason=not_listed Non risultate tra le ASST partner: "
                        "scriveteci con need.request dal vostro centro prenotazioni.")
         return
     if message.sender == LEDGER and head == "held":
@@ -416,7 +416,14 @@ async def _on_refused(
         notes = _sent(message.need_id or message.msg_id).notes
         if f"nofence:{hold_id}:{message.msg_id}" in notes:
             return True  # another turn already answered this same refusal
-        if not any(note.startswith(f"nofence:{hold_id}:") for note in notes):
+        # FA-23: also from the history, so a fresh process (restart, other replica) does not send
+        # the commit without fence a second time and leave the citizen without an answer.
+        retried = any(
+            row.sender == agent and row.recipient == LEDGER and first_word(row.text) == "commit"
+            and fields_of(row.text).get("hold_id") == hold_id and "fence" not in fields_of(row.text)
+            for row in chat
+        )
+        if not retried and not any(note.startswith(f"nofence:{hold_id}:") for note in notes):
             _, consent, number = _booking_of(chat, agent, slot)
             consent = consent or next(
                 (fields_of(row.text).get("consent_ref", "") for row in reversed(chat)
@@ -446,7 +453,15 @@ async def _on_refused(
         # P-magesh-9: the cancel just sent is not in ``chat`` yet, so the refused slot looked free
         # and went out again with the next offers. Remember it: it is never offered again.
         _sent(message.need_id or message.msg_id).notes.add("refused:" + slot)
-        await _advance(city, message, chat, fixed=None if desk else "CONS-GIN", replacing=True)
+        # FA-22 (journey 000308): the new offers came from the slot list read minutes earlier, so
+        # slots already past went out again (reason=past). Read agenda and slots again first.
+        if desk:
+            reply = _prescription_reply(chat, _number(chat)) or {}
+            procedure = reply.get("procedure", "")
+        else:
+            procedure = "CONS-GIN"
+        await _advance(city, message, chat, fixed=None if desk else "CONS-GIN", replacing=True,
+                       refresh=procedure)
     return False
 
 
@@ -687,6 +702,15 @@ async def _on_reported(city: City, message: Message, chat: list[Message]) -> Non
 
 # --- FA-12: cross-ASST request from another booking centre (format agreed in the group) ------
 _PARTNER_DONE: set[str] = set()
+# MACH2-6 (R21): same request_id, same answer. The exact text sent, per (asker, request_id).
+_PARTNER_SAID: OrderedDict[str, str] = OrderedDict()
+
+
+async def _partner_say(city: City, asker: str, request_id: str, text: str) -> None:
+    _PARTNER_SAID[f"{asker}|{request_id}"] = text
+    while len(_PARTNER_SAID) > 500:
+        _PARTNER_SAID.popitem(last=False)
+    await _say(city, asker, text)
 
 
 async def _partner_request(city: City, message: Message, chat: list[Message]) -> None:
@@ -694,13 +718,16 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
     fields = fields_of(message.text)
     request_id = fields.get("request_id") or message.need_id or message.msg_id
     if request_id in _PARTNER_DONE:
+        again = _PARTNER_SAID.get(f"{message.sender}|{request_id}")
+        if again:  # MACH2-6 (R21): a repeated request_id gets the same offers, never silence
+            await _say(city, message.sender, again)
         return
     procedure = fields.get("procedure", "")
     priority = fields.get("priority") or None
     agent = city.agent_id
     if not procedure:
         _PARTNER_DONE.add(request_id)
-        await _say(city, message.sender, f"cancel reason=no_availability request_id={request_id} Manca procedure=.")
+        await _partner_say(city, message.sender, request_id, f"cancel reason=bad_request mach={_MACH} request_id={request_id} Manca procedure=.")
         return
     # BK-67 / MACH-1.3 R1: a partner is answered within seconds. Agenda and catalogue the process
     # already has are used at once; the Ledger is asked again (at most once every two minutes)
@@ -737,14 +764,14 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
             picks = [slot for slot in picks if (_when(slot.get("at", "")) or first) >= first]
         picks = picks[:_OFFER_MAX]  # BK-55: every fitting slot in one answer
     if not picks:
-        await _say(city, message.sender, f"cancel reason=no_availability request_id={request_id} Al momento non abbiamo posti adatti per {procedure}.")
+        await _partner_say(city, message.sender, request_id, f"cancel reason=no_availability mach={_MACH} request_id={request_id} Al momento non abbiamo posti adatti per {procedure}.")
         return
     lines = [
         f"offer offer_id=of-{s['slot_id']} slot_id={s['slot_id']} doctor_id={s['doctor_id']} facility={agent} "
-        f"procedure={s['procedure']} agenda_date={s['at']} request_id={request_id}"
+        f"procedure={s['procedure']} agenda_date={s['at']} mach={_MACH} request_id={request_id}"
         + (" wheelchair=true" if agent == "agent:jdj692g4145e" else "")  # common format: accessible hospital
         for s in picks
     ]
     tail = ("Ecco i nostri posti liberi. Dopo il consenso cross_asst del cittadino inviateci la conferma "
         "con offer_id, slot_id, citizen, consent_ref e prescription_number: rispondiamo con la ricevuta.")
-    await _say(city, message.sender, "\n".join(_fit(lines, tail) + [tail]))
+    await _partner_say(city, message.sender, request_id, "\n".join(_fit(lines, tail) + [tail]))

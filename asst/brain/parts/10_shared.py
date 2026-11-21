@@ -72,6 +72,50 @@ _PEERS: dict[str, str] = {}
 # X-13: impostors. Other teams' agent ids, copied from the shared list in the mods' group. While
 # it is empty every partner is accepted (cross-ASST keeps working); once filled, only these.
 _TRUSTED_PARTNERS: set[str] = set()
+# MACH2-1 (R17): the official ring, from the city map /v1/scoreboard/map (21/11 01:45, before the
+# impostors), as published in MACH-2.0. Per ASST: hospital, specialist, consultorio, booking, gp.
+_MACH = "2.0"
+_RING_TABLE = {
+    "bicocca": "bb01ggxymm05 sh35cbsy287d nkh372rd16yq ez8cb7j167p2 rng5wcrzvhsj",
+    "brera": "ndrnnjwxttmb fjmvabg58gh0 cj1jfac4ev86 q6s5nm3h5dq5 xbmtvn6jzvyg",
+    "citta studi": "ytprhckwyw4t sc25kab6cgde p5sq1njyjr47 hwfrwj893121 pp83zdrg8vhe",
+    "corvetto": "x0vr9rbwpesr h8425ac7btd8 p0n57t7vtpq0 yzcs4p44ep39 hkrtm1gzjb24",
+    "forlanini": "aycbxayckhrd zeahjp9bp2an yr8hjc5q7n98 eg6p3m77svxv b0pk7g42fcsn",
+    "giambellino": "h6r1v45esk77 hnpe58epeyh1 bzs050xacs1m cdc7x6m21nj6 c32jyk0cyan7",
+    "gorla": "m6py14a1ej77 h6krzxx6es83 yg8debxe3x0p sbdpbpqz5sxe ck9w60ejwnvw",
+    "greco": "xtj1dk9x3qej q18es2d82f8r pxvd2kk2yx5j h3n6kfd18r3g bmrcsmqq6at2",
+    "isola": "d6cxxmh767k3 etpwrfmfa8hm mkfzagfe8jtt sphwpc5tg4p9 cxvqv5qztz70",
+    "lambrate": "nanpr5mgm2py pky3vqyqbepa atp772whjkgd gdrf9b9kxxss c2ewegr2ea3v",
+    "nord": "gpr1zqe343gb zand0f57ec1j ccjzqm7yekwx psxp8bh1feaa wwxaphfb5pfh",
+    "ortica": "vs1bs4485dcn cgj1c2mf1dx0 d0kkschyjrdq geyjmp26tajh ega0tzcy6za8",
+    "precotto": "s1twcdzg3296 f2s88vwd3jnf nf9pqsgzrwm0 ser7es7thgwf n4yjr7kjbmrx",
+    "san siro": "k2nwktpp02xx yk37jqcnc1r5 sdca2w4p9f8z tnzkhsa62kn0 qsbsfjytc3y5",
+    "baggio": "t40mr7xsn2wh t3ktav4yrxvb pd5th2nkb31q jastt2eeekcv ny08j7bvs7jw",
+    "barona": "w2str91zrrbq qg7rvp6ktyne hdnz4xe1c8d2 vdmz874c65kp w9easgp707bn",
+    "bovisa": "gxq3vzgt3h5t tty8erdj6t41 txar5994gbkj vgtmj5nqfkxj h82xpx3rkn9e",
+    "centro": "r8yprrs0e8be dqfw9nh15dn4 pv3a0t3tyqdq y6hxsd766sys jmqwr12vy2j6",
+    "est": "r8njm9a6c7pv gpwmb45gggme hvycshaebezp n8geakhhcprc xjsdqxvj3x59",
+    "lorenteggio": "tmt0bcv0st1f n9bf9y6670hp mcppmrbjvxag qtjne8symjas w2qsptc9qqhg",
+    "navigli": "gezf38x5940y s2tevpn8zkcj drchwbffymha jgy1dj2sw2ew dn90g1skkx0f",
+    "niguarda": "jdj692g4145e jmjfst55vgjz mm18nddkfc5w fn64xfq2jft4 fddgaqmp6kb0",
+    "ovest": "darwa6412gz0 fa0sw3wwn1d4 r7rgp7mdwg8y pewepg7h3c5g bq7e62g3kkz3",
+    "porta romana": "p2hwz5xyjrwz a88btdp00ymw bx7r8th27v1f z6pbm2a7vf36 d6c308wmh6ky",
+    "rogoredo": "fnxy73v47n9g s5sevkc5291w jet0tz755hvf ejfzvz4tdagq hwgn012k70gh",
+    "sud": "p90cbsk3n9e6 n0p2dwznf4mc kx0j48fa0epp p56k8h29kc45 v4y8p7h8gkzw",
+}
+_RING: set[str] = {f"agent:{i}" for ids in _RING_TABLE.values() for i in ids.split()}
+_RING_HOSPITALS: set[str] = {f"agent:{ids.split()[0]}" for ids in _RING_TABLE.values()}
+_TRUSTED_PARTNERS.update(_RING)  # R17 on: outside the ring no slot, no data, no answer
+_ASST_OF: dict[str, str] = {f"agent:{i}": asst for asst, ids in _RING_TABLE.items() for i in ids.split()}
+
+
+def _same_asst(facility: str, sender: str) -> bool:
+    """MACH-2.0 identity check 2: facility= is the sender itself. A booking centre that answers for
+    its own hospital is accepted only inside its ASST of the ring (tests: ring switched off)."""
+
+    if facility == sender or not _TRUSTED_PARTNERS:
+        return True
+    return facility in _TRUSTED_PARTNERS and _ASST_OF.get(facility, "?") == _ASST_OF.get(sender, "!")
 # Ids posted by other ASSTs in the mods' group. Copied into _TRUSTED_PARTNERS when the impostors
 # arrive (switching it on now would reject the teams that have not posted yet).
 _KNOWN_PARTNERS = {
