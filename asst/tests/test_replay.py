@@ -645,8 +645,11 @@ async def r15():
     out.append(("one final outcome: booked", s.outcome == ["booked"], f"{s.outcome}"))
     out.append(("a repeated data.response gets at most a short answer, no second route",
                 not any(" km " in m.text for m in s.to_citizen()[before:]), ""))
-    out.append(("the distance from the district is not called 'da lei'",
-                not any(" km da lei" in m.text for m in s.to_citizen()), ""))
+    # X-54: the street is in the city street table, so the distance is from the citizen's own door.
+    out.append(("X-54 the distance is from the citizen's street (Via Ornato), not the district",
+                any(" km da lei" in m.text for m in s.to_citizen())
+                and not any("dalla sua zona" in m.text for m in s.to_citizen()),
+                " | ".join(m.text[:160] for m in s.to_citizen() if " km" in m.text)))
     out.append(("accessibility is named for a motor disability",
                 any("sedia a rotelle" in m.text or "accessibil" in m.text for m in s.to_citizen()), ""))
     return s, out

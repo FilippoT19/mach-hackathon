@@ -2158,6 +2158,9 @@ def _citizen_point(text: str) -> tuple[float, float] | None:
     pair = [n for n in nums if 44.0 < n < 47.0], [n for n in nums if 8.0 < n < 10.5]
     if pair[0] and pair[1]:
         return pair[0][0], pair[1][0]
+    address = fields.get("address", "")
+    if address and address.lower() not in ("none", "null", "-", "unknown"):
+        return _street_point(address)  # X-54: street table, exact enough for distance and transit
     return None
 
 
