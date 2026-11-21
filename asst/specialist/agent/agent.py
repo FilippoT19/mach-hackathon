@@ -7224,7 +7224,9 @@ async def _after_local(
         sent.replacement_page = None
     sent.pending_page = None
     citizen_replacement = replacing and sent.citizen_replacement
-    if procedure and (not citizen_replacement or _cross_consent(chat, agent)[0] is True) and await _cross_asst(
+    # BK-61: a citizen who refused every local offer is asked about the other ASSTs too (the
+    # answer set can hold slots there); before, the waiting list came at once.
+    if procedure and await _cross_asst(
         city, message, chat, key, citizen, procedure, priority, fresh_batch=replacing and not citizen_replacement
     ):
         return

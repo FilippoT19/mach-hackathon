@@ -1169,6 +1169,14 @@ async def main() -> int:
         three = row(CITIZEN, booking, "cancel offer_id=of-S-3 reason=deadline", 8)
         await desk_turn(city, two, [*chat, original, cancel, ack, two])
         await desk_turn(city, three, [*chat, original, cancel, ack, two, three])
+        ask = to(city, CITIZEN)[-1]
+        # BK-61: every local offer refused and the catalogue is over: the other ASSTs come before
+        # the waiting list (the answer set can hold slots there). A refusal gives the waiting list.
+        check("BK-61 tutti annullati e catalogo finito: prima la domanda sulle altre ASST",
+              ask.startswith("consent purpose=cross_asst") and not any("waiting_list=true" in t for t in to(city, CITIZEN)), ask)
+        asked = row(booking, CITIZEN, ask, 9)
+        no = row(CITIZEN, booking, "No, preferisco di no.", 10)
+        await desk_turn(city, no, [*chat, original, cancel, ack, two, three, asked, no])
         wait = to(city, CITIZEN)[-1]
         check("P-francesco-14 tutti annullati e catalogo finito: lista d'attesa è un'offerta",
               wait.startswith("offer offer_id=wl-N-1 waiting_list=true procedure=VIS-CARD priority=B "), wait)
@@ -1208,8 +1216,8 @@ async def main() -> int:
         original = row(booking, CITIZEN, "offer offer_id=of-S-NEAR slot_id=S-NEAR", 4)
         cancel = row(CITIZEN, booking, "cancel offer_id=of-S-NEAR reason=deadline", 5)
         await desk_turn(city, cancel, [*chat, original, cancel])
-        check("P-francesco-14 pagina presente solo in history: offre la lista nello stesso turno",
-              any(t.startswith("offer offer_id=wl-N-1 waiting_list=true") for t in to(city, CITIZEN)), city.sent)
+        check("P-francesco-14 pagina presente solo in history: esito nello stesso turno (BK-61: domanda altre ASST)",
+              any(t.startswith("consent purpose=cross_asst") for t in to(city, CITIZEN)), city.sent)
 
     async def test_francesco_15(check):
         brain._SENT.clear()
