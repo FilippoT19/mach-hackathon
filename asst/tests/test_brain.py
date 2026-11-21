@@ -1787,6 +1787,39 @@ async def main() -> int:
         check("BK-62 offerte tutte in un giorno: chiede la pagina dopo prima di offrire",
               to(city, LEDGER) == ["world procedure=VIS-FIS page=2"] and not to(city, CITIZEN), city.sent)
 
+        # P-magesh-23 (N-...0330/0331): two days and two doctors, but every slot under 12 agenda
+        # hours: they would be past when the citizen answers. The next page is read first; then
+        # ONE message with every fitting slot (BK-55), the far one included.
+        brain._SENT.clear()
+        near = "slots page=1/2\n" + "\n".join([slot("N1", "h3", "2026-11-03T20:00:00Z", "tue"),
+                                               slot("N2", "h1", "2026-11-04T01:00:00Z", "wed")])
+        far = "slots page=2/2\n" + slot("F1", "h2", "2026-11-04T10:00:00Z", "wed")
+        city = FakeCity("agent:bk")
+        chat = [row(CITIZEN, "agent:bk", f"need.request lang=it prescription_number={rx_number}", 0),
+                row(LEDGER, "agent:bk", f"prescription prescription_number={rx_number} procedure=VIS-FIS priority=D state=issued", 1),
+                row(LEDGER, "agent:bk", "agenda agenda_now=2026-11-03T14:00:00Z", 2), row(LEDGER, "agent:bk", near, 3)]
+        await brain._advance_alone(city, chat[0], chat, "N-1", fixed=None, replacing=False)
+        check("P-magesh-23 posti tutti sotto le 12 h di agenda: legge la pagina dopo prima di offrire",
+              to(city, LEDGER) == ["world procedure=VIS-FIS page=2"] and not to(city, CITIZEN), city.sent)
+        chat.append(row(LEDGER, "agent:bk", far, 4))
+        await brain._advance_alone(city, chat[-1], chat, "N-1", fixed=None, replacing=False)
+        out = to(city, CITIZEN)
+        check("P-magesh-23 must not break: un messaggio con tutti i posti, anche quello a 20 h",
+              len(out) == 1 and all(f"slot_id={s}" in out[0] for s in ("N1", "N2", "F1")), city.sent)
+        brain._SENT.clear()
+        city = FakeCity("agent:bk")
+        urgent = [chat[0], row(LEDGER, "agent:bk", f"prescription prescription_number={rx_number} procedure=VIS-FIS priority=U state=issued", 1),
+                  row(LEDGER, "agent:bk", "agenda agenda_now=2026-11-03T07:00:00Z", 2),
+                  row(LEDGER, "agent:bk", "slots page=1/1\n" + "\n".join([slot("U1", "h3", "2026-11-03T12:00:00Z", "tue"),
+                                                                         slot("U2", "h1", "2026-11-03T15:00:00Z", "tue")]), 3)]
+        await brain._advance_alone(city, urgent[0], urgent, "N-1", fixed=None, replacing=False)
+        check("P-magesh-23 must not break: priorità U offre lo stesso giorno senza margine di 12 h",
+              any("slot_id=U1" in t for t in to(city, CITIZEN)), city.sent)
+        halves = [{"slot_id": i, "doctor_id": "d-h1", "at": at} for i, at in
+                  (("A", "2026-11-03T09:00:00Z"), ("B", "2026-11-03T10:00:00Z"), ("C", "2026-11-03T15:00:00Z"))]
+        check("P-magesh-23 due offerte dello stesso medico e giorno: mattina e pomeriggio, non due mattine",
+              [s["slot_id"] for s in brain._diverse(halves, 2)] == ["A", "C"], brain._diverse(halves, 2))
+
         # (c) the agenda time counts the real minutes since the Ledger wrote the agenda line.
         wrote = datetime.now(timezone.utc) - timedelta(minutes=10)
         iso = lambda t: t.strftime("%Y-%m-%dT%H:%M:%SZ")

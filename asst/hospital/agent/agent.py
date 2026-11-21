@@ -6122,6 +6122,24 @@ def _fit(lines: list[str], tail: str) -> list[str]:
     return kept
 
 
+def _half_day(slot: dict[str, str]) -> str:
+    at = slot.get("at", "")
+    return at[:10] + ("am" if at[11:13] < "13" else "pm")
+
+
+# P-magesh-23 (N-...0330, N-...0331, L8): offers 5 h ahead of the agenda were past when the citizen
+# cancelled 4-5 real minutes later (reason=past, every offer), and confirm -> hold -> commit costs
+# 3-5 minutes more. B/D/P: if no fitting slot is this far ahead, read the next page before offering.
+_LEAD_SAFE = timedelta(hours=12)
+
+
+def _safe_lead(chosen: list[dict[str, str]], now: datetime | None, priority: str | None) -> list[dict[str, str]]:
+    """The slots at least ``_LEAD_SAFE`` ahead of the agenda (order kept); [] if none, or for U."""
+    if priority == "U" or now is None:
+        return list(chosen)
+    return [slot for slot in chosen if (at := _when(slot.get("at", ""))) is not None and at >= now + _LEAD_SAFE]
+
+
 def _diverse(chosen: list[dict[str, str]], count: int) -> list[dict[str, str]]:
     """P-francesco-48: ``count`` offers that differ. The first three by date are often the same day
     and doctor, so one hidden constraint of the citizen ("not that day") drops them all together.
@@ -6132,8 +6150,12 @@ def _diverse(chosen: list[dict[str, str]], count: int) -> list[dict[str, str]]:
     rest = list(chosen)
     while rest and len(picks) < count:
         days = {slot.get("at", "")[:10] for slot in picks}
+        halves = {_half_day(slot) for slot in picks}
         doctors = {slot.get("doctor_id", "") for slot in picks}
-        best = max(rest, key=lambda slot: (slot.get("at", "")[:10] not in days) + (slot.get("doctor_id", "") not in doctors)) if picks else rest[0]
+        # P-magesh-23 (2): a new half-day counts too, so one jump of the agenda (an hour per real
+        # minute) never makes every offer past together.
+        best = max(rest, key=lambda slot: (slot.get("at", "")[:10] not in days) + (slot.get("doctor_id", "") not in doctors)
+                   + (_half_day(slot) not in halves)) if picks else rest[0]
         picks.append(best)
         rest.remove(best)
     return sorted(picks, key=chosen.index)
@@ -7632,6 +7654,9 @@ async def _advance_alone(
     ]
     _trace_window(message, now, priority, reply, deadline, lines, fit, chosen)  # BK-71
     chosen = _best_tier(chosen, _days(chat), _gender(chat))  # BK-60
+    # P-magesh-23 (1): every fitting slot still goes out (BK-55), but when none is far enough ahead
+    # to survive the agenda jump, the next page is read first (as BK-62 does for one-day offers).
+    near_only = bool(chosen) and not _safe_lead(chosen, now, priority)
     _trace(
         "slots", message, procedure=procedure, priority=priority, lang=_lang(chat),
         gender=_gender(chat), page=f"{page}/{pages}", fitting=len(chosen), taken=len(taken),
@@ -7652,7 +7677,7 @@ async def _advance_alone(
         _trace("stop", message, why="offers_pending")
         return
     if (chosen and not replacing and "widen_stop" not in sent.notes
-            and page < pages and page < _MAX_PAGE and _one_sided(chosen, chat, fixed)
+            and page < pages and page < _MAX_PAGE and (near_only or _one_sided(chosen, chat, fixed))
             and sum(1 for note in sent.notes if note.startswith("widen:")) < _WIDEN_PAGES):
         sent.notes.update({"widen", f"widen:{page + 1}"})
         sent.pending_page = page + 1
