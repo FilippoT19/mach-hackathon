@@ -944,6 +944,76 @@ async def main() -> int:
                                                      "procedure=VIS-CARD priority=P prescription_number="),
                   out)
 
+    async def test_bk40(check):
+        """BK-40: free local slots must be offered before asking cross-ASST consent."""
+
+        # 1. A doctor missing from the code table: the slot is in the Ledger, so it is offered.
+        brain._SENT.clear()
+        brain._REGISTRY.clear()
+        city = FakeCity(booking)
+        unknown = ("slots page=1/1\nslot_id=S-X doctor_id=asst-x-x9 facility=agent:spec "
+                   "procedure=VIS-CARD at=2026-11-05T15:00:00Z day=sat free=1")
+        chat = booking_chat(unknown)
+        await desk_turn(city, chat[0], chat)
+        out = to(city, CITIZEN)
+        check("BK-40 medico fuori tabella e giorno fuori tabella: slot locale offerto",
+              len(out) == 1 and "slot_id=S-X" in out[0] and "cross_asst" not in out[0], city.sent)
+
+        # 2. The Ledger registry decides the doctor's language, not the code table.
+        brain._SENT.clear()
+        brain._REGISTRY.clear()
+        city = FakeCity(booking)
+        reg = ("slots page=1/1\ndoctor_id=asst-x-s2 facility=agent:spec specialty=cardiology "
+               "languages=it,fr gender=f days=tue,thu\n"
+               "slot_id=S-FR doctor_id=asst-x-s2 facility=agent:spec procedure=VIS-CARD "
+               "at=2026-11-05T15:00:00Z day=thu free=1")
+        chat = booking_chat(reg)
+        chat[0] = row(CITIZEN, booking, f"need.request lang=fr prescription_number={rx_number}", 0)
+        await desk_turn(city, chat[0], chat)
+        out = to(city, CITIZEN)
+        check("BK-40 lingua letta dal registro del Ledger (s2 parla fr)",
+              any("slot_id=S-FR" in t for t in out) and not any(t.startswith("consent") for t in out), city.sent)
+        brain._REGISTRY.clear()
+
+        # 3. The free slot is on page 15 of 20 (catalogue sorted by date): found, no consent asked.
+        class Catalogue(FakeCity):
+            def __init__(self, *a, **k):
+                super().__init__(*a, **k)
+                self.extra: list = []
+
+            async def say(self, to, text, *, status=None):
+                await super().say(to, text, status=status)
+                f = brain.fields_of(text)
+                if to == LEDGER and text.startswith("world") and f.get("page", "").isdigit():
+                    p = int(f["page"])
+                    day = 1 + (p - 1) // 5  # 5 pages per agenda day, Nov 2.. Nov 5
+                    at = f"2026-11-{day + 1:02d}T{8 + (p - 1) % 5:02d}:00:00Z"
+                    self.extra.append(row(LEDGER, booking, f"slots page={p}/20\nslot_id=S-P{p} doctor_id=d-s1 "
+                                          f"facility=agent:spec procedure=VIS-CARD at={at} day=wed free=1", 100 + p))
+                return "m"
+
+            async def history(self, peer=None, *, need_id=None):
+                return list(self.extra)
+
+        brain._SENT.clear()
+        city = Catalogue(booking)
+        page1 = ("slots page=1/20\nslot_id=S-P1 doctor_id=d-s1 facility=agent:spec procedure=VIS-CARD "
+                 "at=2026-11-02T08:00:00Z day=mon free=1\nslot_id=S-P1b doctor_id=d-s1 facility=agent:spec "
+                 "procedure=VIS-CARD at=2026-11-02T09:00:00Z day=mon free=1")
+        chat = booking_chat(page1)
+        await desk_turn(city, chat[0], chat)
+        out = to(city, CITIZEN)
+        asked = to(city, LEDGER)
+        check("BK-40 catalogo lungo: slot di pagina >8 offerto, niente consenso cross_asst",
+              any(t.startswith("offer") and "slot_id=S-P16 " in t for t in out)
+              and not any(t.startswith("consent") for t in out), (out, asked))
+        check("BK-40 ricerca a salti: meno di 12 pagine chieste al Ledger", 0 < len(asked) <= 12, asked)
+
+        # 4. Prescription validity (P1) is not a limit on the visit date.
+        check("BK-40 expires_at della ricetta non limita la data della visita",
+              brain._before_rx_deadline({"at": "2026-11-08T10:00:00Z"}, {"expires_at": "2026-11-05T09:00:00Z"}, "D"), "")
+
+    await test_bk40(check)
     await test_francesco_14(check)
     await test_francesco_15(check)
     await test_francesco_16(check)

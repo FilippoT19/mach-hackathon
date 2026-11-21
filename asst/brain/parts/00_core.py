@@ -172,6 +172,9 @@ async def handle(role: str, city: City, message: Message, chat: list[Message]) -
             )
     if all(row.msg_id != message.msg_id for row in chat):
         chat = [*chat, message]  # BK-15: the case history can miss the inbound message (all roles)
+    for row in chat:  # BK-40: doctors (languages, gender, days) come from the Ledger registry
+        if row.sender == LEDGER and "doctor_id=" in row.text:
+            _learn_registry(row.text)
     if role == "gp":
         await _gp(city, message, chat)
     elif role == "booking_centre":

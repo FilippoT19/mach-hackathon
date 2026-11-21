@@ -170,6 +170,9 @@ async def handle(role: str, city: City, message: Message, chat: list[Message]) -
             )
     if all(row.msg_id != message.msg_id for row in chat):
         chat = [*chat, message]  # BK-15: the case history can miss the inbound message (all roles)
+    for row in chat:  # BK-40: doctors (languages, gender, days) come from the Ledger registry
+        if row.sender == LEDGER and "doctor_id=" in row.text:
+            _learn_registry(row.text)
     if role == "gp":
         await _gp(city, message, chat)
     elif role == "booking_centre":
@@ -476,15 +479,66 @@ def _rx(need_id: str | None, msg_id: str) -> str:
 _RARE_LANG = {"h3": _RARE_LANG_BY_ASST["niguarda"]}
 
 
-def _speaks(doctor_id: str, lang: str) -> bool:
+# BK-40: the doctors as the Ledger registry describes them (``world`` reply). The Ledger is the
+# source of truth; ``_DOCTORS`` is only the fallback when no registry line has been read yet.
+_REGISTRY: dict[str, tuple[frozenset[str], str, frozenset[str]]] = {}
+_LIST_RX = re.compile(r"\b(languages|langs|doctor_lang|gender|doctor_gender|days|agenda_days)=(\[[^\]]*\]|\S+)")
+_DAY_SET = frozenset({"mon", "tue", "wed", "thu", "fri", "sat", "sun"})
+
+
+def _list_value(raw: str) -> list[str]:
+    return [p.strip(" '\"").lower() for p in re.split(r"[,/|+;\s]+", raw.strip("[]")) if p.strip(" '\"")]
+
+
+def _learn_registry(text: str) -> None:
+    """BK-40: read every doctor line (doctor_id + languages/gender/days, no slot_id) of a Ledger reply."""
+
+    for line in text.splitlines():
+        if "doctor_id=" not in line or "slot_id=" in line:
+            continue
+        doctor = fields_of(line).get("doctor_id", "")
+        if not doctor:
+            continue
+        found = {key: _list_value(value) for key, value in _LIST_RX.findall(line)}
+        langs = found.get("languages") or found.get("langs") or found.get("doctor_lang") or []
+        gender = (found.get("gender") or found.get("doctor_gender") or [""])[0]
+        days = [d[:3] for d in (found.get("days") or found.get("agenda_days") or []) if d[:3] in _DAY_SET]
+        if not langs and gender not in {"m", "f"}:
+            continue
+        old = _REGISTRY.get(doctor)
+        spec = (
+            frozenset(langs) or (old[0] if old else frozenset()),
+            gender if gender in {"m", "f"} else (old[1] if old else ""),
+            frozenset(days) or (old[2] if old else frozenset()),
+        )
+        _REGISTRY[doctor] = spec
+        _REGISTRY.setdefault(doctor.rsplit("-", 1)[-1], spec)
+
+
+def _doctor(doctor_id: str) -> tuple[frozenset[str], str, frozenset[str]] | None:
+    """Languages, gender, days of a doctor: Ledger registry first, then the fallback table."""
+
     short = doctor_id.rsplit("-", 1)[-1]
+    spec = _REGISTRY.get(doctor_id) or _REGISTRY.get(short)
+    if spec is not None:
+        return spec
     spec = _DOCTORS.get(short)
     if spec is None:
-        return False
+        return None
     langs = spec[0]
-    if lang in langs:
-        return True
-    return "*" in langs and _RARE_LANG.get(short) == lang
+    if "*" in langs:
+        rare = _RARE_LANG.get(short)
+        langs = (langs - {"*"}) | ({rare} if rare else set())
+    return (frozenset(langs), spec[1], spec[2])
+
+
+def _speaks(doctor_id: str, lang: str) -> bool:
+    spec = _doctor(doctor_id)
+    if spec is None or not spec[0]:
+        # BK-40: the Ledger lists the slot, so the doctor exists; with no registry line every
+        # doctor of the ASST speaks Italian. Never drop a free local slot for a missing table row.
+        return lang == "it"
+    return lang in spec[0]
 
 
 def fitting(
@@ -529,14 +583,13 @@ def fitting(
             continue
         if not _speaks(doctor, lang):
             continue
-        spec = _DOCTORS.get(doctor.rsplit("-", 1)[-1])
-        if spec is None:
-            continue
+        # BK-40: the slot's day comes from the Ledger catalogue, so it is the doctor's day: no
+        # second check against a table written in the code (it dropped valid local slots).
         day = slot.get("day", "")
-        if day and day not in spec[2]:
-            continue
-        if gender and spec[1] != gender:
-            continue
+        if gender:
+            spec = _doctor(doctor)
+            if spec is None or spec[1] != gender:
+                continue
         preferred = 0 if days and day in days else 1
         chosen.append((preferred, at, slot))
     chosen.sort(key=lambda item: (item[0], item[1], item[2].get("slot_id", "")))
@@ -1352,7 +1405,9 @@ def _days(chat: list[Message]) -> frozenset[str] | None:
 
 
 _RX_DATE_KEYS = ("issued_at", "issued", "issue_date", "prescribed_at", "created_at", "date")
-_RX_LIMIT_KEYS = ("valid_until", "expires_at", "expiry", "deadline", "due", "due_by")
+# BK-40: valid_until / expires_at / expiry are the prescription's validity (rule P1: it limits
+# when we COMMIT, not the visit date). Used as a slot limit they dropped every D slot after day 2.
+_RX_LIMIT_KEYS = ("deadline", "due", "due_by", "priority_deadline")
 
 
 def _before_rx_deadline(slot: dict[str, str], reply: dict[str, str] | None, priority: str | None) -> bool:
@@ -1897,6 +1952,96 @@ async def _advance(
                 break
 
 
+# BK-40: the catalogue covers the whole race + 14 days, so the free slots near "now" can sit far
+# beyond page 8. Before saying "no availability" we read the catalogue to the end in this turn.
+_SCAN_BUDGET = 24
+
+
+def _slot_lines(text: str) -> list[str]:
+    return [line for line in text.splitlines() if "slot_id=" in line]
+
+
+def _dates(text: str) -> list[datetime]:
+    return [at for line in _slot_lines(text) if (at := _when(fields_of(line).get("at", ""))) is not None]
+
+
+async def _fetch_page(
+    city: City, message: Message, chat: list[Message], procedure: str, page: int
+) -> tuple[Message | None, list[Message]]:
+    agent = city.agent_id
+    hit = _slots_page(chat, agent, page)
+    if hit is not None:
+        return hit, chat
+    if not _asked(chat, agent, procedure, page):
+        if not await _say(city, LEDGER, f"world procedure={procedure} page={page}"):
+            return None, chat
+    fresh = await _until(city, message.need_id, chat, lambda rows: _slots_page(rows, agent, page) is not None)
+    return _slots_page(fresh, agent, page), fresh
+
+
+async def _scan_catalogue(
+    city: City,
+    message: Message,
+    chat: list[Message],
+    procedure: str,
+    first: str,
+    pick: Callable[[list[str]], list[dict[str, str]]],
+    earliest: datetime,
+    horizon: datetime | None,
+) -> tuple[list[dict[str, str]], list[str], list[Message], int | None]:
+    """Read the Ledger catalogue until fitting slots are found or it is exhausted.
+
+    Returns (chosen, every slot line read, chat, missing). ``missing`` is the page the Ledger
+    did not answer (None when the catalogue was read): then we never say "no availability".
+    """
+
+    _page_no, pages = _page(first)
+    lines = _slot_lines(first)
+    read = {_page_no}
+    budget = _SCAN_BUDGET
+    first_dates = _dates(first)
+    ordered = len(first_dates) > 1 and first_dates == sorted(first_dates)
+    start = 2
+    if ordered and pages > 2 and first_dates[-1] < earliest:
+        # Pages sorted by date: binary search the first page that reaches "now".
+        lo, hi = 2, pages
+        while lo < hi and budget > 0:
+            mid = (lo + hi) // 2
+            hit, chat = await _fetch_page(city, message, chat, procedure, mid)
+            budget -= 1
+            if hit is None:
+                return [], lines, chat, mid
+            read.add(mid)
+            lines += _slot_lines(hit.text)
+            chosen = pick(lines)
+            if chosen:
+                return chosen, lines, chat, None
+            mid_dates = _dates(hit.text)
+            if mid_dates and mid_dates[-1] < earliest:
+                lo = mid + 1
+            else:
+                hi = mid
+        start = max(2, lo - 1)
+    for page in range(start, pages + 1):
+        if page in read:
+            continue
+        if budget <= 0:
+            return [], lines, chat, page
+        hit, chat = await _fetch_page(city, message, chat, procedure, page)
+        budget -= 1
+        if hit is None:
+            return [], lines, chat, page
+        read.add(page)
+        lines += _slot_lines(hit.text)
+        chosen = pick(lines)
+        if chosen:
+            return chosen, lines, chat, None
+        page_dates = _dates(hit.text)
+        if ordered and horizon is not None and page_dates and page_dates[0] >= horizon:
+            break  # sorted catalogue: every later page is past the priority deadline
+    return [], lines, chat, None
+
+
 async def _advance_alone(
     city: City,
     message: Message,
@@ -2019,20 +2164,53 @@ async def _advance_alone(
         taken = _withdrawn(chat, agent) | sent.again
     else:
         taken = _offered(chat, agent) | sent.offers
-    chosen = [
-        slot
-        for slot in fitting(
-            [line for line in world.splitlines() if "slot_id=" in line],
-            now=now,
-            priority=priority,
-            lang=_lang(chat),
-            gender=_gender(chat),
-            days=_days(chat),
-            facility=agent if fixed == "CONS-GIN" else None,
-            procedure=procedure,
-        )
-        if slot.get("slot_id") not in taken and _before_rx_deadline(slot, reply, priority)
-    ]
+    want_lang = _lang(chat)
+    want_days = _days(chat)
+
+    def pick(lines: list[str], gender: str | None = _gender(chat)) -> list[dict[str, str]]:
+        return [
+            slot
+            for slot in fitting(
+                lines,
+                now=now,
+                priority=priority,
+                lang=want_lang,
+                gender=gender,
+                days=want_days,
+                facility=agent if fixed == "CONS-GIN" else None,
+                procedure=procedure,
+            )
+            if slot.get("slot_id") not in taken and _before_rx_deadline(slot, reply, priority)
+        ]
+
+    chosen = pick(_slot_lines(world))
+    scanned = False
+    if not chosen and not (taken and not replacing) and pages > 1:
+        # BK-40: ask the Ledger for the rest of the catalogue now, not only 8 pages.
+        horizon = None if priority == "P" else (
+            now.replace(hour=23, minute=59, second=59, microsecond=0) if priority == "U"
+            else now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14)))
+        if not _asked(chat, agent, procedure, 2) and "wait" not in sent.offers:
+            sent.offers.add("wait")  # BK-30: never leave the citizen silent while we read
+            await _say(city, citizen, "booking.search " + (
+                "I have your request and I am checking every free appointment for you now; "
+                "I will write again in a moment." if want_lang != "it" else
+                "Ho la sua richiesta e sto controllando tutti i posti liberi per lei; "
+                "le riscrivo tra un momento."))
+        chosen, all_lines, chat, missing = await _scan_catalogue(
+            city, message, chat, procedure, world, pick, now + _LEAD, horizon)
+        if not chosen and missing is None and _gender_said(chat) is None and _gender(chat) is not None:
+            # BK-40: the gender came only from the GP referral: a local slot beats another ASST.
+            chosen = pick(all_lines, None)
+        if not chosen and missing is not None:
+            # The Ledger did not answer every page: never say "no availability" yet. The page
+            # arrives as its own turn and the search goes on from there.
+            if replacing:
+                sent.replacement_page = missing
+            return
+        scanned = True
+    elif not chosen and pages <= 1 and _gender_said(chat) is None and _gender(chat) is not None:
+        chosen = pick(_slot_lines(world), None)  # BK-40: referral gender is a preference
     if chosen:
         # BK-14: every slot in ONE message, one offer per line. The citizen chooses in the turn of
         # the first message that names a place; a later message does not enter that choice.
@@ -2077,7 +2255,7 @@ async def _advance_alone(
                 sent.offers.add("again")
                 await _say(city, citizen, last)
         return
-    if page < pages and page < _MAX_PAGE:
+    if not scanned and page < pages and page < _MAX_PAGE:
         if replacing:
             sent.replacement_page = page + 1
         if not _asked(chat, agent, procedure, page + 1):
