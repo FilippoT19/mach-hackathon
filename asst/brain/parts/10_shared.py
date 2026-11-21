@@ -294,15 +294,66 @@ def _rx(need_id: str | None, msg_id: str) -> str:
 _RARE_LANG = {"h3": _RARE_LANG_BY_ASST["niguarda"]}
 
 
-def _speaks(doctor_id: str, lang: str) -> bool:
+# BK-40: the doctors as the Ledger registry describes them (``world`` reply). The Ledger is the
+# source of truth; ``_DOCTORS`` is only the fallback when no registry line has been read yet.
+_REGISTRY: dict[str, tuple[frozenset[str], str, frozenset[str]]] = {}
+_LIST_RX = re.compile(r"\b(languages|langs|doctor_lang|gender|doctor_gender|days|agenda_days)=(\[[^\]]*\]|\S+)")
+_DAY_SET = frozenset({"mon", "tue", "wed", "thu", "fri", "sat", "sun"})
+
+
+def _list_value(raw: str) -> list[str]:
+    return [p.strip(" '\"").lower() for p in re.split(r"[,/|+;\s]+", raw.strip("[]")) if p.strip(" '\"")]
+
+
+def _learn_registry(text: str) -> None:
+    """BK-40: read every doctor line (doctor_id + languages/gender/days, no slot_id) of a Ledger reply."""
+
+    for line in text.splitlines():
+        if "doctor_id=" not in line or "slot_id=" in line:
+            continue
+        doctor = fields_of(line).get("doctor_id", "")
+        if not doctor:
+            continue
+        found = {key: _list_value(value) for key, value in _LIST_RX.findall(line)}
+        langs = found.get("languages") or found.get("langs") or found.get("doctor_lang") or []
+        gender = (found.get("gender") or found.get("doctor_gender") or [""])[0]
+        days = [d[:3] for d in (found.get("days") or found.get("agenda_days") or []) if d[:3] in _DAY_SET]
+        if not langs and gender not in {"m", "f"}:
+            continue
+        old = _REGISTRY.get(doctor)
+        spec = (
+            frozenset(langs) or (old[0] if old else frozenset()),
+            gender if gender in {"m", "f"} else (old[1] if old else ""),
+            frozenset(days) or (old[2] if old else frozenset()),
+        )
+        _REGISTRY[doctor] = spec
+        _REGISTRY.setdefault(doctor.rsplit("-", 1)[-1], spec)
+
+
+def _doctor(doctor_id: str) -> tuple[frozenset[str], str, frozenset[str]] | None:
+    """Languages, gender, days of a doctor: Ledger registry first, then the fallback table."""
+
     short = doctor_id.rsplit("-", 1)[-1]
+    spec = _REGISTRY.get(doctor_id) or _REGISTRY.get(short)
+    if spec is not None:
+        return spec
     spec = _DOCTORS.get(short)
     if spec is None:
-        return False
+        return None
     langs = spec[0]
-    if lang in langs:
-        return True
-    return "*" in langs and _RARE_LANG.get(short) == lang
+    if "*" in langs:
+        rare = _RARE_LANG.get(short)
+        langs = (langs - {"*"}) | ({rare} if rare else set())
+    return (frozenset(langs), spec[1], spec[2])
+
+
+def _speaks(doctor_id: str, lang: str) -> bool:
+    spec = _doctor(doctor_id)
+    if spec is None or not spec[0]:
+        # BK-40: the Ledger lists the slot, so the doctor exists; with no registry line every
+        # doctor of the ASST speaks Italian. Never drop a free local slot for a missing table row.
+        return lang == "it"
+    return lang in spec[0]
 
 
 def fitting(
@@ -347,14 +398,13 @@ def fitting(
             continue
         if not _speaks(doctor, lang):
             continue
-        spec = _DOCTORS.get(doctor.rsplit("-", 1)[-1])
-        if spec is None:
-            continue
+        # BK-40: the slot's day comes from the Ledger catalogue, so it is the doctor's day: no
+        # second check against a table written in the code (it dropped valid local slots).
         day = slot.get("day", "")
-        if day and day not in spec[2]:
-            continue
-        if gender and spec[1] != gender:
-            continue
+        if gender:
+            spec = _doctor(doctor)
+            if spec is None or spec[1] != gender:
+                continue
         preferred = 0 if days and day in days else 1
         chosen.append((preferred, at, slot))
     chosen.sort(key=lambda item: (item[0], item[1], item[2].get("slot_id", "")))
