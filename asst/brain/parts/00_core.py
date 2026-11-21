@@ -103,6 +103,9 @@ async def main(need: Need, city: City) -> None:
     # it in words and goes on with the journey (red flag first).
     if getattr(need, "is_emergency", False) is True and message.sender.startswith("citizen:"):
         _EMERGENCY_NEEDS.add(message.need_id or message.msg_id)
+        if len(_EMERGENCY_NEEDS) > 4 * _SENT_NEEDS:  # BK-61: bounded memory
+            _EMERGENCY_NEEDS.clear()
+            _EMERGENCY_NEEDS.add(message.need_id or message.msg_id)
     # OPS-08: a message from another agent with no key=value token is not part of any MACH
     # exchange (the deploy conformance probe "visit" is one). End the turn at once: the Relay's
     # custody.ack check waits ~5 s, and a slow remote history read made the turn miss it.

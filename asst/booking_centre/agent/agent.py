@@ -101,6 +101,9 @@ async def main(need: Need, city: City) -> None:
     # it in words and goes on with the journey (red flag first).
     if getattr(need, "is_emergency", False) is True and message.sender.startswith("citizen:"):
         _EMERGENCY_NEEDS.add(message.need_id or message.msg_id)
+        if len(_EMERGENCY_NEEDS) > 4 * _SENT_NEEDS:  # BK-61: bounded memory
+            _EMERGENCY_NEEDS.clear()
+            _EMERGENCY_NEEDS.add(message.need_id or message.msg_id)
     # OPS-08: a message from another agent with no key=value token is not part of any MACH
     # exchange (the deploy conformance probe "visit" is one). End the turn at once: the Relay's
     # custody.ack check waits ~5 s, and a slow remote history read made the turn miss it.
@@ -6295,9 +6298,9 @@ async def _cross_asst(
         return False
     service_type = _CROSS_SERVICE_TYPES.get(procedure, "facility")
     try:
-        peers = await finder(
+        peers = await asyncio.wait_for(finder(  # BK-61: a slow Index never holds the turn
             f"facility in another ASST with capability {service_type} for procedure {procedure}"
-        )
+        ), timeout=5.0)
     except Exception:
         return False
     sent_any = False
@@ -6380,7 +6383,8 @@ async def _index_facility(
         return None
     service_type = _CROSS_SERVICE_TYPES.get(procedure, "facility")
     try:
-        peers = await finder(f"facility offering {service_type} for procedure {procedure}")
+        peers = await asyncio.wait_for(  # BK-61: a slow Index never holds the confirm
+            finder(f"facility offering {service_type} for procedure {procedure}"), timeout=5.0)
     except Exception:
         return None
     candidates: list[str] = []
@@ -6812,6 +6816,8 @@ async def _on_referral(city: City, message: Message, chat: list[Message]) -> Non
     pref = {k: v for k, v in fields_of(message.text).items() if k in ("lang", "gender") and v}
     if pref:
         _PREF_BY_RX[number] = pref  # X-33
+        while len(_PREF_BY_RX) > _SENT_NEEDS:  # BK-61: bounded memory, oldest first
+            del _PREF_BY_RX[next(iter(_PREF_BY_RX))]
     parts = ["referral.ack", token] + ([f"procedure={procedure}"] if procedure else [])
     await _say(
         city,
@@ -7945,6 +7951,9 @@ async def _on_where(city: City, message: Message, chat: list[Message]) -> None:
     if key in _ANSWERED_WHERE:
         return
     _ANSWERED_WHERE.add(key)
+    if len(_ANSWERED_WHERE) > 4 * _SENT_NEEDS:  # BK-61: bounded memory
+        _ANSWERED_WHERE.clear()
+        _ANSWERED_WHERE.add(key)
     receipt_out = key in _RECEIPT_SENT or any(
         row.sender == city.agent_id and row.recipient == message.sender and first_word(row.text) == "booking.receipt"
         for row in chat
@@ -7957,10 +7966,12 @@ async def _on_where(city: City, message: Message, chat: list[Message]) -> None:
         while len(_WHERE_OF) > _SENT_NEEDS:
             _WHERE_OF.popitem(last=False)
         en = _lang(chat) != "it"
-        await _say(city, message.sender, "data.response.ack " + (
+        answered = await _say(city, message.sender, "data.response.ack " + (
             "Thank you. The confirmation of your appointment will tell you the easiest way to get there."
             if en else
             "Grazie. Nella conferma dell'appuntamento le scrivo il modo più comodo per arrivare."))
+        if not answered:
+            _ANSWERED_WHERE.discard(key)  # BK-61: not sent: the citizen's retry gets the answer
         _trace("where.answer", message, before_receipt=True, point=_WHERE_OF[key][0] is not None)
         return
     _trace("where.answer", message, before_receipt=False)
@@ -7984,9 +7995,11 @@ async def _on_where(city: City, message: Message, chat: list[Message]) -> None:
     # BK-53: the citizen's address is a street name without coordinates, so the distance is from
     # the district and the sentence says "from your area".
     exact = exact_point is not None
-    await _say(city, message.sender, head + " " + _route_line(
+    answered = await _say(city, message.sender, head + " " + _route_line(
         en, km, door, fields_of(message.text), point, ours=_ours(facility), exact=exact,
     ) + (extra if exact else _zone_words(extra)))
+    if not answered:
+        _ANSWERED_WHERE.discard(key)  # BK-61
 
 
 # BK-57: False once the Ledger refuses a booking-centre hold for a permission reason; the
