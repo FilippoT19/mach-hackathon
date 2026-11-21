@@ -6041,7 +6041,7 @@ class _Sent:
     """
 
     __slots__ = ("offers", "trigger", "again", "replacement_page", "citizen_replacement", "cross_asked", "cross_sent",
-                 "cross_peers", "partner_offers", "reasked", "notes", "pending_page", "rounds")
+                 "cross_peers", "partner_offers", "reasked", "notes", "pending_page", "rounds", "steps")
 
     def __init__(self) -> None:
         self.offers: set[str] = set()
@@ -6059,6 +6059,7 @@ class _Sent:
         self.notes: set[str] = set()
         self.pending_page: int | None = None  # BK-45: catalogue page asked and not read yet
         self.rounds = 0  # BK-47: partner offer messages sent to the citizen
+        self.steps = 0  # BK-61: next steps taken after citizen cancels (one per burst of cancels)
 
 
 # Every Ledger or citizen message opens its own turn, and turns of one need run at the same
@@ -6816,10 +6817,19 @@ async def _advance(
     *,
     fixed: str | None,
     replacing: bool,
+    step: int | None = None,
 ) -> None:
     key = message.need_id or message.msg_id
     async with _need_gate(_GATES, key):
         sent = _sent(key)
+        if step is not None:
+            # BK-61 (journey 000304): the citizen cancels every offer in the same second and each
+            # cancel opens a turn. They all saw "no offer left"; only the first takes the next
+            # step (new offers, other ASSTs, waiting list). Three offer messages went out before.
+            if sent.steps != step:
+                _trace("stop", message, why="cancel_step_taken")
+                return
+            sent.steps += 1
         sent.pending_page = None
         await _advance_alone(city, message, chat, key, fixed=fixed, replacing=replacing)
         # BK-45: a Ledger reply often lands only in the history and opens no turn. Whoever asked
@@ -7956,6 +7966,7 @@ async def _citizen_cancel(
                 pass
             await ack
             ack = None
+            step = _sent(need_key).steps
             if await _cancel_next(city, message, chat, need_key, citizen, offer_id, fixed):
                 return
             if fixed is None and _cancel_reason(chat, message, "deadline") and _clock_jumped(chat, city.agent_id, offer_id):
@@ -7969,7 +7980,7 @@ async def _citizen_cancel(
     finally:
         if ack is not None:
             await ack
-    await _advance(city, message, chat, fixed=fixed, replacing=True)
+    await _advance(city, message, chat, fixed=fixed, replacing=True, step=step)
 
 
 def _clock_jumped(chat: list[Message], agent: str, offer_id: str) -> bool:
