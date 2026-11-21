@@ -65,6 +65,45 @@ _EMERGENCY_NEEDS: set[str] = set()
 _EARLY_ACK: dict[str, "asyncio.Task[bool]"] = {}  # BK-61: msg_id -> cancel.ack sent before the history read
 _EARLY_LLM: dict[str, "asyncio.Task[str | None]"] = {}  # OPS-09: msg_id -> symptom check started early
 _EARLY_112: set[str] = set()  # GP-17: needs whose 112 left before the history read
+_EARLY_112_SENDING: dict[str, "asyncio.Future[bool]"] = {}  # GP-18: a 112 on its way, per need
+_EARLY_112_FAILED: set[str] = set()  # GP-18: needs whose early 112 was refused (the turn's _escalate retries)
+
+
+async def _early_112(city: "City", message: "Message") -> None:
+    """GP-18: the need counts as warned only after the 112 really left. A failed send (Relay
+    refused it) left the need marked, and every later turn skipped the 112: no_escalation -2.
+    A second message of the same need while the first 112 is on its way waits for it; if that
+    send failed, this turn tries once itself."""
+    key = message.need_id or message.msg_id
+    while key not in _EARLY_112:
+        pending = _EARLY_112_SENDING.get(key)
+        if pending is not None:
+            await asyncio.shield(pending)
+            if key in _EARLY_112:
+                return
+            if _EARLY_112_SENDING.get(key) is not None:
+                continue  # a third turn took over meanwhile: wait for that one
+        done: "asyncio.Future[bool]" = asyncio.get_running_loop().create_future()
+        _EARLY_112_SENDING[key] = done
+        sent = False
+        try:
+            hospital = _OUR_AGENTS.get("hospital", "")
+            sent = await _say(city, message.sender, _escalate_text(
+                message, _lang([message]) != "it",
+                told=None if not hospital or hospital == city.agent_id else False))
+            if sent:
+                if len(_EARLY_112) > 4 * _SENT_NEEDS:
+                    _EARLY_112.clear()
+                _EARLY_112.add(key)
+                _EARLY_112_FAILED.discard(key)
+            else:
+                if len(_EARLY_112_FAILED) > 4 * _SENT_NEEDS:
+                    _EARLY_112_FAILED.clear()
+                _EARLY_112_FAILED.add(key)
+        finally:
+            _EARLY_112_SENDING.pop(key, None)
+            done.set_result(sent)
+        return  # one attempt per turn; if it failed, _escalate in this turn sends the full 112
 _RED_FLAGS_MORE = ("sanguinamento abbondante", "heavy bleeding", "non riesco a respirare", "can't breathe", "cannot breathe", "svenut", "fainted")
 _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
 _LOG = logging.getLogger("care")
@@ -129,15 +168,7 @@ async def main(need: Need, city: City) -> None:
     # `escalate.emergency` (emergency.no_escalation -2). A red flag in the citizen's own text
     # needs nothing else: the 112 leaves now, once per need; the turn then adds the rest.
     if message.sender.startswith("citizen:") and text and first_word(text) != "data.response" and _emergency(message):
-        key = message.need_id or message.msg_id
-        if key not in _EARLY_112:
-            if len(_EARLY_112) > 4 * _SENT_NEEDS:
-                _EARLY_112.clear()
-            _EARLY_112.add(key)
-            hospital = _OUR_AGENTS.get("hospital", "")
-            await _say(city, message.sender, _escalate_text(
-                message, _lang([message]) != "it",
-                told=None if not hospital or hospital == city.agent_id else False))
+        await _early_112(city, message)  # GP-18: marked only after the send succeeded
     # OPS-09: the GP's symptom check (city.llm, up to 4 s) needs only the citizen's text, so it
     # runs while the case history is read instead of after it. _gp() takes the result.
     early = None
@@ -966,7 +997,11 @@ async def _escalate(city: City, message: Message, chat: list[Message]) -> None:
     early = (message.need_id or message.msg_id) in _EARLY_112  # GP-17: the 112 already left
     if not early and not _we(chat, agent, "escalate.emergency", to=message.sender, word="escalate.emergency"):
         noticed, near = await asyncio.gather(_notice(), _near())
-        await _say(city, message.sender, _escalate_text(message, en, told=noticed) + (" " + near.strip() if near else ""))
+        if await _say(city, message.sender, _escalate_text(message, en, told=noticed) + (" " + near.strip() if near else "")):
+            key = message.need_id or message.msg_id
+            if key in _EARLY_112_FAILED:  # GP-18: the early 112 failed, this one left
+                _EARLY_112_FAILED.discard(key)
+                _EARLY_112.add(key)
         near = ""
     elif early and message.sender.startswith("citizen:") and not _we(
             chat, agent, "purpose=emergency", to=message.sender, word="data.request"):
@@ -7959,6 +7994,13 @@ async def _on_confirm(
     offer = _our_offer(chat, agent, offer_id) if offer_id else {}
     slot = fields.get("slot_id") or offer.get("slot_id", "")
     facility = fields.get("facility") or offer.get("facility", "")
+    # BK-74 (rule P2, P-francesco-47): a hold in our ASST for another ASST's citizen needs the
+    # citizen's cross_asst consent, or the Ledger refuses it (CONSENT_MISSING). The partner's
+    # booking centre sends it as cross_asst_consent_ref: it goes on the hold, and alone it is
+    # the consent we have.
+    cross_in = (fields.get("cross_asst_consent_ref", "")
+                if message.sender.startswith("agent:") and not _ours(message.sender) else "")
+    consent = consent or cross_in
     if message.sender.startswith("agent:") and (not slot or not consent):
         # FA-01 (P-francesco-5): a confirm from an agent without slot or consent never gets silence;
         # the consent belongs to the booking centre, so we answer the sender and it can resend.
@@ -8041,6 +8083,8 @@ async def _on_confirm(
             if number:
                 parts.append(f"prescription_number={number}")
             parts.append(f"consent_ref={consent}")
+            if cross_in:
+                parts.append(f"cross_asst_consent_ref={cross_in}")  # BK-74 (P2)
             _HELD_FOR[slot] = (need_key, time.monotonic())  # BK-63
             while len(_HELD_FOR) > _SENT_NEEDS:
                 _HELD_FOR.popitem(last=False)
