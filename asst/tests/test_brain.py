@@ -809,6 +809,56 @@ async def test_p_magesh_26(check) -> None:
         brain._CROSS_TIMERS.clear()
 
 
+async def test_bk76(check) -> None:
+    """BK-76 (21/11, 65 verdicts): for a B prescription the citizen counts 48 CALENDAR hours of agenda
+    from the birth of the need. 68 slots refused with reason=deadline were 78-101 calendar hours
+    after it (30-53 without the weekend, the BK-68 rule); 15 confirmed slots were 22-44. A B of
+    Friday is over on Sunday: Monday is never accepted."""
+    from datetime import datetime as _dt, timezone as _tz
+    BKX, HOS = "agent:bk", "agent:hos"
+    RX = "prescription_number-RX-76"
+    U = _tz.utc
+    rep = {"issued_at": "2026-12-25T04:09:00Z"}  # N-...0003090006: born on Friday 25/12 at 04:09 of agenda
+    check("BK-76 ricetta B di venerdì: venerdì è nei tempi, lunedì no",
+          brain._before_rx_deadline({"at": "2026-12-25T16:00:00Z"}, rep, "B")
+          and not brain._before_rx_deadline({"at": "2026-12-28T10:30:00Z"}, rep, "B"), "")
+    check("BK-76 scadenza B di venerdì 04:09 = domenica 04:09 (48 ore di calendario)",
+          brain._rx_deadline([], rep, "B", RX) == _dt(2026, 12, 27, 4, 9, tzinfo=U), brain._rx_deadline([], rep, "B", RX))
+    check("BK-76 scadenza D di lunedì = sabato (5 giorni di calendario)",
+          brain._rx_deadline([], {"issued_at": "2026-12-21T10:00:00Z"}, "D", RX) == _dt(2026, 12, 26, 10, tzinfo=U), "")
+
+    def slot(sid, at, day):
+        return f"slot_id={sid} doctor_id=asst-niguarda-h1 facility={HOS} procedure=VIS-FIS at={at} day={day} free=1"
+
+    def case(now, lines):
+        return [row(CITIZEN, BKX, f"need.request lang=it prescription_number={RX}", 0),
+                row(LEDGER, BKX, f"prescription prescription_number={RX} procedure=VIS-FIS priority=B state=issued "
+                    "issued_at=2026-12-25T04:09:00Z", 1),
+                row(LEDGER, BKX, f"agenda agenda_now={now}", 2),
+                row(LEDGER, BKX, "slots page=1/1\n" + "\n".join(lines), 3)]
+
+    monday = [slot("M1", "2026-12-28T10:30:00Z", "mon"), slot("M2", "2026-12-28T12:00:00Z", "mon")]
+    # the journey: the offers left on Friday 21:23 of agenda, 17 real minutes after the birth
+    brain._SENT.clear(); brain._HELD_FOR.clear(); brain._CROSS_TIMERS.clear()
+    chat = case("2026-12-25T21:23:00Z", monday)
+    city = FakeCity(BKX)
+    await brain._advance_alone(city, chat[3], chat, "N-1", fixed=None, replacing=False)
+    out = to(city, CITIZEN)
+    check("BK-76 B di venerdì, restano solo posti di lunedì: nessuna offerta di lunedì, si passa alle altre ASST",
+          not any("slot_id=M" in t for t in out) and any(t.startswith("consent purpose=cross_asst") for t in out), city.sent)
+    for task in list(brain._CROSS_TIMERS):
+        task.cancel()
+    # same citizen, reached on Friday morning: the Friday slot goes out, the Monday ones do not
+    brain._SENT.clear(); brain._HELD_FOR.clear()
+    chat = case("2026-12-25T06:00:00Z", [slot("F1", "2026-12-25T16:00:00Z", "fri").replace("niguarda-h1", "niguarda-h2"), *monday])
+    city = FakeCity(BKX)
+    await brain._advance_alone(city, chat[3], chat, "N-1", fixed=None, replacing=False)
+    offers = [t for t in to(city, CITIZEN) if t.startswith("offer ")]
+    check("BK-76 B di venerdì mattina: offerto solo il posto di venerdì",
+          len(offers) == 1 and "slot_id=F1" in offers[0] and "slot_id=M" not in offers[0], city.sent)
+    brain._SENT.clear()
+
+
 async def test_x49(check) -> None:
     """X-49: the address is asked when the citizen confirms, before the booking.receipt."""
     BKX, HOSP = "agent:bk", "agent:jdj692g4145e"
@@ -2185,6 +2235,7 @@ async def main() -> int:
 
     await test_bk62(check)
     await test_bk72(check)
+    await test_bk76(check)
     await test_ops13(check)
     await test_p_magesh_26(check)
     await test_bk63(check)
@@ -2401,12 +2452,14 @@ async def main() -> int:
         check("BK-68 mercoledì + 3 ore resta mercoledì",
               brain._agenda_add(_dt(2026, 12, 2, 9, tzinfo=U), _td(hours=3)) == _dt(2026, 12, 2, 12, tzinfo=U), "")
         rep = {"issued_at": "2026-12-04T16:00:00Z"}
-        check("BK-68 ricetta B di venerdì: lunedì e martedì mattina sono nei tempi",
-              brain._before_rx_deadline({"at": "2026-12-07T10:30:00Z"}, rep, "B")
-              and brain._before_rx_deadline({"at": "2026-12-08T10:30:00Z"}, rep, "B")
-              and not brain._before_rx_deadline({"at": "2026-12-08T16:30:00Z"}, rep, "B"), "")
-        check("BK-68 scadenza B di venerdì 16:00 = martedì 16:00",
-              brain._rx_deadline([], rep, "B", rx_number) == _dt(2026, 12, 8, 16, tzinfo=U), brain._rx_deadline([], rep, "B", rx_number))
+        # BK-76: the WINDOW is in calendar days (the citizens refuse Monday for a B of Friday); only
+        # the agenda clock above skips the weekend.
+        check("BK-76 (era BK-68) ricetta B di venerdì: venerdì sera è nei tempi, lunedì e martedì no",
+              brain._before_rx_deadline({"at": "2026-12-04T17:30:00Z"}, rep, "B")
+              and not brain._before_rx_deadline({"at": "2026-12-07T10:30:00Z"}, rep, "B")
+              and not brain._before_rx_deadline({"at": "2026-12-08T10:30:00Z"}, rep, "B"), "")
+        check("BK-76 (era BK-68) scadenza B di venerdì 16:00 = domenica 16:00",
+              brain._rx_deadline([], rep, "B", rx_number) == _dt(2026, 12, 6, 16, tzinfo=U), brain._rx_deadline([], rep, "B", rx_number))
         iso_ = lambda t: t.isoformat().replace("+00:00", "Z")
         t0 = _dt.now(U)
         ag = Message(type="chat", sender=LEDGER, msg_id="ag", need_id="N-1", recipient=bk,
@@ -2424,8 +2477,10 @@ async def main() -> int:
         city = FakeCity(bk)
         await brain._advance_alone(city, chat[0], chat, "N-1", fixed=None, replacing=False)
         out = to(city, CITIZEN)
-        check("BK-68 ricetta B di venerdì, lunedì mattina: offerte di lunedì e martedì, non lista d'attesa",
-              len(out) == 1 and "slot_id=M1" in out[0] and "slot_id=T1" in out[0] and "waiting_list" not in out[0], city.sent)
+        check("BK-76 (era BK-68) ricetta B di venerdì, lunedì mattina: nessun posto di lunedì o martedì, domanda cross-ASST",
+              len(out) == 1 and out[0].startswith("consent purpose=cross_asst") and "slot_id=" not in out[0], city.sent)
+        for task in list(brain._CROSS_TIMERS):
+            task.cancel()
         # a partner's deadline without a time zone (MACH-1.3 examples) is read, not ignored
         brain._PARTNER_DONE.clear()
         hchat = [row(LEDGER, hospital, "agenda agenda_now=2026-12-07T00:10:00Z", 1), row(LEDGER, hospital, p1, 2)]
@@ -2485,7 +2540,7 @@ async def main() -> int:
         old_level = brain._LOG.level
         brain._LOG.setLevel(logging.INFO)
         try:
-            for issued, label in (("issued_at=2026-12-04T16:00:00Z", "ledger"), ("", "none")):
+            for issued, label in (("issued_at=2026-12-07T00:00:00Z", "ledger"), ("", "none")):
                 lines.clear()
                 brain._SENT.clear(); brain._HELD_FOR.clear()
                 chat = [row(CITIZEN, bk, f"need.request lang=it prescription_number={rx_number}", 0),
@@ -2497,7 +2552,7 @@ async def main() -> int:
                 if label == "ledger":
                     check("BK-71 log finestra: scadenza dal campo del Ledger, ora di agenda e scadenza scritte",
                           "deadline_from=ledger:issued_at" in win and "now=2026-12-07T00:10" in win
-                          and "deadline=2026-12-08T16:00" in win and "rx_keys=issued_at,priority,procedure,state" in win, (win, lines))
+                          and "deadline=2026-12-09T00:00" in win and "rx_keys=issued_at,priority,procedure,state" in win, (win, lines))
                     check("BK-71 log finestra: catalogo e scarti per motivo (margine, scadenza)",
                           "catalog=4" in win and "first=2026-12-07T02:00" in win and "last=2026-12-09T10:30" in win
                           and "early=1" in win and "late=1" in win and "chosen=2" in win, win)
