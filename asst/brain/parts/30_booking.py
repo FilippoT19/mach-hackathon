@@ -1755,6 +1755,11 @@ async def _desk_route(
             await _on_confirm(city, message, chat, hold_self=hold_self)
             return
     agent_first = first_word(message.text) if message.sender.startswith("agent:") else ""
+    if agent_first == "confirm" and not _trusted(message.sender):
+        # P-magesh-24 (1): a confirm from outside the ring never books here; one short answer per need.
+        if not _we(chat, city.agent_id, "reason=not_listed", to=message.sender, word="cancel"):
+            await _say(city, message.sender, f"cancel reason=not_listed mach={_MACH}")
+        return
     if "confirm" in kind and (
         message.sender.startswith("citizen:") or agent_first == "confirm"
     ):
@@ -1824,6 +1829,10 @@ def _citizen_cancels(text: str) -> bool:
 async def _on_referral(city: City, message: Message, chat: list[Message]) -> None:
     """X-27: the gp tells us a prescription is coming. Answer at once (clock +1), once per need."""
 
+    if not _ours(message.sender):  # P-magesh-24 (2): only our gp sets the citizen's filters
+        if not _we(chat, city.agent_id, "reason=not_listed", to=message.sender, word="referral.ack"):
+            await _say(city, message.sender, "referral.ack status=ignored reason=not_listed")
+        return
     number = fields_of(message.text).get("prescription_number", "")
     if not number:
         return

@@ -863,6 +863,64 @@ async def test_x49(check) -> None:
     fresh()
 
 
+async def test_p_magesh_24_impostor(check) -> None:
+    """P-magesh-24 (1)-(2): with the ring on, confirm and referral from an agent outside it do nothing."""
+    bk = brain._OUR_AGENTS["booking_centre"]
+    evil = "agent:impostore"
+    ring = sorted(RING_CONFIG - set(brain._OUR_AGENTS.values()))[0]
+    brain._TRUSTED_PARTNERS.clear(); brain._TRUSTED_PARTNERS.update(RING_CONFIG)
+    try:
+        # (1) confirm from an impostor: no Ledger, no citizen, one cancel not_listed, nothing about missing fields.
+        fake = row(evil, bk, "confirm offer_id=of-S1 slot_id=S1 citizen=citizen:x consent_ref=C1", 1)
+        brain._SENT.clear(); brain._HELD_FOR.clear()
+        city = FakeCity(bk)
+        await brain._desk(city, fake, [fake], hold_self=False, fixed=None)
+        check("P-magesh-24 confirm impostore: niente al Ledger né al cittadino",
+              not to(city, LEDGER) and not to(city, "citizen:x"), city.sent)
+        out = to(city, evil)
+        check("P-magesh-24 confirm impostore: un solo cancel reason=not_listed mach=2.0",
+              len(out) == 1 and out[0].startswith("cancel ") and "reason=not_listed" in out[0].split()
+              and "mach=2.0" in out[0].split(), city.sent)
+        bare = row(evil, bk, "confirm offer_id=of-S1", 2)
+        city = FakeCity(bk)
+        await brain._desk(city, bare, [bare], hold_self=False, fixed=None)
+        check("P-magesh-24 confirm impostore incompleto: non dice cosa manca",
+              len(city.sent) == 1 and "missing" not in city.sent[0][1] and "not_listed" in city.sent[0][1], city.sent)
+        said = row(bk, evil, out[0] if out else "", 3)
+        again = row(evil, bk, "confirm offer_id=of-S1 slot_id=S1 citizen=citizen:x consent_ref=C1", 4)
+        city = FakeCity(bk)
+        await brain._desk(city, again, [fake, said, again], hold_self=False, fixed=None)
+        check("P-magesh-24 confirm impostore due volte: sempre un solo cancel", not city.sent, city.sent)
+        # Regression: a ring partner's confirm still books (hold on the Ledger).
+        real = row(ring, bk, "confirm offer_id=of-S2 slot_id=S2 citizen=citizen:y consent_ref=C2", 5)
+        brain._SENT.clear(); brain._HELD_FOR.clear()
+        city = FakeCity(bk)
+        await brain._desk(city, real, [real], hold_self=False, fixed=None)
+        check("P-magesh-24 confirm partner dell'anello: hold sul Ledger come oggi",
+              any(t.startswith("hold slot_id=S2") for t in to(city, LEDGER))
+              and not any("not_listed" in t for t in to(city, ring)), city.sent)
+        # (2) referral from an impostor: ignored, no preference saved, no Ledger query.
+        brain._PREF_BY_RX.clear()
+        ref = row(evil, bk, "referral prescription_number=RX1 lang=ka", 6)
+        city = FakeCity(bk)
+        await brain._desk(city, ref, [ref], hold_self=False, fixed=None)
+        check("P-magesh-24 referral impostore: referral.ack status=ignored reason=not_listed",
+              to(city, evil) == ["referral.ack status=ignored reason=not_listed"], city.sent)
+        later = [row(CITIZEN, bk, "need.request prescription_number=RX1", 7)]
+        check("P-magesh-24 referral impostore: nessun filtro ka, niente al Ledger",
+              "RX1" not in brain._PREF_BY_RX and brain._rx_pref(later, "lang") != "ka" and not to(city, LEDGER),
+              (brain._PREF_BY_RX, city.sent))
+        gp_ref = row(brain._OUR_AGENTS["gp"], bk, "referral prescription_number=RX1 lang=ka", 8)
+        city = FakeCity(bk)
+        await brain._desk(city, gp_ref, [gp_ref], hold_self=False, fixed=None)
+        ack = to(city, brain._OUR_AGENTS["gp"])
+        check("P-magesh-24 referral del nostro gp: referral.ack prescription_number=RX1 come oggi",
+              len(ack) == 1 and ack[0].startswith("referral.ack prescription_number=RX1")
+              and brain._PREF_BY_RX.get("RX1") == {"lang": "ka"}, city.sent)
+    finally:
+        brain._TRUSTED_PARTNERS.clear(); brain._PREF_BY_RX.clear(); brain._SENT.clear(); brain._HELD_FOR.clear()
+
+
 async def main() -> int:
     failures = 0
 
@@ -1255,7 +1313,7 @@ async def main() -> int:
     cit = to(c, CITIZEN)
     check("X-33 GP conferma la preferenza", cit and "speaks English" in cit[0], cit)
     brain._PREF_BY_RX.clear()
-    ref = Message(type="chat", sender="agent:gp", msg_id="r33", need_id="N-33", recipient="agent:bk", body={"text": "referral prescription_number=RX-33 procedure=VIS-FIS priority=D gender=f Ricetta emessa."})
+    ref = Message(type="chat", sender=brain._OUR_AGENTS["gp"], msg_id="r33", need_id="N-33", recipient="agent:bk", body={"text": "referral prescription_number=RX-33 procedure=VIS-FIS priority=D gender=f Ricetta emessa."})
     await brain._desk(FakeCity("agent:bk"), ref, [ref], hold_self=False, fixed=None)
     later = [row(CITIZEN, "agent:bk", "need.request prescription_number=RX-33 lang=it", 1)]
     check("X-33 booking usa la preferenza del GP", brain._gender(later) == "f", brain._PREF_BY_RX)
@@ -2498,6 +2556,7 @@ async def main() -> int:
     await test_francesco_23(check)
     await test_000113(check)
     await test_x49(check)
+    await test_p_magesh_24_impostor(check)
     await test_p17_never_silent(check)
     await test_bk59_fa20(check)
     await test_bk66(check)
