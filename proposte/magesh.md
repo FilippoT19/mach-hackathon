@@ -5,7 +5,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 
 <!-- aggiungi qui sotto -->
 
-### [ ] P-magesh-8: dopo la contesa (`no_capacity`) il booking salta gli slot locali ancora liberi e chiede subito il consenso cross_asst
+### [~] P-magesh-8 (punto 1 fatto: BK-38; punti 2-3 a Giulia): dopo la contesa (`no_capacity`) il booking salta gli slot locali ancora liberi e chiede subito il consenso cross_asst
 - Journey: ID da aggiungere (journey del 21/11, 01:05–01:11, esito Fallito) — ruolo: booking_centre
 - Cosa fa il cittadino: riceve l'offerta `slot s2 gio 19 nov 15:30` (01:06:07) e la conferma con il consenso (01:06:28). Lo slot lo prende un'altra squadra: tutte le ASST ricevono lo stesso cittadino nello stesso momento
 - Cosa risponde oggi il nostro agente: `cancel reason=no_capacity` (01:07:19), poi "sto controllando tutti i posti liberi…" (01:07:21), poi, senza offrire altri slot, chiede il consenso `purpose=cross_asst` (01:08:41). Il resto del journey è il loop del consenso, già risolto con BK-36 (booking 1.0.11)
