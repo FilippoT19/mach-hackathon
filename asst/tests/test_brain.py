@@ -1948,6 +1948,65 @@ async def main() -> int:
         brain._MEMORY_ON = False
 
     await test_bk67(check)
+
+    async def test_bk68(check):
+        """BK-68: the agenda has no Saturday or Sunday (e19: a week of the race lasts 120 real minutes)."""
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        bk = brain._OUR_AGENTS["booking_centre"]
+        U = _tz.utc
+
+        def slot(sid, doc, at, day, fac=hospital, proc="VIS-FIS"):
+            return f"slot_id={sid} doctor_id=asst-niguarda-{doc} facility={fac} procedure={proc} at={at} day={day} free=1"
+
+        fri16 = _dt(2026, 12, 4, 16, tzinfo=U)  # a Friday
+        check("BK-68 venerdì 16:00 + 2 giorni di agenda = martedì 16:00", brain._agenda_add(fri16, _td(days=2)) == _dt(2026, 12, 8, 16, tzinfo=U), brain._agenda_add(fri16, _td(days=2)))
+        check("BK-68 lunedì 10:00 + 5 giorni = lunedì dopo 10:00",
+              brain._agenda_add(_dt(2026, 12, 7, 10, tzinfo=U), _td(days=5)) == _dt(2026, 12, 14, 10, tzinfo=U), "")
+        check("BK-68 lunedì 02:00 - 4 ore = venerdì 22:00",
+              brain._agenda_add(_dt(2026, 12, 7, 2, tzinfo=U), -_td(hours=4)) == _dt(2026, 12, 4, 22, tzinfo=U), "")
+        check("BK-68 un orario di sabato vale lunedì 00:00",
+              brain._agenda_add(_dt(2026, 12, 5, 12, tzinfo=U), _td(hours=1)) == _dt(2026, 12, 7, 1, tzinfo=U), "")
+        check("BK-68 mercoledì + 3 ore resta mercoledì",
+              brain._agenda_add(_dt(2026, 12, 2, 9, tzinfo=U), _td(hours=3)) == _dt(2026, 12, 2, 12, tzinfo=U), "")
+        rep = {"issued_at": "2026-12-04T16:00:00Z"}
+        check("BK-68 ricetta B di venerdì: lunedì e martedì mattina sono nei tempi",
+              brain._before_rx_deadline({"at": "2026-12-07T10:30:00Z"}, rep, "B")
+              and brain._before_rx_deadline({"at": "2026-12-08T10:30:00Z"}, rep, "B")
+              and not brain._before_rx_deadline({"at": "2026-12-08T16:30:00Z"}, rep, "B"), "")
+        check("BK-68 scadenza B di venerdì 16:00 = martedì 16:00",
+              brain._rx_deadline([], rep, "B", rx_number) == _dt(2026, 12, 8, 16, tzinfo=U), brain._rx_deadline([], rep, "B", rx_number))
+        iso_ = lambda t: t.isoformat().replace("+00:00", "Z")
+        t0 = _dt.now(U)
+        ag = Message(type="chat", sender=LEDGER, msg_id="ag", need_id="N-1", recipient=bk,
+                     body={"text": "agenda agenda_now=2026-12-04T22:00:00Z"}, sent_at=iso_(t0 - _td(minutes=4)))
+        turn = Message(type="chat", sender=CITIZEN, msg_id="c1", need_id="N-1", recipient=bk, body={"text": "ciao"}, sent_at=iso_(t0))
+        got = brain._agenda_now([ag], turn)
+        check("BK-68 agenda letta venerdì 22:00, 4 minuti reali dopo è lunedì 02:00 (non sabato)",
+              got is not None and abs((got - _dt(2026, 12, 7, 2, tzinfo=U)).total_seconds()) < 120, got)
+        # the journeys of 05:15Z: B prescribed on Friday afternoon, the citizen reaches us on Monday 00:10
+        brain._SENT.clear(); brain._HELD_FOR.clear()
+        p1 = "slots page=1/1\n" + "\n".join([slot("M1", "h1", "2026-12-07T10:30:00Z", "mon"), slot("T1", "h1", "2026-12-08T10:30:00Z", "tue")])
+        chat = [row(CITIZEN, bk, f"need.request lang=it prescription_number={rx_number}", 0),
+                row(LEDGER, bk, f"prescription prescription_number={rx_number} procedure=VIS-FIS priority=B state=issued issued_at=2026-12-04T16:00:00Z", 1),
+                row(LEDGER, bk, "agenda agenda_now=2026-12-07T00:10:00Z", 2), row(LEDGER, bk, p1, 3)]
+        city = FakeCity(bk)
+        await brain._advance_alone(city, chat[0], chat, "N-1", fixed=None, replacing=False)
+        out = to(city, CITIZEN)
+        check("BK-68 ricetta B di venerdì, lunedì mattina: offerte di lunedì e martedì, non lista d'attesa",
+              len(out) == 1 and "slot_id=M1" in out[0] and "slot_id=T1" in out[0] and "waiting_list" not in out[0], city.sent)
+        # a partner's deadline without a time zone (MACH-1.3 examples) is read, not ignored
+        brain._PARTNER_DONE.clear()
+        hchat = [row(LEDGER, hospital, "agenda agenda_now=2026-12-07T00:10:00Z", 1), row(LEDGER, hospital, p1, 2)]
+        req = row("agent:partner-bk", hospital, "need.request mach=1.3 procedure=VIS-FIS priority=D after=2026-12-07T06:00 "
+                  "deadline=2026-12-07T18:00 request_id=ring-N-78", 3)
+        city = FakeCity(hospital)
+        await brain._partner_request(city, req, [*hchat, req])
+        out = to(city, "agent:partner-bk")
+        check("BK-68 struttura: deadline= senza fuso orario rispettato (solo lo slot di lunedì)",
+              len(out) == 1 and "slot_id=M1" in out[0] and "slot_id=T1" not in out[0], city.sent)
+        brain._PARTNER_DONE.clear()
+
+    await test_bk68(check)
     await test_francesco_15(check)
     await test_francesco_16(check)
     await test_francesco_18(check)

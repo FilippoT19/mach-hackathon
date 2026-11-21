@@ -393,6 +393,30 @@ def _when(value: str) -> datetime | None:
     return parsed
 
 
+def _agenda_add(start: datetime, delta: timedelta) -> datetime:
+    """``start + delta`` on the agenda clock. BK-68: the agenda has no Saturday or Sunday (e19: "una
+    settimana di gara dura 120 minuti reali, non 168"); after Friday 24:00 comes Monday 00:00. A
+    B prescription of Friday afternoon is due on Tuesday, not on Sunday; four real minutes after
+    Friday 22:00 it is Monday 02:00. ``delta`` may be negative. A weekend ``start`` counts as the
+    Monday after it."""
+    day = timedelta(days=1)
+    base = start.replace(hour=0, minute=0, second=0, microsecond=0)
+    if base.weekday() >= 5:
+        base += day * (7 - base.weekday())
+        offset = timedelta(0)
+    else:
+        offset = start - base
+    monday = base - day * base.weekday()
+    weeks, rest = divmod(day * base.weekday() + offset + delta, 5 * day)
+    days, time_of_day = divmod(rest, day)
+    return monday + weeks * 7 * day + days * day + time_of_day
+
+
+def _when_agenda(value: str) -> datetime | None:
+    """An agenda time another team wrote, with or without a time zone (MACH-1.3 writes none)."""
+    return _when(value) or _when(value + "Z")
+
+
 def _citizen(chat: list[Message]) -> str | None:
     for row in chat:
         if row.sender.startswith("citizen:"):
@@ -567,7 +591,7 @@ def fitting(
     elif priority == "P":
         horizon = None
     else:
-        horizon = now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14))
+        horizon = _agenda_add(now, timedelta(days=_DEADLINE_DAYS.get(priority or "", 14)))  # BK-68
     earliest = now + (_LEAD if priority == "U" else _LEAD_BOOK)
     chosen: list[tuple[int, datetime, dict[str, str]]] = []
     for line in lines:
@@ -5946,7 +5970,7 @@ def _before_rx_deadline(slot: dict[str, str], reply: dict[str, str] | None, prio
     for key in _RX_DATE_KEYS:
         issued = _when(reply.get(key, ""))
         if issued is not None:
-            return at <= issued + timedelta(days=days)
+            return at <= _agenda_add(issued, timedelta(days=days))  # BK-68: agenda days, no weekend
     return True
 
 
@@ -6049,7 +6073,7 @@ def _rx_deadline(
     for key in _RX_DATE_KEYS:
         issued = _when((reply or {}).get(key, ""))
         if issued is not None:
-            return issued + timedelta(days=days)
+            return _agenda_add(issued, timedelta(days=days))  # BK-68
     anchor = next((row for row in reversed(chat) if row.sender == LEDGER and first_word(row.text) == "agenda"), None)
     if anchor is None:
         return None
@@ -6067,7 +6091,8 @@ def _rx_deadline(
     # BK-67: a remembered agenda line was read before this case began; then the case began later
     # on the agenda than that line says (a negative ``elapsed``), within the life of the memory.
     elapsed = max(-_AGENDA_REAL_MAX, read_at - min(firsts))
-    return agenda_now - elapsed * _AGENDA_SPEED + timedelta(days=days) - _DEADLINE_MARGIN
+    born = _agenda_add(agenda_now, -(elapsed * _AGENDA_SPEED))  # BK-68: the agenda skips the weekend
+    return _agenda_add(born, timedelta(days=days)) - _DEADLINE_MARGIN
 
 
 def _agenda_now(chat: list[Message], message: Message) -> datetime | None:
@@ -6089,7 +6114,7 @@ def _agenda_now(chat: list[Message], message: Message) -> datetime | None:
     real = datetime.now(read_at.tzinfo) - read_at
     if elapsed < real <= _AGENDA_REAL_MAX:
         elapsed = real
-    return now + elapsed * _AGENDA_SPEED
+    return _agenda_add(now, elapsed * _AGENDA_SPEED)  # BK-68: Friday night + minutes = Monday
 
 
 _AGENDA_REAL_MAX = timedelta(minutes=45)  # older than a citizen's whole wait: not this run's clock
@@ -6123,7 +6148,7 @@ def _search_limit(now: datetime, priority: str | None, deadline: datetime | None
     elif priority == "P":
         horizon = None
     else:
-        horizon = now + timedelta(days=days if days is not None else 14)
+        horizon = _agenda_add(now, timedelta(days=days if days is not None else 14))  # BK-68
     if deadline is not None and (horizon is None or deadline < horizon):
         return deadline
     return horizon
@@ -9300,9 +9325,14 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
             now=now, priority=priority, lang=fields.get("lang", "it"),
             gender=fields.get("gender_preference") or fields.get("gender") or None, facility=agent, procedure=procedure,
         )
-        limit = _when(fields.get("deadline", ""))  # MACH-1.2 (2): never a slot after the asker's deadline
+        # MACH-1.2 (2): never a slot after the asker's deadline. BK-68 / MACH-1.3 R4: the asker's
+        # times may come without a time zone, and ``after`` (or ``earliest``) opens the window.
+        limit = _when_agenda(fields.get("deadline", ""))
         if limit is not None:
             picks = [slot for slot in picks if (_when(slot.get("at", "")) or limit) <= limit]
+        first = _when_agenda(fields.get("after", "") or fields.get("earliest", ""))
+        if first is not None:
+            picks = [slot for slot in picks if (_when(slot.get("at", "")) or first) >= first]
         picks = picks[:_OFFER_MAX]  # BK-55: every fitting slot in one answer
     if not picks:
         await _say(city, message.sender, f"cancel reason=no_availability request_id={request_id} Al momento non abbiamo posti adatti per {procedure}.")

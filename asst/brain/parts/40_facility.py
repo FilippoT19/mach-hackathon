@@ -714,9 +714,14 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
             now=now, priority=priority, lang=fields.get("lang", "it"),
             gender=fields.get("gender_preference") or fields.get("gender") or None, facility=agent, procedure=procedure,
         )
-        limit = _when(fields.get("deadline", ""))  # MACH-1.2 (2): never a slot after the asker's deadline
+        # MACH-1.2 (2): never a slot after the asker's deadline. BK-68 / MACH-1.3 R4: the asker's
+        # times may come without a time zone, and ``after`` (or ``earliest``) opens the window.
+        limit = _when_agenda(fields.get("deadline", ""))
         if limit is not None:
             picks = [slot for slot in picks if (_when(slot.get("at", "")) or limit) <= limit]
+        first = _when_agenda(fields.get("after", "") or fields.get("earliest", ""))
+        if first is not None:
+            picks = [slot for slot in picks if (_when(slot.get("at", "")) or first) >= first]
         picks = picks[:_OFFER_MAX]  # BK-55: every fitting slot in one answer
     if not picks:
         await _say(city, message.sender, f"cancel reason=no_availability request_id={request_id} Al momento non abbiamo posti adatti per {procedure}.")

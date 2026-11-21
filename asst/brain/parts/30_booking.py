@@ -582,7 +582,7 @@ def _before_rx_deadline(slot: dict[str, str], reply: dict[str, str] | None, prio
     for key in _RX_DATE_KEYS:
         issued = _when(reply.get(key, ""))
         if issued is not None:
-            return at <= issued + timedelta(days=days)
+            return at <= _agenda_add(issued, timedelta(days=days))  # BK-68: agenda days, no weekend
     return True
 
 
@@ -685,7 +685,7 @@ def _rx_deadline(
     for key in _RX_DATE_KEYS:
         issued = _when((reply or {}).get(key, ""))
         if issued is not None:
-            return issued + timedelta(days=days)
+            return _agenda_add(issued, timedelta(days=days))  # BK-68
     anchor = next((row for row in reversed(chat) if row.sender == LEDGER and first_word(row.text) == "agenda"), None)
     if anchor is None:
         return None
@@ -703,7 +703,8 @@ def _rx_deadline(
     # BK-67: a remembered agenda line was read before this case began; then the case began later
     # on the agenda than that line says (a negative ``elapsed``), within the life of the memory.
     elapsed = max(-_AGENDA_REAL_MAX, read_at - min(firsts))
-    return agenda_now - elapsed * _AGENDA_SPEED + timedelta(days=days) - _DEADLINE_MARGIN
+    born = _agenda_add(agenda_now, -(elapsed * _AGENDA_SPEED))  # BK-68: the agenda skips the weekend
+    return _agenda_add(born, timedelta(days=days)) - _DEADLINE_MARGIN
 
 
 def _agenda_now(chat: list[Message], message: Message) -> datetime | None:
@@ -725,7 +726,7 @@ def _agenda_now(chat: list[Message], message: Message) -> datetime | None:
     real = datetime.now(read_at.tzinfo) - read_at
     if elapsed < real <= _AGENDA_REAL_MAX:
         elapsed = real
-    return now + elapsed * _AGENDA_SPEED
+    return _agenda_add(now, elapsed * _AGENDA_SPEED)  # BK-68: Friday night + minutes = Monday
 
 
 _AGENDA_REAL_MAX = timedelta(minutes=45)  # older than a citizen's whole wait: not this run's clock
@@ -759,7 +760,7 @@ def _search_limit(now: datetime, priority: str | None, deadline: datetime | None
     elif priority == "P":
         horizon = None
     else:
-        horizon = now + timedelta(days=days if days is not None else 14)
+        horizon = _agenda_add(now, timedelta(days=days if days is not None else 14))  # BK-68
     if deadline is not None and (horizon is None or deadline < horizon):
         return deadline
     return horizon

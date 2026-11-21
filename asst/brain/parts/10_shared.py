@@ -166,6 +166,30 @@ def _when(value: str) -> datetime | None:
     return parsed
 
 
+def _agenda_add(start: datetime, delta: timedelta) -> datetime:
+    """``start + delta`` on the agenda clock. BK-68: the agenda has no Saturday or Sunday (e19: "una
+    settimana di gara dura 120 minuti reali, non 168"); after Friday 24:00 comes Monday 00:00. A
+    B prescription of Friday afternoon is due on Tuesday, not on Sunday; four real minutes after
+    Friday 22:00 it is Monday 02:00. ``delta`` may be negative. A weekend ``start`` counts as the
+    Monday after it."""
+    day = timedelta(days=1)
+    base = start.replace(hour=0, minute=0, second=0, microsecond=0)
+    if base.weekday() >= 5:
+        base += day * (7 - base.weekday())
+        offset = timedelta(0)
+    else:
+        offset = start - base
+    monday = base - day * base.weekday()
+    weeks, rest = divmod(day * base.weekday() + offset + delta, 5 * day)
+    days, time_of_day = divmod(rest, day)
+    return monday + weeks * 7 * day + days * day + time_of_day
+
+
+def _when_agenda(value: str) -> datetime | None:
+    """An agenda time another team wrote, with or without a time zone (MACH-1.3 writes none)."""
+    return _when(value) or _when(value + "Z")
+
+
 def _citizen(chat: list[Message]) -> str | None:
     for row in chat:
         if row.sender.startswith("citizen:"):
@@ -340,7 +364,7 @@ def fitting(
     elif priority == "P":
         horizon = None
     else:
-        horizon = now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14))
+        horizon = _agenda_add(now, timedelta(days=_DEADLINE_DAYS.get(priority or "", 14)))  # BK-68
     earliest = now + (_LEAD if priority == "U" else _LEAD_BOOK)
     chosen: list[tuple[int, datetime, dict[str, str]]] = []
     for line in lines:
