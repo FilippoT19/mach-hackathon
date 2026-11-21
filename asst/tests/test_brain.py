@@ -724,6 +724,14 @@ async def main() -> int:
     await brain._desk(city, msg, done, hold_self=False, fixed=None)
     check("X-27 una sola risposta per need", not city.sent, city.sent)
 
+    # BK-56 (journey 249): days written only in words; the booking message wins over the GP one.
+    gp249 = citizen_msg("Ciao, io ho dolore a ginocchio. Posso venire solo lunedì, martedì o giovedì.")
+    bk249 = row(CITIZEN, BK, "Buongiorno. Io ho dolore al ginocchio. Vorrei prenotare visita. Posso venire solo lunedì o mercoledì. need.request lang=it prescription_number=prescription_number-RX-1 service_type=hospital.physiatry", 249)
+    cx249 = row(CITIZEN, BK, "No grazie. Forse posso venire un altro giorno? cancel offer_id=of-1 reason=past", 250)
+    check("BK-56 giorni scritti a parole, vince l'ultimo messaggio", brain._days([gp249, bk249, cx249]) == frozenset({"mon", "wed"}), brain._days([gp249, bk249, cx249]))
+    check("BK-56 token days= resta valido", brain._days([row(CITIZEN, BK, "need.request days=mon/fri", 251)]) == frozenset({"mon", "fri"}), None)
+    check("BK-56 senza accento e in inglese", brain._days([row(CITIZEN, BK, "giovedi o venerdi", 252)]) == frozenset({"thu", "fri"}) and brain._days([row(CITIZEN, BK, "only Mondays", 253)]) == frozenset({"mon"}), None)
+
     # 17. X-28: red flag -> acknowledge the person, 112, safety, and warn OUR hospital (no id).
     HO = "agent:jdj692g4145e"
     brain._PEERS.clear()
