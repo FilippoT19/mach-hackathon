@@ -689,13 +689,23 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
         _PARTNER_DONE.add(request_id)
         await _say(city, message.sender, f"cancel reason=no_availability request_id={request_id} Manca procedure=.")
         return
-    if not _exact(chat, agent, "agenda"):
-        await _say(city, LEDGER, "agenda")
-    await _say(city, LEDGER, f"world procedure={procedure} facility={agent} page=1")
-    chat = await _until(city, message.need_id, chat, lambda rows: _has_agenda(rows) and _latest_slots(rows) is not None)
+    # BK-67 / MACH-1.3 R1: a partner is answered within seconds. Agenda and catalogue the process
+    # already has are used at once; the Ledger is asked again (at most once every two minutes)
+    # only to keep them fresh, and nobody waits for that answer.
+    chat = _with_memory(chat, procedure)
+    known = _has_agenda(chat) and _latest_slots(chat) is not None
+    now_real = time.time()
+    if not known or now_real - _ASKED_AT.get(f"facility:{procedure}", 0.0) >= _REFRESH_EVERY:
+        _ASKED_AT[f"facility:{procedure}"] = now_real
+        if not _exact(chat, agent, "agenda"):
+            await _say(city, LEDGER, "agenda")
+        await _say(city, LEDGER, f"world procedure={procedure} facility={agent} page=1")
+    if not known:
+        chat = await _until(city, message.need_id, chat, lambda rows: _has_agenda(rows) and _latest_slots(rows) is not None)
     agenda = _ledger(chat, "agenda")
     now = _when("" if agenda is None else agenda.get("agenda_now", ""))
-    world = _latest_slots(chat)
+    now = _agenda_now(chat, message) or now  # BK-67: a remembered agenda line is minutes (agenda hours) old
+    world = "\n".join(_all_slot_lines(chat, agent)) if known else _latest_slots(chat)
     _PARTNER_DONE.add(request_id)
     picks = []
     if now is not None and world is not None:

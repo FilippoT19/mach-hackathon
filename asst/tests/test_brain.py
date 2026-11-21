@@ -1864,6 +1864,22 @@ async def main() -> int:
         await brain._warm_memory(city)
         brain._WARM_SECONDS = keep
         check("BK-67 memoria fredda: una storia lenta non ferma il turno", _t.monotonic() - started < 2, _t.monotonic() - started)
+
+        # (3b) MACH-1.3 R1: our facility answers a partner's need.request from memory, in the same turn
+        wipe()
+        brain._remember_ledger([row(LEDGER, hospital, "agenda agenda_now=2026-11-02T07:00:00Z", 90), row(LEDGER, hospital, p2, 92)], hospital)
+        req = row("agent:partner-bk", hospital, "need.request mach=1.3 service_type=hospital.physiatry procedure=VIS-FIS priority=D "
+                  "deadline=2026-11-06T18:00:00Z lease_s=480 request_id=ring-N-77", 1)
+        city = FakeCity(hospital)
+        await brain._partner_request(city, req, [req])
+        out = to(city, "agent:partner-bk")
+        check("BK-67 struttura: offerta al partner dalla memoria, nello stesso turno",
+              len(out) == 1 and out[0].startswith("offer ") and "request_id=ring-N-77" in out[0] and "slot_id=B1" in out[0], city.sent)
+        wipe()
+        city = FakeCity(hospital)
+        await brain._partner_request(city, req, [req])
+        check("BK-67 struttura: memoria vuota, domande al Ledger come prima",
+              "agenda" in to(city, LEDGER) and any(t.startswith("world procedure=VIS-FIS") for t in to(city, LEDGER)), city.sent)
         wipe()
 
     await test_bk67(check)
