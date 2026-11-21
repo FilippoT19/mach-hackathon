@@ -143,7 +143,14 @@ async def test_x13_impostor(check) -> None:
 async def test_co10_pregnancy(check) -> None:
     for text, flag in (("sono incinta di 7 mesi e ho perdite di sangue", True),
                        ("I'm pregnant and have strong contractions", True),
-                       ("vorrei una visita ginecologica di controllo in gravidanza", False)):
+                       ("vorrei una visita ginecologica di controllo in gravidanza", False),
+                       # P-magesh-16: normal questions in pregnancy are not 112.
+                       ("sono incinta e vorrei fare gli esami del sangue", False),
+                       ("I'm pregnant and need a blood test", False),
+                       ("sono in gravidanza, ho delle perdite bianche, è normale?", False),
+                       ("incinta di 10 settimane, ho un dolore forte alla schiena", False),
+                       ("sono incinta e ho perso le acque", True),
+                       ("pregnant and bleeding a lot", True)):
         msg = Message(type="chat", sender=CITIZEN, msg_id="m-co", need_id="N-co", recipient="agent:mm18nddkfc5w", body={"text": text})
         city = FakeCity("agent:mm18nddkfc5w")
         await brain.handle("family_counseling", city, msg, [])
@@ -441,6 +448,66 @@ async def test_000113(check) -> None:
           and any(l.startswith("booking.slots need_id=N-1") for l in lines)
           and any(l.startswith("booking.offer need_id=N-1") and "waiting_list" in l for l in lines), lines)
     check("OPS-07 nessun testo del cittadino nei log", not any("English-speaking" in l for l in lines), lines)
+
+
+async def test_p17_never_silent(check) -> None:
+    """P-magesh-17: a slow or broken booking turn still sends the citizen a status line."""
+    real, early = brain._desk_route, brain._EARLY_STATUS
+
+    async def slow(city, message, chat, **kw):
+        await asyncio.sleep(0.3)
+        await brain._say(city, message.sender, "offer offer_id=o-1 slot_id=s-1 Posto libero")
+
+    async def broken(city, message, chat, **kw):
+        raise RuntimeError("ledger down")
+
+    try:
+        brain._EARLY_STATUS = 0.05
+        for name, route, want in (("lento", slow, ["status", "offer"]), ("errore", broken, ["status"])):
+            brain._desk_route = route
+            city = FakeCity("agent:fn64xfq2jft4")
+            msg = Message(type="chat", sender=CITIZEN, msg_id=f"m-p17-{name}", need_id=f"N-p17-{name}",
+                          recipient="agent:fn64xfq2jft4",
+                          body={"text": "need.request prescription_number=prescription_number-N-1 service_type=hospital.physiatry"})
+            await brain._desk(city, msg, [msg], hold_self=False, fixed=None)
+            got = [o.split()[0] for o in to(city, CITIZEN)]
+            check(f"P-magesh-17 turno {name}: il cittadino riceve {want}", got == want, to(city, CITIZEN))
+    finally:
+        brain._desk_route, brain._EARLY_STATUS = real, early
+
+
+async def test_bk59_fa20(check) -> None:
+    """BK-59: agenda jump at a level change (deadline -> renewal, past -> read the agenda again).
+    FA-21: a held line after the wait still gets its commit."""
+    import dataclasses
+
+    def at(n, minute):
+        return dataclasses.replace(row(*n), sent_at=f"2026-11-21T03:{minute:02d}:00Z")
+    offer = ("offer offer_id=of-S-1 slot_id=S-1 doctor_id=d-s1 facility=agent:spec procedure=VIS-CARD "
+             "agenda_date=2026-11-05T10:00:00Z priority=B prescription_number=prescription_number-RX-9")
+    base = [
+        at(("agent:gp", CITIZEN, "prescription prescription_number=prescription_number-RX-9 procedure=VIS-CARD priority=B", 1), 0),
+        at((CITIZEN, "agent:bk", "need.request prescription_number=prescription_number-RX-9", 2), 2),
+        at((LEDGER, "agent:bk", "prescription prescription_number=prescription_number-RX-9 procedure=VIS-CARD priority=B state=issued", 3), 2),
+        at((LEDGER, "agent:bk", f"agenda agenda_now={NOW}", 4), 2),
+        at(("agent:bk", CITIZEN, offer, 5), 3),
+    ]
+    for reason, want in (("deadline", "renewal"), ("past", "agenda")):
+        brain._SENT.clear() if hasattr(brain, "_SENT") else None
+        cancel = at((CITIZEN, "agent:bk", f"cancel offer_id=of-S-1 reason={reason}", 6), 4)
+        cancel = dataclasses.replace(cancel, need_id=f"N-59-{reason}")
+        city = FakeCity("agent:bk")
+        await brain._desk(city, cancel, [*base, cancel], hold_self=False, fixed=None)
+        if want == "renewal":
+            ok = any("purpose=prescription_renewal" in t for t in to(city, CITIZEN))
+        else:
+            ok = any(r == LEDGER and t == "agenda" for r, t in city.sent)
+        check(f"BK-59 cancel reason={reason}: {want}", ok, city.sent)
+    hold = at(("agent:bk", LEDGER, "hold slot_id=S-7 citizen=citizen:c-1 consent_ref=c-7", 7), 5)
+    held = at((LEDGER, "agent:bk", "held hold_id=H-7 slot_id=S-7", 8), 6)
+    city = FakeCity("agent:bk")
+    await brain._desk(city, held, [*base, hold, held], hold_self=False, fixed=None)
+    check("FA-21 held in ritardo: commit sul Ledger", any(r == LEDGER and t.startswith("commit hold_id=H-7") for r, t in city.sent), city.sent)
 
 
 async def test_x49(check) -> None:
@@ -800,6 +867,12 @@ async def main() -> int:
     ho = to(city, HO)
     check("X-28 red flag avvisa il nostro ospedale", len(ho) == 1 and ho[0].startswith("emergency.notice") and "citizen:" not in ho[0], city.sent)
     check("X-28 nessun messaggio all'ospedale di un'altra squadra", not to(city, "agent:other-ho"), city.sent)
+    # X-56 (journey 0000540007): the Index shows nobody (slow or down) -> the notice still goes.
+    brain._PEERS.clear()
+    city56 = FakeCity("agent:gp", peers=[])
+    await brain._gp(city56, citizen_msg("da stamattina ho un dolore al petto mica da ridere"), [])
+    check("X-56 avviso all'ospedale anche senza Index", any(t.startswith("emergency.notice") for t in to(city56, HO)), city56.sent)
+    check("X-56 il 112 dice 'li ho già avvisati'", to(city56, CITIZEN) and "li ho già avvisati io" in to(city56, CITIZEN)[0], to(city56, CITIZEN))
     # X-55: the notice to our hospital leaves BEFORE the 112 message, which says "already told".
     order = [r for r, t in city.sent if t.startswith(("emergency.notice", "escalate.emergency"))]
     check("X-55 avviso ospedale prima del 112", order[:2] == [HO, CITIZEN], city.sent)
@@ -1417,6 +1490,8 @@ async def main() -> int:
     await test_francesco_23(check)
     await test_000113(check)
     await test_x49(check)
+    await test_p17_never_silent(check)
+    await test_bk59_fa20(check)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 

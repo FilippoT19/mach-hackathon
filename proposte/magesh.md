@@ -5,6 +5,49 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 
 <!-- aggiungi qui sotto -->
 
+### [x] P-magesh-17: centro prenotazioni muto dopo le 03:00 UTC (deploy in pausa): nessuna risposta alla need.request e ai cancel
+- Journey: N-2026-11-02-8909120001310003 (L3), N-2026-11-02-8909120002280005 (L5), N-2026-11-02-890912000278 (L6), ondata W01QQQ — ruolo: booking_centre
+- Cosa fa il cittadino:
+  - 0131 (L3): manda `need.request … prescription_number=… service_type=hospital.physiatry` alle 03:03:53 UTC.
+  - 0228 (L5): riceve 4 offerte e le annulla tutte e 4 alle 03:12:52 UTC (`cancel offer_id=… reason=gender`).
+  - 278 (L6): riceve 1 offerta e la annulla alle 03:08:00 UTC (`cancel offer_id=… reason=past`).
+- Cosa risponde oggi il nostro agente: **niente**. 0131: nessuna risposta in 13 minuti, fino al verdetto. 0228 e 278: nessuna risposta dopo i cancel fino al verdetto (4–5 minuti dopo). Anche quando risponde, il booking è lento: in 0228 le offerte sono arrivate dopo **7 minuti** (03:01:28 → 03:08:35).
+- Perché conta: il cittadino molla circa 48 minuti dopo il primo messaggio (0131: 02:26 → verdetto 03:17; 278: 02:25 → verdetto 03:13). Ne passano già circa 35 tra il medico e il primo messaggio al booking, quindi al booking restano circa 10 minuti: un silenzio o una risposta lenta bastano a perdere il percorso. Non è un deploy: OPS-10 ha fermato i deploy dalle 03:00 UTC (l'ultimo ship è delle 02:58). Il codice dopo un cancel dovrebbe rimandare i posti ancora liberi (`30_booking.py:1457`), quindi il turno o non parte o non finisce. La causa vera va letta nei log del booking tra le 03:03 e le 03:18 UTC (`city logs booking_centre`). Casi simili già visti: BK-28, BK-39.
+- Review / punti persi: `citizen.booking_centre.wrong_outcome reason=no_booking` **−1 in tutti e 3**, con 520, 130 e 208 posti accettabili liberi. Si perdono anche il +2/+1 della prenotazione, il +2 del check-in e il +1 del Ledger. Ogni percorso torna dopo 15 minuti e può fallire di nuovo.
+- Cosa dovrebbe fare: ogni messaggio del cittadino riceve un messaggio con atto entro pochi secondi, sempre:
+  1. alla `need.request`, subito `status` + "Ho la sua richiesta, sto cercando i posti liberi per lei", poi le offerte;
+  2. dopo uno o più `cancel`, in un solo messaggio le altre offerte ancora libere oppure, solo se non ce ne sono, la lista d'attesa (BK-10);
+  3. se il turno sta durando troppo (Ledger lento), mandare comunque al cittadino quello che si ha, mai silenzio.
+  Il motivo del cancel (`reason=gender`, `reason=past`) è già in P-francesco-49: qui conta solo che arrivi una risposta.
+- Test a parole: "data una need.request valida, mi aspetto un messaggio al cittadino che comincia con `status` o `offer`"; "dati 4 cancel di fila con 130 posti ancora liberi, mi aspetto un messaggio con nuove `offer` diverse da quelle annullate"
+- Priorità secondo te: P0 (agente muto)
+
+| Caso | Soluzione | Logica | Test |
+|---|---|---|---|
+| need.request senza risposta (0131) | `status` subito, poi offerte | Il cittadino ha solo ~10 minuti per il booking | need.request → `status`/`offer` |
+| Cancel senza risposta (0228, 278) | Nuove offerte o lista d'attesa, in un messaggio | Mai silenzio: −1 `no_booking` con posti liberi | 4 cancel → nuove `offer` |
+| Causa del silenzio | Leggere i log booking 03:03–03:18 UTC | Non è un deploy (OPS-10) | — |
+
+### [x] P-magesh-16: consultorio, la red flag in gravidanza (CO-10b) scatta su domande normali → 112 invece della visita
+- Journey: N-2026-11-02-8909120002290002 (livello 3, ondata W01QQQ) — ruolo: family_counseling. Ricontrollato leggendo il codice su `main` 1ae5051.
+- Cosa fa il cittadino: chiede una visita al consultorio, riceve le offerte, conferma (sul Ledger c'è un hold `bk-edbbfafc-…`). Il testo esatto del cittadino non l'ho letto: va aperto nel trace per vedere quale parola ha fatto scattare l'allarme.
+- Cosa risponde oggi il nostro agente: annulla l'hold e manda **3 volte** `escalate.emergency reason=red_flag` "Capisco, quello che mi descrive va preso sul serio subito. Chiami subito il 112…". Percorso **Failed**: 208 posti accettabili, 208 ancora liberi a fine percorso.
+- Perché succede: `20_gp.py:20-23` (CO-10b, P-magesh-6) dà red flag quando c'è **una qualsiasi** parola di gravidanza insieme a **una qualsiasi** parola di pericolo, cercata come pezzo di parola ("sangue", "perdite", "dolore forte", "blood"…). `handle()` (`00_core.py`, X-41) fa questo controllo per tutti i ruoli, quindi anche il consultorio. Ho provato la funzione `_emergency()` del brain su frasi di tutti i giorni al consultorio, e tutte danno red flag:
+  - "sono incinta e vorrei fare gli esami del sangue"
+  - "I'm pregnant and need a blood test"
+  - "sono in gravidanza, ho delle perdite bianche, è normale?"
+  - "incinta di 10 settimane, ho un dolore forte alla schiena"
+  Al consultorio scrivono molte donne in gravidanza, e gli esami del sangue e le perdite sono argomenti normali: il caso tornerà spesso, e ogni volta torna dopo 15 minuti e fallisce di nuovo.
+- Review / punti persi: −2 check-in mancato, −2 consulenza senza prescrizione mancata, −1 posto prenotato non onorato sul Ledger, −1 review ("lavoro rimandato al cittadino", lo mandiamo via senza motivo). Il test CO-10 attuale (`tests/test_brain.py`, `test_co10_pregnancy`) ha un solo caso negativo, senza parole di pericolo, quindi non vede il problema.
+- Cosa dovrebbe fare: la red flag in gravidanza scatta solo su **frasi** di pericolo, non su parole isolate: "perdite di sangue", "perdo sangue", "sanguinamento", "contrazioni forti/frequenti", "perso le acque", "rottura delle acque", "dolore forte/intenso alla pancia/all'addome/al basso ventre"; in inglese "bleeding", "losing blood", "strong contractions", "waters broke", "severe abdominal pain". Frasi come "esami del sangue", "analisi del sangue", "blood test" non contano mai come pericolo. Tutto il resto segue il percorso normale del consultorio: offerte, hold, commit, nessuna prescrizione richiesta. I casi positivi di oggi devono restare red flag ("sono incinta di 7 mesi e ho perdite di sangue", "I'm pregnant and have strong contractions"). Aggiornare la riga CO-10b in CASI.md.
+- Test a parole: "date le 4 frasi sopra al consultorio, mi aspetto `offer …` e nessun `escalate.emergency`"; "dato 'sono incinta di 7 mesi e ho perdite di sangue', mi aspetto `escalate.emergency reason=red_flag` e nessuna offerta"
+- Priorità secondo te: P1 (punti persi spesso al consultorio; la sicurezza resta perché le vere red flag continuano a scattare)
+
+| Caso | Soluzione | Logica | Test |
+|---|---|---|---|
+| Domanda normale in gravidanza con "sangue/perdite/dolore forte" → 112 | Pericolo solo su frasi precise; "esami del sangue"/"blood test" esclusi | Una parola isolata non è un'emergenza; il consultorio deve prenotare | 4 frasi normali → offerte, nessun 112 |
+| Vera red flag in gravidanza | Resta `escalate.emergency` | Sicurezza prima di tutto | "incinta + perdite di sangue" → 112, nessuna offerta |
+
 ### [x] P-magesh-15: centro prenotazioni, due messaggi al cittadino senza atto
 - Journey: nessuno (lettura del codice su `main` 15c6524) — ruolo: booking_centre
 - Cosa fa il cittadino: (a) chiede una visita e il catalogo del Ledger ha più pagine; (b) manda un `confirm` senza `offer_id` né `slot_id` (es. "va bene il primo").

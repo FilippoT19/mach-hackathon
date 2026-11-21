@@ -19,13 +19,20 @@ def _emergency(message: Message) -> bool:
         return True
     # CO-10 (P-magesh-6): pregnancy + bleeding, strong pain, contractions or waters -> 112.
     pregnant = any(w in lowered for w in ("incinta", "gravidanza", "pregnant", "pregnancy"))
-    danger = any(w in lowered for w in (
-        "sangue", "sanguin", "perdite", "dolore forte", "dolore intenso", "forte dolore", "contrazion",
-        "perso le acque", "rottura delle acque", "liquido", "bleed", "blood", "strong pain",
-        "severe pain", "contraction", "waters broke", "water broke"))
+    # P-magesh-16: danger is a phrase, not a lone word ("esami del sangue" is a normal visit).
+    danger = _RF_PREGNANT.search(lowered) is not None
     return pregnant and danger
 
 
+_RF_PREGNANT = re.compile(
+    r"sanguin\w*|perdit\w* di sangue|perd\w* (?:\w+ )?sangue|sangue (?:dalla vagina|vaginale)"
+    r"|contrazion\w*|perso le acque|rott\w* (?:delle |le )?acque|acque rotte"
+    r"|perd\w* (?:\w+ )?liquido|perdita di liquido"
+    r"|(?:dolor\w*|male)[^.!?]{0,25}\b(?:pancia|addome|addominal\w*|ventre|basso ventre)"
+    r"|(?:pancia|addome|ventre)[^.!?]{0,20}\b(?:dolor\w*|male)"
+    r"|\bbleed\w*|losing blood|\bcontraction\w*|water(?:s)? (?:broke|break\w*)"
+    r"|(?:pain|cramp\w*)[^.!?]{0,20}\b(?:belly|abdom\w*|stomach|tummy)"
+    r"|(?:belly|abdom\w*|stomach|tummy)[^.!?]{0,20}\b(?:pain|hurt\w*|cramp\w*)")
 _RF_CHEST = re.compile(
     r"(?:\b(?:dolor\w*|male|fa(?:nno)? male|stretta|oppression\w*|peso|pressione|bruciore)\b[^.!?]{0,30}\b(?:petto|torac\w*)\b)"
     r"|(?:\b(?:petto|torac\w*)\b[^.!?]{0,20}\b(?:dolor\w*|male|stretta|oppression\w*|peso)\b)"
@@ -82,7 +89,9 @@ async def _escalate(city: City, message: Message, chat: list[Message]) -> None:
     told them" only when the notice really left (the review reads only the citizen chat)."""
     agent = city.agent_id
     en = _lang([*chat, message]) != "it"
-    hospital = await _peer(city, "hospital", "ospedale hospital asst-niguarda")
+    # X-56 (journey 0000540007): the Index search (up to 5 s) timed out under load, so no notice
+    # left and the 112 waited for nothing ("li avviso io adesso"). Our hospital id is fixed.
+    hospital = _OUR_AGENTS["hospital"]
 
     async def _notice() -> bool:
         if not hospital or hospital == agent:
@@ -503,7 +512,7 @@ async def _on_emergency_where(city: City, message: Message, chat: list[Message])
     line = _nearest_words(best, en)
     # X-55: the nearest ER belongs to another ASST: warn it too (no personal data, no consent
     # needed) and say so to the citizen. Collaboration across teams, visible in the citizen chat.
-    ours = await _peer(city, "hospital", "ospedale hospital asst-niguarda")
+    ours = _OUR_AGENTS["hospital"]  # X-56
     if best and best[0] not in (ours, city.agent_id) and best[0].startswith("agent:"):
         if await _say(city, best[0], "emergency.notice reason=red_flag Un cittadino con red flag si trova "
                       f"vicino a voi (circa {best[2]:.1f} km) ed è stato indirizzato al 112 o al pronto "

@@ -465,6 +465,7 @@ async def _await_line(
     *,
     op: str,
     refusal_matches: Callable[[Message], bool] | None = None,
+    seconds: float | None = None,
 ) -> tuple[Message, list[Message]] | None:
     """The ledger line for ``token``, or a refusal of ``op`` that was not already in ``chat``."""
 
@@ -472,7 +473,7 @@ async def _await_line(
     fresh = chat
     started = time.monotonic()
     for attempt in range(_PULL_TRIES):
-        if attempt and time.monotonic() - started >= 2 * _PULL_SECONDS:  # BK-54 (hold/commit: twice the wait)
+        if attempt and time.monotonic() - started >= (seconds or 2 * _PULL_SECONDS):  # BK-54, FA-21
             break
         try:
             fresh = await city.history(need_id=need_id)
@@ -734,13 +735,20 @@ def _emergency(message: Message) -> bool:
         return True
     # CO-10 (P-magesh-6): pregnancy + bleeding, strong pain, contractions or waters -> 112.
     pregnant = any(w in lowered for w in ("incinta", "gravidanza", "pregnant", "pregnancy"))
-    danger = any(w in lowered for w in (
-        "sangue", "sanguin", "perdite", "dolore forte", "dolore intenso", "forte dolore", "contrazion",
-        "perso le acque", "rottura delle acque", "liquido", "bleed", "blood", "strong pain",
-        "severe pain", "contraction", "waters broke", "water broke"))
+    # P-magesh-16: danger is a phrase, not a lone word ("esami del sangue" is a normal visit).
+    danger = _RF_PREGNANT.search(lowered) is not None
     return pregnant and danger
 
 
+_RF_PREGNANT = re.compile(
+    r"sanguin\w*|perdit\w* di sangue|perd\w* (?:\w+ )?sangue|sangue (?:dalla vagina|vaginale)"
+    r"|contrazion\w*|perso le acque|rott\w* (?:delle |le )?acque|acque rotte"
+    r"|perd\w* (?:\w+ )?liquido|perdita di liquido"
+    r"|(?:dolor\w*|male)[^.!?]{0,25}\b(?:pancia|addome|addominal\w*|ventre|basso ventre)"
+    r"|(?:pancia|addome|ventre)[^.!?]{0,20}\b(?:dolor\w*|male)"
+    r"|\bbleed\w*|losing blood|\bcontraction\w*|water(?:s)? (?:broke|break\w*)"
+    r"|(?:pain|cramp\w*)[^.!?]{0,20}\b(?:belly|abdom\w*|stomach|tummy)"
+    r"|(?:belly|abdom\w*|stomach|tummy)[^.!?]{0,20}\b(?:pain|hurt\w*|cramp\w*)")
 _RF_CHEST = re.compile(
     r"(?:\b(?:dolor\w*|male|fa(?:nno)? male|stretta|oppression\w*|peso|pressione|bruciore)\b[^.!?]{0,30}\b(?:petto|torac\w*)\b)"
     r"|(?:\b(?:petto|torac\w*)\b[^.!?]{0,20}\b(?:dolor\w*|male|stretta|oppression\w*|peso)\b)"
@@ -797,7 +805,9 @@ async def _escalate(city: City, message: Message, chat: list[Message]) -> None:
     told them" only when the notice really left (the review reads only the citizen chat)."""
     agent = city.agent_id
     en = _lang([*chat, message]) != "it"
-    hospital = await _peer(city, "hospital", "ospedale hospital asst-niguarda")
+    # X-56 (journey 0000540007): the Index search (up to 5 s) timed out under load, so no notice
+    # left and the 112 waited for nothing ("li avviso io adesso"). Our hospital id is fixed.
+    hospital = _OUR_AGENTS["hospital"]
 
     async def _notice() -> bool:
         if not hospital or hospital == agent:
@@ -1218,7 +1228,7 @@ async def _on_emergency_where(city: City, message: Message, chat: list[Message])
     line = _nearest_words(best, en)
     # X-55: the nearest ER belongs to another ASST: warn it too (no personal data, no consent
     # needed) and say so to the citizen. Collaboration across teams, visible in the citizen chat.
-    ours = await _peer(city, "hospital", "ospedale hospital asst-niguarda")
+    ours = _OUR_AGENTS["hospital"]  # X-56
     if best and best[0] not in (ours, city.agent_id) and best[0].startswith("agent:"):
         if await _say(city, best[0], "emergency.notice reason=red_flag Un cittadino con red flag si trova "
                       f"vicino a voi (circa {best[2]:.1f} km) ed è stato indirizzato al 112 o al pronto "
@@ -6574,6 +6584,9 @@ async def _partner_reply(city: City, message: Message, chat: list[Message], fixe
 _ANSWERED: OrderedDict[str, None] = OrderedDict()
 
 
+_EARLY_STATUS = 8.0  # P-magesh-17: seconds before a slow booking turn sends a status line
+
+
 def _mark_answered(msg_id: str) -> None:
     _ANSWERED[msg_id] = None
     _ANSWERED.move_to_end(msg_id)
@@ -6597,7 +6610,20 @@ async def _desk(
     said: set[str] = set()
     token = _SAID.set(said)
     try:
-        await _desk_route(city, message, chat, hold_self=hold_self, fixed=fixed)
+        # P-magesh-17: a slow turn (Ledger, catalogue, model) never leaves the citizen in silence.
+        # After _EARLY_STATUS seconds without a word to the citizen, say where the case stands;
+        # the route goes on and its answer follows. An error in the route ends in that line too.
+        route = asyncio.ensure_future(_desk_route(city, message, chat, hold_self=hold_self, fixed=fixed))
+        done, _ = await asyncio.wait({route}, timeout=_EARLY_STATUS)
+        if not done and message.sender not in said and message.msg_id not in _ANSWERED:
+            await _still_here(city, message, [*chat, message] if all(
+                row.msg_id != message.msg_id for row in chat) else chat, fixed=fixed)
+        try:
+            await route
+        except Exception:  # noqa: BLE001 - the citizen still gets a line below
+            _LOG.exception("booking.route_failed need_id=%s", message.need_id)
+            if message.sender not in said and message.msg_id not in _ANSWERED:
+                said.clear()
     finally:
         _SAID.reset(token)
     if message.sender in said:
@@ -6724,6 +6750,15 @@ async def _desk_route(
     if message.sender.startswith("citizen:") and _citizen_cancels(message.text):
         await _citizen_cancel(city, message, chat, fixed=fixed)
         return
+    if message.sender == LEDGER and message.recipient == city.agent_id and first_word(message.text) in {"held", "committed"}:
+        # FA-21: a held/committed line that came after the wait of the confirm turn. Our hold
+        # (BK-57) is committed now, and the citizen gets the receipt, instead of a hold that expires.
+        if first_word(message.text) == "held" and _we(chat, city.agent_id, f"slot_id={fields_of(message.text).get('slot_id', '')}", to=LEDGER, word="hold"):
+            await _on_held(city, message, chat)
+            return
+        if first_word(message.text) == "committed" and _we(chat, city.agent_id, f"hold_id={fields_of(message.text).get('booking_id', '')}", to=LEDGER, word="commit"):
+            await _on_committed(city, message, chat)
+            return
     if message.sender == LEDGER or message.sender.startswith("citizen:"):
         await _advance(city, message, chat, fixed=fixed, replacing=False)
 
@@ -7915,10 +7950,49 @@ async def _citizen_cancel(
             ack = None
             if await _cancel_next(city, message, chat, need_key, citizen, offer_id, fixed):
                 return
+            if fixed is None and _cancel_reason(chat, message, "deadline") and _clock_jumped(chat, city.agent_id, offer_id):
+                # BK-59 (0169, 0223): the citizen refused for the deadline. Every later slot is past
+                # it too, and a B or D window that ran out means the prescription is expired (P1):
+                # send the citizen to the GP for a renewal, then book with the new number.
+                await _ask_renewal(city, message, chat, citizen, _number(chat))
+                return
+            if _cancel_reason(chat, message, "past"):
+                chat = await _fresh_agenda(city, message, chat)
     finally:
         if ack is not None:
             await ack
     await _advance(city, message, chat, fixed=fixed, replacing=True)
+
+
+def _clock_jumped(chat: list[Message], agent: str, offer_id: str) -> bool:
+    """BK-59: our clock put the refused slot inside the prescription window, the citizen says it is
+    past the deadline. So the agenda ran ahead of our reading and the window is really over."""
+    offer = _our_offer(chat, agent, offer_id) if offer_id else {}
+    at = _when(offer.get("agenda_date") or offer.get("at") or "")
+    number = _number(chat)
+    reply = _prescription_reply(chat, number)
+    priority = (reply or {}).get("priority") or offer.get("priority")
+    deadline = _rx_deadline(chat, reply, priority, number)
+    return at is not None and deadline is not None and at <= deadline
+
+
+def _cancel_reason(chat: list[Message], message: Message, reason: str) -> bool:
+    """True when the citizen cancelled an offer with ``reason`` after our latest agenda reading."""
+    rows = [*chat, message] if all(row.msg_id != message.msg_id for row in chat) else chat
+    last_agenda = max((i for i, row in enumerate(rows) if row.sender == LEDGER and first_word(row.text) == "agenda"), default=-1)
+    return any(
+        row.sender.startswith("citizen:") and _citizen_cancels(row.text) and fields_of(row.text).get("reason") == reason
+        for row in rows[last_agenda + 1:]
+    )
+
+
+async def _fresh_agenda(city: City, message: Message, chat: list[Message]) -> list[Message]:
+    """BK-59 (0308): the citizen says a slot is in the past, so our agenda clock is behind (the
+    agenda jumps at a level change). Read the agenda again before the next offers."""
+    before = {row.msg_id for row in chat if row.sender == LEDGER and first_word(row.text) == "agenda"}
+    await _ledger_ask(city, message, "agenda")
+    return await _until(city, message.need_id, chat, lambda rows: any(
+        row.sender == LEDGER and first_word(row.text) == "agenda" and row.msg_id not in before for row in rows))
 
 
 async def _cancel_next(
@@ -8222,6 +8296,11 @@ def _our_commit(chat: list[Message], agent: str, hold_id: str) -> bool:
     return False
 
 
+# FA-21 (0308): under load the held line came after the 12 s wait, so no commit left and the hold
+# expired 10 minutes later. A hold lives minutes: wait for its line up to this many seconds.
+_HOLD_WAIT = 30.0
+
+
 async def _finish_booking(
     city: City, message: Message, chat: list[Message], slot: str, *, hold_self: bool,
     before: "asyncio.Future | None" = None,
@@ -8232,7 +8311,7 @@ async def _finish_booking(
     address question). It runs while the held line is read and ends before the next message."""
 
     found = await _await_line(
-        city, message.need_id, chat, "held", f"slot_id={slot}", op="hold",
+        city, message.need_id, chat, "held", f"slot_id={slot}", op="hold", seconds=_HOLD_WAIT,
         refusal_matches=lambda row: row.recipient == city.agent_id
         and fields_of(row.text).get("slot_id", slot) == slot,
     )
@@ -8249,7 +8328,7 @@ async def _finish_booking(
         return
     hold_id = fields_of(reply.text)["hold_id"]
     done = await _await_line(
-        city, message.need_id, fresh, "committed", f"booking_id={hold_id}", op="commit",
+        city, message.need_id, fresh, "committed", f"booking_id={hold_id}", op="commit", seconds=_HOLD_WAIT,
         refusal_matches=lambda row: row.recipient == city.agent_id
         and fields_of(row.text).get("slot_id", slot) == slot
         and fields_of(row.text).get("hold_id", hold_id) == hold_id,
