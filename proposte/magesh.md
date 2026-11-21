@@ -10,7 +10,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 > del medico di base: −2 per una red flag persa e i percorsi falliti per `no_reply`. Sono modifiche piccole
 > in `asst/brain/parts/20_gp.py` e `asst/brain/parts/00_core.py`. Ordine consigliato: 11 → 12 → 10.
 
-### [ ] P-magesh-10: medico di base, secondo messaggio con sintomo non riconosciuto → silenzio
+### [x] P-magesh-10: medico di base, secondo messaggio con sintomo non riconosciuto → silenzio
 - Journey: nessuno (lettura del codice su `main` 77b907a) — ruolo: gp
 - Cosa fa il cittadino: scrive un disturbo che la tabella non riconosce ("non mi sento bene"); il medico gli chiede dove e da quando; il cittadino risponde con parole sue che la tabella e il modello ancora non riconoscono ("mi fa male qui sul fianco da tre giorni"). Oppure, dopo aver ricevuto la ricetta, scrive "grazie, e adesso?"
 - Cosa risponde oggi il nostro agente: al primo messaggio la domanda di GP-05 ("Mi descrive meglio il disturbo: dove sente il problema e da quanto tempo?…"). Al secondo: **niente**. In `20_gp.py:292` la risposta parte solo se il medico non ha mai scritto prima a quel cittadino (`asked`); se ha già scritto anche una sola volta, nessuna risposta
@@ -27,7 +27,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 | Secondo messaggio non riconosciuto → silenzio | Domanda chiusa con le 4 scelte del protocollo | GP-05 vieta l'interrogatorio, non la risposta: ogni messaggio del cittadino ha una risposta | 2 messaggi ignoti → 2 risposte diverse |
 | Messaggio dopo la ricetta → silenzio | Ripetere i token della ricetta + prossimo passo | Il cittadino ha la ricetta ma non sa cosa fare: proattività invece di silenzio | ricetta + "grazie, e adesso?" → `prescription prescription_number=…` |
 
-### [ ] P-magesh-11: medico di base, red flag scritte in altro modo riconosciute solo dal modello
+### [x] P-magesh-11: medico di base, red flag scritte in altro modo riconosciute solo dal modello
 - Journey: nessuno (lettura del codice su `main` 77b907a) — ruolo: gp (vale anche per gli altri ruoli che usano `_emergency`)
 - Cosa fa il cittadino: descrive un'emergenza con parole diverse da quelle della lista fissa. Es. "ho un forte **male al petto**", "**dolore toracico** da stamattina", "sento un'**oppressione al petto**", "ho perso **forza alla gamba**", "**non sento la gamba** destra", "mi fa male il petto e il braccio sinistro", "chest tightness", "my chest hurts", "I can't feel my leg"
 - Cosa risponde oggi il nostro agente: la lista fissa (`_RED_FLAGS` in `00_core.py:56`, `_RED_FLAGS_MORE` in `00_core.py:65`, le frasi in `20_gp.py:12`) riconosce solo "dolore al petto", "chest pain", "perdita di forza alle gambe", "non sento **più** le gamb**e**" (plurale). Le frasi sopra passano solo se `city.llm` risponde `RED_FLAG` entro 4 s (GP-03). Se il modello è lento, giù o risponde male → **nessuna escalation**: il cittadino riceve la domanda "Mi descrive meglio il disturbo?" o addirittura una ricetta (es. "mal di schiena e non sento la gamba" → ricetta fisiatrica, perché la parola "schiena" viene trovata prima)
@@ -45,7 +45,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 | Red flag con parole diverse dalla lista | Controllo fisso con radici (petto/torac + dolore/male/stretta; gamba/e + non sento/forza) | Il modello può essere lento o giù: il −2 e la sicurezza non devono dipendere da lui | "male al petto", modello spento → `escalate.emergency` |
 | Red flag + sintomo noto nello stesso messaggio | Escalation prima della ricetta | La red flag vince sempre sul protocollo | "mal di schiena e non sento la gamba" → escalation, nessun `prescribe` |
 
-### [ ] P-magesh-12: medico di base, il messaggio del 112 aspetta le ricerche prima di partire
+### [~] P-magesh-12 (da decidere: Filippo ha scelto avviso prima del 112; la frase "il più vicino" è già corretta con GP-15): medico di base, il messaggio del 112 aspetta le ricerche prima di partire
 - Journey: nessuno (lettura del codice su `main` 77b907a) — ruolo: gp (`_escalate` è usato da tutti i ruoli)
 - Cosa fa il cittadino: scrive una red flag ("dolore al petto").
 - Cosa risponde oggi il nostro agente: il messaggio giusto (`escalate.emergency reason=red_flag` + "Chiami subito il 112…"), ma **in ritardo**. In `_escalate` (`20_gp.py:30`), prima di mandarlo, il medico aspetta: (a) `_peer` per trovare il nostro ospedale (fino a 5 s, solo la prima volta); (b) insieme (X-55) l'avviso all'ospedale e la ricerca del pronto soccorso più vicino (`_zone_point` + `_nearest_line`, fino a 4 s + 4 s con l'Index lento). Nel caso peggiore il cittadino aspetta **circa 13 secondi** il 112. In più la frase dice sempre "Il pronto soccorso più vicino nella nostra zona è il nostro ospedale in Via Arganini Gerolamo 38", anche se la ricerca subito dopo nomina un altro ospedale più vicino (due frasi in contrasto)

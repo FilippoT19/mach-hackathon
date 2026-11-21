@@ -14,6 +14,9 @@ def _emergency(message: Message) -> bool:
         "can't feel my legs", "cannot feel my legs", "can't move my legs",
     )):
         return True
+    # P-magesh-11: red flags in other words never depend on the model (slow or down).
+    if _RF_CHEST.search(lowered) or _RF_LEGS.search(lowered):
+        return True
     # CO-10 (P-magesh-6): pregnancy + bleeding, strong pain, contractions or waters -> 112.
     pregnant = any(w in lowered for w in ("incinta", "gravidanza", "pregnant", "pregnancy"))
     danger = any(w in lowered for w in (
@@ -21,6 +24,50 @@ def _emergency(message: Message) -> bool:
         "perso le acque", "rottura delle acque", "liquido", "bleed", "blood", "strong pain",
         "severe pain", "contraction", "waters broke", "water broke"))
     return pregnant and danger
+
+
+_RF_CHEST = re.compile(
+    r"(?:\b(?:dolor\w*|male|fa(?:nno)? male|stretta|oppression\w*|peso|pressione|bruciore)\b[^.!?]{0,30}\b(?:petto|torac\w*)\b)"
+    r"|(?:\b(?:petto|torac\w*)\b[^.!?]{0,20}\b(?:dolor\w*|male|stretta|oppression\w*|peso)\b)"
+    r"|(?:\bchest\b[^.!?]{0,25}\b(?:pain\w*|tight\w*|pressure|hurt\w*|ache\w*)\b)"
+    r"|(?:\b(?:pain|tightness|pressure)\b[^.!?]{0,15}\bchest\b)"
+    r"|(?:\bmy chest hurts\b)")
+_RF_LEGS = re.compile(
+    r"(?:\b(?:non sento|non riesco a muovere|perso (?:la )?forza|perdita di forza|senza forza)\b[^.!?]{0,25}\bgamb[ae]\b)"
+    r"|(?:\bgamb[ae]\b[^.!?]{0,20}\b(?:non la sento|non le sento|senza forza|paralizzat\w*|non si muov\w*)\b)"
+    r"|(?:\b(?:can'?t|cannot|can not) (?:feel|move)\b[^.!?]{0,15}\blegs?\b)"
+    r"|(?:\blost (?:the )?strength\b[^.!?]{0,15}\blegs?\b)"
+    r"|(?:\blegs?\b[^.!?]{0,15}\b(?:numb|gave way|went weak)\b)")
+
+
+async def _gp_again(city: City, message: Message, chat: list[Message]) -> None:
+    """P-magesh-10: a later citizen message the table still does not match is never left
+    without an answer (no_reply). After a prescription: repeat it with the next step. Before:
+    one closed question with the protocol choices, then a short safety line."""
+    agent, citizen = city.agent_id, message.sender
+    en = _lang([*chat, message]) != "it"
+    rx = [row for row in chat if row.sender == agent and row.recipient == citizen
+          and first_word(row.text) == "prescription" and "prescription_number=" in row.text]
+    if rx:
+        f = fields_of(rx[-1].text)
+        tokens = " ".join(f"{k}={f[k]}" for k in ("prescription_number", "procedure", "priority") if f.get(k))
+        await _say(city, citizen, f"prescription {tokens} " + (
+            "Your prescription is ready: contact the booking centre with this number to book the visit."
+            if en else
+            "La sua ricetta è pronta: contatti il centro prenotazioni con questo numero per prenotare la visita."))
+        return
+    if not _we(chat, agent, "", to=citizen, word="gp.choices"):
+        await _say(city, citizen, "gp.choices " + (
+            "So I can prepare the right prescription: is it your back, your knee, your heart "
+            "racing, or a routine heart check?" if en else
+            "Per prepararle la ricetta giusta mi aiuta a capire: si tratta della schiena, del "
+            "ginocchio, del cuore che batte forte, o di un controllo del cuore?"))
+        return
+    await _say(city, citizen, "gp.note " + (
+        "I am sorry, I still cannot match your problem. If it gets worse, or you feel chest "
+        "pain, call 112 straight away." if en else
+        "Mi dispiace, non riesco ancora a capire il disturbo. Se peggiora o compare dolore al "
+        "petto chiami subito il 112."))
 
 
 def _red_flag(message: Message) -> bool:
@@ -309,6 +356,9 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
                     "when? Then I can prepare the right prescription for you straight away.",
                 ),
             )
+        elif (asked and message.sender.startswith("citizen:")
+              and not _we(chat, agent, "", to=message.sender, word="escalate.emergency")):
+            await _gp_again(city, message, chat)
         return
     procedure, priority = _PROTOCOLS[code]
     number = _rx(message.need_id, message.msg_id)
