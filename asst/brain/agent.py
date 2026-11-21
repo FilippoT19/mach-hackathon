@@ -5562,8 +5562,96 @@ def _rx_pref(chat: list[Message], key: str) -> str | None:
 
 
 def _gender(chat: list[Message]) -> str | None:
+    learned = _cancel_learned(chat)["gender"]  # BK-60: the cancels say more than the request
+    if learned is not None:
+        return learned
     pref = _gender_said(chat)
     return pref if pref is not None else _rx_pref(chat, "gender")
+
+
+_WEEKDAYS = frozenset({"mon", "tue", "wed", "thu", "fri"})
+_DAY_REASONS = {"day", "days", "weekday", "agenda_day", "giorno", "giorni"}
+
+
+def _doctor_gender(fields: dict[str, str]) -> str:
+    said = fields.get("doctor_gender", "")
+    if said in {"m", "f"}:
+        return said
+    doctor = _DOCTORS.get(fields.get("doctor_id", "").rsplit("-", 1)[-1])
+    return doctor[1] if doctor else ""
+
+
+def _slot_day(fields: dict[str, str]) -> str:
+    day = fields.get("agenda_day") or fields.get("day") or ""
+    if day:
+        return day
+    at = _when(fields.get("agenda_date", "") or fields.get("at", ""))
+    return ("mon", "tue", "wed", "thu", "fri", "sat", "sun")[at.weekday()] if at else ""
+
+
+def _cancel_learned(chat: list[Message]) -> dict:
+    """BK-60 (journey 890912000304): what the citizen's cancels tell us. ``S`` is built from
+    constraints the citizen has not said yet; a cancel names the one the offer broke with
+    ``reason=``. Five offers with the same doctor came back ``reason=gender``: the other gender is
+    the citizen's constraint, and a new batch with that doctor is cancelled again.
+
+    ``gender``: the gender to offer (the other one of every ``reason=gender`` cancel);
+    ``avoid_gender``, ``avoid_days`` (``reason=day``), ``before`` (``reason=deadline``: every slot
+    later than that one is out)."""
+
+    offers: dict[str, dict[str, str]] = {}
+    for row in chat:
+        if row.sender.startswith("agent:") and row.recipient.startswith("citizen:") and first_word(row.text) == "offer":
+            for fields in _offer_rows(row.text):
+                offers.setdefault(fields.get("offer_id", ""), fields)
+    avoid_gender: set[str] = set()
+    avoid_days: set[str] = set()
+    before: datetime | None = None
+    for row in chat:
+        if not row.sender.startswith("citizen:") or not _citizen_cancels(row.text):
+            continue
+        fields = fields_of(row.text)
+        offer = offers.get(fields.get("offer_id", ""))
+        reason = fields.get("reason", "").lower()
+        if offer is None or not reason:
+            continue
+        if reason == "gender":
+            gender = _doctor_gender(offer)
+            if gender:
+                avoid_gender.add(gender)
+        elif reason in _DAY_REASONS:
+            day = _slot_day(offer)
+            if day:
+                avoid_days.add(day)
+        elif reason == "deadline":
+            at = _when(offer.get("agenda_date", "") or offer.get("at", ""))
+            if at is not None and (before is None or at < before):
+                before = at
+    gender = None
+    if len(avoid_gender) == 1:
+        gender = "m" if avoid_gender == {"f"} else "f"
+    return {"gender": gender, "avoid_gender": avoid_gender, "avoid_days": avoid_days, "before": before}
+
+
+def _learned_out(fields: dict[str, str], learned: dict) -> bool:
+    """BK-60: True for a slot (catalogue line or offer) that a cancel already ruled out."""
+
+    if learned["avoid_gender"] and _doctor_gender(fields) in learned["avoid_gender"] and learned["gender"]:
+        return True
+    if learned["avoid_days"] and _slot_day(fields) in learned["avoid_days"]:
+        return True
+    at = _when(fields.get("at", "") or fields.get("agenda_date", ""))
+    return learned["before"] is not None and at is not None and at > learned["before"]
+
+
+def _best_tier(chosen: list[dict[str, str]], days: frozenset[str] | None, gender: str | None) -> list[dict[str, str]]:
+    """BK-60: the slots that match every preference (days, doctor gender), when there are any.
+    "Posso solo lunedì o mercoledì": a Tuesday is not a choice to add for variety (P-francesco-48
+    spreads days and doctors only inside this tier). With no match, all slots stay, best first."""
+
+    best = [slot for slot in chosen
+            if (not days or _slot_day(slot) in days) and (not gender or _doctor_gender(slot) in ("", gender))]
+    return best or chosen
 
 
 def _gender_said(chat: list[Message]) -> str | None:
@@ -5643,9 +5731,14 @@ def _days(chat: list[Message]) -> frozenset[str] | None:
                 else:
                     found.add(day)
             if skipped and not found:
-                found = {"mon", "tue", "wed", "thu", "fri"} - skipped
+                # BK-60: "non posso il lunedì" after "solo lunedì o mercoledì" leaves Wednesday,
+                # not every other weekday.
+                found = (latest or set(_WEEKDAYS)) - skipped
         if found:
             latest = found
+    avoid = _cancel_learned(chat)["avoid_days"]  # BK-60: a day the citizen cancelled with reason=day
+    if avoid:
+        latest = (latest or set(_WEEKDAYS)) - avoid
     return frozenset(latest) or None
 
 
@@ -6351,6 +6444,7 @@ def _partner_pool(
     window. Earliest first, at most two per facility in the same batch."""
 
     pool: dict[str, dict[str, str]] = {}
+    learned = _cancel_learned(chat)
     for reply in chat:
         if not reply.sender.startswith("agent:") or reply.recipient != agent or _ours(reply.sender):
             continue
@@ -6364,6 +6458,8 @@ def _partner_pool(
             if any(mark in offer_id for mark in "<>"):  # a template line, not an offer (Bovisa)
                 continue
             if not _offer_speaks(fields, lang):  # BK-35: also from the doctor id (asst-bicocca-h2)
+                continue
+            if _learned_out(fields, learned):  # BK-60: a cancel already ruled this out
                 continue
             doctor = _DOCTORS.get(fields.get("doctor_id", "").rsplit("-", 1)[-1])
             said = fields.get("doctor_gender", "") or (doctor[1] if doctor else "")
@@ -6904,6 +7000,7 @@ async def _advance_alone(
         taken = _offered(chat, agent) | _slot_ids(sent.offers)
     taken = taken | _refused_slots(chat, agent, sent)  # P-magesh-9
     deadline = _rx_deadline(chat, reply, priority, number)
+    learned = _cancel_learned(chat)
     lines = [line for line in world.splitlines() if "slot_id=" in line]
     chosen = [
         slot
@@ -6918,8 +7015,9 @@ async def _advance_alone(
             procedure=procedure,
         )
         if slot.get("slot_id") not in taken and _before_rx_deadline(slot, reply, priority)
-        and _within(slot.get("at", ""), deadline)
+        and _within(slot.get("at", ""), deadline) and not _learned_out(slot, learned)
     ]
+    chosen = _best_tier(chosen, _days(chat), _gender(chat))  # BK-60
     _trace(
         "slots", message, procedure=procedure, priority=priority, lang=_lang(chat),
         gender=_gender(chat), page=f"{page}/{pages}", fitting=len(chosen), taken=len(taken),
