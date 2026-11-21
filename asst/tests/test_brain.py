@@ -741,6 +741,22 @@ async def main() -> int:
     ho = to(city, HO)
     check("X-28 red flag avvisa il nostro ospedale", len(ho) == 1 and ho[0].startswith("emergency.notice") and "citizen:" not in ho[0], city.sent)
     check("X-28 nessun messaggio all'ospedale di un'altra squadra", not to(city, "agent:other-ho"), city.sent)
+    # X-55: the notice to our hospital leaves BEFORE the 112 message, which says "already told".
+    order = [r for r, t in city.sent if t.startswith(("emergency.notice", "escalate.emergency"))]
+    check("X-55 avviso ospedale prima del 112", order[:2] == [HO, CITIZEN], city.sent)
+    check("X-55 il 112 dice 'li ho già avvisati'", cit and "li ho già avvisati io" in cit[0], cit)
+    CA = __import__("city_sdk.city", fromlist=["CivicAddress"]).CivicAddress
+    OTHER = "agent:k2nwktpp02xx"
+    city55 = FakeCity("agent:gp", peers=[Peer(agent_id=HO, role="hospital", capabilities=("hospital",), address=CA(label="Via Arganini Gerolamo 38", lat=45.5155, lon=9.1835)),
+                                         Peer(agent_id=OTHER, role="hospital", capabilities=("hospital",), address=CA(label="Via Altra 1", lat=45.4781, lon=9.1240))])
+    brain._PEERS.clear()
+    brain._ANSWERED_ER.clear()
+    far = row(CITIZEN, "agent:gp", "data.response address=Piazzale_Lotto lat=45.4800 lon=9.1250", 19)
+    await brain.handle("gp", city55, far, [citizen_msg("ho dolore al petto"), *asked42, far])
+    out55 = to(city55, CITIZEN)
+    check("X-55 avvisa il PS vicino di un'altra ASST, senza dati personali", any(t.startswith("emergency.notice") and "citizen:" not in t for t in to(city55, OTHER)), city55.sent)
+    check("X-55 il cittadino sa che quel PS è avvisato", out55 and "Via Altra 1" in out55[0] and "anche il pronto soccorso" in out55[0], out55)
+    brain._PEERS.clear()
     msg = Message(type="chat", sender="agent:fddgaqmp6kb0", msg_id="e1", need_id="N-1", body={"text": ho[0] if ho else "emergency.notice reason=red_flag"}, recipient=HO)
     city = FakeCity(HO)
     await brain._facility(city, msg, [msg], reports=False, hold_self=False)

@@ -28,13 +28,36 @@ def _red_flag(message: Message) -> bool:
 
 
 async def _escalate(city: City, message: Message, chat: list[Message]) -> None:
-    """X-41: 112 + notice to our hospital, from any role."""
+    """X-41: 112 + notice to our hospital, from any role.
+
+    X-55: the notice to our hospital and the nearest-ER lookup run together, before the 112
+    message (which therefore does not wait longer than before); the citizen reads "I have already
+    told them" only when the notice really left (the review reads only the citizen chat)."""
     agent = city.agent_id
     en = _lang([*chat, message]) != "it"
-    if not _we(chat, agent, "escalate.emergency", to=message.sender, word="escalate.emergency"):
+    hospital = await _peer(city, "hospital", "ospedale hospital asst-niguarda")
+
+    async def _notice() -> bool:
+        if not hospital or hospital == agent:
+            return False
+        if _we(chat, agent, "emergency.notice", to=hospital, word="emergency.notice"):
+            return True
+        return await _say(
+            city,
+            hospital,
+            "emergency.notice reason=red_flag Un cittadino con red flag è stato indirizzato "
+            "al 112 o al pronto soccorso. Vi avviso in caso arrivi da voi.",
+        )
+
+    async def _near() -> str:
         # X-45: nearest hospital to the citizen's zone (Index doors), inside the 112 message.
         zone = await _zone_point(city, [*chat, message])
-        near = await _nearest_line(city, zone, en, "") if zone else ""
+        return await _nearest_line(city, zone, en, "") if zone else ""
+
+    if not _we(chat, agent, "escalate.emergency", to=message.sender, word="escalate.emergency"):
+        noticed, near = await asyncio.gather(_notice(), _near())
+        told_en = "I have already told them myself." if noticed else "I am telling them now."
+        told_it = "li ho già avvisati io." if noticed else "li avviso io adesso."
         await _say(
             city,
             message.sender,
@@ -42,28 +65,22 @@ async def _escalate(city: City, message: Message, chat: list[Message]) -> None:
             "I understand, this needs "
             "attention right now. Call 112 or go to the nearest emergency room. Do not drive: if "
             "you can, ask someone to go with you. The nearest emergency room in our area is our "
-            "hospital at Via Arganini Gerolamo 38 (wheelchair accessible): I am telling them now."
+            f"hospital at Via Arganini Gerolamo 38 (wheelchair accessible): {told_en}"
             if en else
             "Capisco, quello che mi descrive va preso sul serio subito. Chiami subito il 112 o "
             "vada al pronto soccorso più vicino. Non si metta alla guida: se può, si faccia "
             "accompagnare e non resti da solo. Il pronto soccorso più vicino nella nostra zona è "
             "il nostro ospedale in Via Arganini Gerolamo 38 (accessibile in sedia a rotelle): "
-            "li avviso io adesso."
+            f"{told_it}"
             ) + (" " + near.strip() if near else ""),
         )
+    else:
+        await _notice()
     # X-42: proactive — ask where the citizen is, then name the nearest emergency room (map).
     if message.sender.startswith("citizen:") and not _we(chat, agent, "purpose=emergency", to=message.sender, word="data.request"):
         await _say(city, message.sender, "data.request purpose=emergency fields=address " + (
                    "Where are you now? I will tell you the nearest emergency room right away." if en else
                    "Mi dice dove si trova adesso? Le indico subito il pronto soccorso più vicino a lei."))
-    hospital = await _peer(city, "hospital", "ospedale hospital asst-niguarda")
-    if hospital and hospital != agent and not _we(chat, agent, "emergency.notice", to=hospital, word="emergency.notice"):
-        await _say(
-            city,
-            hospital,
-            "emergency.notice reason=red_flag Un cittadino con red flag è stato indirizzato "
-            "al 112 o al pronto soccorso. Vi avviso in caso arrivi da voi.",
-        )
 
 
 def _symptom(message: Message) -> str | None:
@@ -428,7 +445,17 @@ async def _on_emergency_where(city: City, message: Message, chat: list[Message])
     _ANSWERED_ER.add(key)
     en = _lang([*chat, message]) != "it"
     point = _citizen_point(message.text)
-    line = await _nearest_line(city, point, en, "") if point else ""
+    best = await _nearest_hospital(city, point) if point else None
+    line = _nearest_words(best, en)
+    # X-55: the nearest ER belongs to another ASST: warn it too (no personal data, no consent
+    # needed) and say so to the citizen. Collaboration across teams, visible in the citizen chat.
+    ours = await _peer(city, "hospital", "ospedale hospital asst-niguarda")
+    if best and best[0] not in (ours, city.agent_id) and best[0].startswith("agent:"):
+        if await _say(city, best[0], "emergency.notice reason=red_flag Un cittadino con red flag si trova "
+                      f"vicino a voi (circa {best[2]:.1f} km) ed è stato indirizzato al 112 o al pronto "
+                      "soccorso più vicino: potrebbe arrivare da voi."):
+            line += (" I have also warned that hospital's emergency room myself." if en else
+                     " Ho avvisato io anche il pronto soccorso di quell'ospedale.")
     if not line:
         line = (" The nearest emergency room is our hospital in Via Arganini Gerolamo 38 (wheelchair "
                 "accessible); in an emergency always call 112." if en else
