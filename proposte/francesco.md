@@ -8,6 +8,10 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 > **Giro 7: lingua del medico e orari diversi, su `main` @ `64579bb`** (02:14). Solo analisi del codice, nessuna modifica.
 > Attenzione: booking online è ancora 1.0.17 (01:51). P-31, P-48, P-34, BK-54 sono su `main` ma **non rilasciati**.
 > I punti sotto restano aperti **anche** sul codice nuovo. Test attuali tutti verdi (`seats.py --check`, `test_brain`, `test_journey`, `test_replay`).
+> **Aggiornamento 02:15:** booking **1.0.18 rilasciato** con il codice di `64579bb` (nessuna altra modifica al codice). Provato sulle funzioni vere:
+> `_offer_speaks(d-h3, bn)`, `(asst-lorenteggio-h3, ro)`, `(asst-san-siro-h3, bn)` → **False** (P-53 confermato);
+> `_speaks(d-h1, "EN")` e `("en-GB")` → **False** (P-54 confermato); `_diverse` su h1 lun 9:00/9:30/10:00/15:00 → **9:00, 9:30, 10:00** (P-57 confermato).
+> Non ancora rilasciati: family_counseling (P-magesh-9, fermo a 1.0.5 delle 00:57); hospital/specialist/gp senza OPS-08.
 
 #### Tabella A: non viene proposto un medico che parla la lingua del cittadino
 
