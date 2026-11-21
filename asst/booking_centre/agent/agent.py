@@ -797,7 +797,9 @@ async def _escalate(city: City, message: Message, chat: list[Message]) -> None:
     told them" only when the notice really left (the review reads only the citizen chat)."""
     agent = city.agent_id
     en = _lang([*chat, message]) != "it"
-    hospital = await _peer(city, "hospital", "ospedale hospital asst-niguarda")
+    # X-56 (journey 0000540007): the Index search (up to 5 s) timed out under load, so no notice
+    # left and the 112 waited for nothing ("li avviso io adesso"). Our hospital id is fixed.
+    hospital = _OUR_AGENTS["hospital"]
 
     async def _notice() -> bool:
         if not hospital or hospital == agent:
@@ -1218,7 +1220,7 @@ async def _on_emergency_where(city: City, message: Message, chat: list[Message])
     line = _nearest_words(best, en)
     # X-55: the nearest ER belongs to another ASST: warn it too (no personal data, no consent
     # needed) and say so to the citizen. Collaboration across teams, visible in the citizen chat.
-    ours = await _peer(city, "hospital", "ospedale hospital asst-niguarda")
+    ours = _OUR_AGENTS["hospital"]  # X-56
     if best and best[0] not in (ours, city.agent_id) and best[0].startswith("agent:"):
         if await _say(city, best[0], "emergency.notice reason=red_flag Un cittadino con red flag si trova "
                       f"vicino a voi (circa {best[2]:.1f} km) ed è stato indirizzato al 112 o al pronto "

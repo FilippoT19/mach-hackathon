@@ -800,6 +800,12 @@ async def main() -> int:
     ho = to(city, HO)
     check("X-28 red flag avvisa il nostro ospedale", len(ho) == 1 and ho[0].startswith("emergency.notice") and "citizen:" not in ho[0], city.sent)
     check("X-28 nessun messaggio all'ospedale di un'altra squadra", not to(city, "agent:other-ho"), city.sent)
+    # X-56 (journey 0000540007): the Index shows nobody (slow or down) -> the notice still goes.
+    brain._PEERS.clear()
+    city56 = FakeCity("agent:gp", peers=[])
+    await brain._gp(city56, citizen_msg("da stamattina ho un dolore al petto mica da ridere"), [])
+    check("X-56 avviso all'ospedale anche senza Index", any(t.startswith("emergency.notice") for t in to(city56, HO)), city56.sent)
+    check("X-56 il 112 dice 'li ho già avvisati'", to(city56, CITIZEN) and "li ho già avvisati io" in to(city56, CITIZEN)[0], to(city56, CITIZEN))
     # X-55: the notice to our hospital leaves BEFORE the 112 message, which says "already told".
     order = [r for r, t in city.sent if t.startswith(("emergency.notice", "escalate.emergency"))]
     check("X-55 avviso ospedale prima del 112", order[:2] == [HO, CITIZEN], city.sent)
