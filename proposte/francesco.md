@@ -5,6 +5,47 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 
 <!-- aggiungi qui sotto -->
 
+> **Giro 5: riepilogo semplice di cosa non funziona su `main` @ `0b49404`** (dopo i rilasci delle 01:26).
+> Rivalutato da zero sul codice e sulle regole (e19). Il percorso normale funziona (test e simulatore verdi), ma i test
+> coprono **solo** quello. I problemi sono quasi tutti del centro prenotazioni quando **non trova subito** un posto.
+> Dove una proposta esiste già, è indicato il suo numero: la correzione è descritta lì.
+
+#### Adesso (livelli 1-5): i falliti di stanotte
+
+| # | Cosa non funziona (in parole semplici) | Esempio | Perché succede | Come correggerlo | Per Claude (dove) | Urgenza |
+|---|---|---|---|---|---|---|
+| 1 | Il centro prenotazioni dice "nessun posto" anche quando c'erano posti buoni | 000163, 000128, 000134 | Se il cittadino vuole un medico uomo o donna, gli altri medici vengono **scartati** invece di essere proposti dopo | Il sesso del medico deve solo decidere l'**ordine** (prima i preferiti), non scartare | `10_shared.py:356` → P-francesco-31 | 🔴 subito |
+| 2 | Le offerte delle altre ASST vengono rifiutate dal cittadino (lingua sbagliata, data troppo lontana) | 000153, 000111 | Le offerte dei partner non vengono controllate: la lingua solo se il partner la scrive, la scadenza mai | Controllare le offerte dei partner come quelle nostre (lingua, scadenza, sesso, giorni) | `30_booking.py:578-620`, riga `:599` → P-francesco-33 (+ scadenza) | 🔴 subito |
+| 3 | Dopo aver cercato nelle altre ASST, il centro prenotazioni **non risponde più** | 000124, 000128, 000134, 000166 | Se un partner non risponde, o annulla dopo la conferma, il codice esce senza dire niente | Mandare le offerte già ricevute oppure la lista d'attesa; non aspettare chi non risponde | `30_booking.py:458-459`, `:500-522`, `:1226+` → P-francesco-34, 35 | 🔴 subito |
+| 4 | Il cittadino rifiuta la lista d'attesa e riceve un messaggio tecnico, poi più niente | 000163 | La lista d'attesa era già stata mandata, quindi il codice tace | Una frase chiara e gentile con le alternative, poi stop | `30_booking.py:1563+` → P-francesco-36 | 🟠 presto |
+| 5 | Se il cittadino non scrive il numero di ricetta nel formato giusto, nessuna risposta | 000065, 000057 | Il codice cerca solo `prescription_number=` e altrimenti si ferma in silenzio | Chiedere il numero (`data.request purpose=booking fields=prescription_number`) e riconoscerlo anche nel testo | `30_booking.py:843-844`, `:143-149` → P-francesco-38 | 🟠 presto |
+| 6 | Il cittadino preferisce certi giorni ma riceve posti in altri giorni anche se quelli giusti c'erano | — | Il catalogo si legge una pagina alla volta e si sceglie il meglio di **quella** pagina | Con giorni preferiti, chiedere prima al Ledger `world procedure=… day=<giorno>` | `30_booking.py:873`, `:963` → **P-francesco-40** (nuova) | 🟠 presto (+2 invece di +1) |
+
+#### Tra poco (livelli 6-8, secondo la tabella di marcia di MACH-1.2: dalle 02:15)
+
+| # | Cosa non funziona (in parole semplici) | Quando capita | Perché succede | Come correggerlo | Per Claude (dove) | Urgenza |
+|---|---|---|---|---|---|---|
+| 7 | Quando la città annulla una prenotazione (`fault.cancel`), nessuno riprenota | Livello 6: **ogni** cittadino alla prima prenotazione | Le strutture non hanno un ramo per un annullamento che arriva dal Ledger | Guardare nei Journeys **come** arriva il primo `fault.cancel`; poi la struttura avvisa il booking (`cancel offer_id=… reason=…`) e il booking rioffre | `40_facility.py:83-86` → **P-francesco-41** (nuova) | 🔴 prima delle 02:15 |
+| 8 | Dopo un annullamento si possono offrire posti **già passati** | Livello 6 (riprenotazioni) | L'ora d'agenda si legge una sola volta per caso; dopo 20-30 minuti reali è vecchia di ore | Rileggere `agenda` a ogni nuovo giro di offerte | `30_booking.py:831`, `:870` → **P-francesco-42** (nuova) | 🟠 prima delle 02:15 |
+| 9 | Con la regola P1 il medico **non rinnova** una ricetta scaduta e dice "è ancora valida" | Regola P1 (ricetta valida 2 giorni) | Il medico decide guardando le parole del messaggio, ma il messaggio ufficiale di rinnovo contiene **solo** il numero; non chiede lo stato al Ledger | Chiedere `prescription prescription_number=…` al Ledger e decidere dallo stato (`expired` = rinnova) | `20_gp.py:232-249` → **P-francesco-43** (nuova) | 🔴 prima del cambio di regola |
+| 10 | Con P1, se la struttura dice "ricetta scaduta", il centro prenotazioni ripropone gli stessi posti | Regola P1 | Il motivo dell'annullamento non viene letto | Con `reason=prescription_expired` chiedere il rinnovo | `30_booking.py:1226+` → P-francesco-39 | 🟠 prima del cambio di regola |
+| 11 | Il centro prenotazioni non sa quali regole sono attive | Regole P1, P2, P3 | Non chiede mai `rules` al Ledger | Chiedere `rules` all'inizio di ogni caso e adattarsi | nessuna chiamata → **P-francesco-44** (nuova) | 🟠 prima del cambio di regola |
+| 12 | Se l'ospedale è giù, il cittadino non viene avvisato | Livello 7 (partner e strutture che cadono) | L'errore di invio della conferma viene ignorato | Se l'invio fallisce: `cancel offer_id=… reason=facility_unavailable` al cittadino e nuova offerta | `30_booking.py:1119` → **P-francesco-45** (nuova) | 🟠 prima delle 03:15 |
+| 13 | Se il cittadino annulla una visita **già prenotata**, la struttura non lo sa (rischio doppia prenotazione) | Livello 7 (duplicati), "ripensamento" | La risposta dice "ho ritirato l'offerta" ma non avvisa né struttura né Ledger | Con un `booking_id`: chiedere alla struttura di annullare, poi nuova offerta | `30_booking.py:1563+` → **P-francesco-46** (nuova) | 🟡 da verificare |
+| 14 | Per i cittadini di altre ASST, la nostra struttura prenota senza il riferimento di consenso `cross_asst` | Regola P2 | L'`hold` usa solo `consent_ref` e ignora `cross_asst_consent_ref` | Passare anche `cross_asst_consent_ref` se arriva nel `confirm` | `30_booking.py` `_on_confirm`, ramo `hold` → **P-francesco-47** (nuova) | 🟡 solo con P2 |
+
+#### Specialista
+
+| # | Cosa non funziona (in parole semplici) | Perché succede | Come correggerlo | Per Claude (dove) | Urgenza |
+|---|---|---|---|---|---|
+| 15 | Il referto non chiede il consenso e non prescrive il controllo, quindi il +2 non arriva mai. **Nuovo rischio** (PR #74): al cittadino si dice "ho inviato io il referto al suo medico di base" **senza** consenso | Nessun `consent purpose=report_sharing`; nessun `prescribe … follow_up_of=` | e19: prima `consent purpose=report_sharing`, poi `report … consent_ref=…`; condividere con il gp **solo** se c'è il consenso; follow-up `CTRL-CARD` quando serve | `40_facility.py:573` e la riga `report.notice` subito dopo → P-francesco-17 (da riprendere) | 🟠 rischio −2 "dati condivisi" |
+
+**Cosa manca nei test.** Il simulatore (`asst/tests/test_journey.py`) prova solo il percorso normale. Servono almeno 4 casi:
+1. cittadino con `gender=f` e solo medici uomini liberi (punto 1);
+2. altra ASST in cui un partner non risponde (punto 3);
+3. `fault.cancel` dopo la prima prenotazione (punto 7);
+4. rinnovo con solo `prescription_number` e ricetta `state=expired` (punto 9).
+
 > **Giro 4: correzioni facili per gli errori ancora presenti su `main` @ `7ba6207`** (righe di `asst/brain/parts/`).
 > Fonti: Journeys W01QQQ fino alle 01:15 (falliti 66/200, livelli 1-4), e19 (`S` / `S_pref`, "rifiuto = andate avanti
 > offrendo gli slot senza quei dati", P1 rinnovo solo se scaduta). Impostori esclusi di proposito (si fanno dopo).
