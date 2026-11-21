@@ -1,7 +1,7 @@
 agent_id: agent:mm18nddkfc5w
 team: team:polimi
 name: family_counseling
-version: 1.0.9
+version: 1.0.10
 cap_versions:
   - "1.0"
 profiles:
