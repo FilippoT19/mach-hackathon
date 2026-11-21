@@ -2058,6 +2058,69 @@ async def main() -> int:
     await test_p17_never_silent(check)
     await test_bk59_fa20(check)
     await test_bk66(check)
+
+    async def test_gp17(check):
+        """GP-17 (wave W01QQQ, L1): 'forte dolore al petto' got the 112 after 278 s or never
+        (emergency.no_escalation -2 on 8 of 12). The 112 leaves before the history read."""
+        import os
+        HO17 = "agent:jdj692g4145e"
+
+        class SlowCity(FakeCity):
+            seen = None
+            async def history(self, peer=None, *, need_id=None):
+                await asyncio.sleep(0.01)
+                if self.seen is None:
+                    self.seen = [(r, t) for r, t in self.sent]
+                return []
+
+        old_role = os.environ.get("CITY_ROLE")
+        os.environ["CITY_ROLE"] = "gp"
+        brain._PEERS.clear()
+        brain._EARLY_112.clear()
+        try:
+            def msg(text, mid, need="N-17"):
+                return Message(type="chat", sender=CITIZEN, msg_id=mid, need_id=need, body={"text": text}, recipient="agent:gp")
+            city = SlowCity("agent:gp")
+            city.inbound = msg("Dottore, da stamattina ho un forte dolore al petto e sono in ansia.", "g17a")
+            await brain.main(type("N", (), {"is_emergency": False})(), city)
+            first = city.seen[0] if city.seen else ("", "")
+            check("GP-17 il 112 parte prima della lettura della storia",
+                  first[0] == CITIZEN and first[1].startswith("escalate.emergency reason=red_flag") and "112" in first[1], city.seen)
+            check("GP-17 il 112 nomina il pronto soccorso adatto al sintomo (cardiologia)",
+                  "cardiolog" in first[1].lower(), first)
+            esc = [t for t in to(city, CITIZEN) if t.startswith("escalate.emergency")]
+            check("GP-17 un solo 112 nel turno", len(esc) == 1, city.sent)
+            check("GP-17 dopo il 112 avviso al nostro ospedale", any(t.startswith("emergency.notice") for t in to(city, HO17)), city.sent)
+            check("GP-17 dopo il 112 chiede dove si trova", any(t.startswith("data.request purpose=emergency fields=address") for t in to(city, CITIZEN)), city.sent)
+            # the citizen sends the same content again (new envelope): no second 112
+            again = SlowCity("agent:gp")
+            again.inbound = msg("Dottore, da stamattina ho un forte dolore al petto e sono in ansia.", "g17b")
+            await brain.main(type("N", (), {"is_emergency": False})(), again)
+            check("GP-17 il secondo invio dello stesso need non ripete il 112",
+                  not any(t.startswith("escalate.emergency") for t in to(again, CITIZEN)), again.sent)
+            # no red flag: nothing leaves before the history read
+            calm = SlowCity("agent:gp")
+            calm.inbound = msg("Ho mal di schiena da due settimane", "g17c", need="N-17c")
+            await brain.main(type("N", (), {"is_emergency": False})(), calm)
+            check("GP-17 senza red flag niente prima della storia", calm.seen == [], calm.seen)
+            legs = SlowCity("agent:gp")
+            legs.inbound = msg("I can't feel my legs since this morning", "g17d", need="N-17d")
+            await brain.main(type("N", (), {"is_emergency": False})(), legs)
+            check("GP-17 gambe: 112 in inglese con neurologia",
+                  legs.seen and legs.seen[0][1].startswith("escalate.emergency") and "neurolog" in legs.seen[0][1].lower() and "Call 112" in legs.seen[0][1], legs.seen)
+            preg = SlowCity("agent:gp")
+            preg.inbound = msg("Sono incinta e ho perdite di sangue", "g17e", need="N-17e")
+            await brain.main(type("N", (), {"is_emergency": False})(), preg)
+            check("GP-17 gravidanza: 112 con ostetricia",
+                  preg.seen and "ostetric" in preg.seen[0][1].lower(), preg.seen)
+        finally:
+            brain._EARLY_112.clear()
+            if old_role is None:
+                os.environ.pop("CITY_ROLE", None)
+            else:
+                os.environ["CITY_ROLE"] = old_role
+
+    await test_gp17(check)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 
