@@ -5,6 +5,57 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 
 <!-- aggiungi qui sotto -->
 
+### [ ] P-magesh-15: centro prenotazioni, due messaggi al cittadino senza atto
+- Journey: nessuno (lettura del codice su `main` 15c6524) — ruolo: booking_centre
+- Cosa fa il cittadino: (a) chiede una visita e il catalogo del Ledger ha più pagine; (b) manda un `confirm` senza `offer_id` né `slot_id` (es. "va bene il primo").
+- Cosa risponde oggi il nostro agente: (a) `30_booking.py:1567` "Ho la sua richiesta e sto controllando tutti i posti liberi per lei; le riscrivo tra un momento." (b) `30_booking.py:1675` "Mi scriva il numero dell'offerta per prenotare l'appuntamento." Tutte e due **solo testo, senza atto** e senza token.
+- Review / punti persi: il cittadino legge prima l'atto e poi i token `chiave=valore`; il testo libero non conta per le decisioni (Rule 5.1.2). Nel caso (b) il cittadino non capisce cosa mandare: rimanda lo stesso messaggio fino a `no_reply`, percorso fallito, niente +2/+1 della prenotazione, −1 review ("lavoro rimandato al cittadino").
+- Cosa dovrebbe fare: stessa frase, con l'atto davanti, come gli altri messaggi del file:
+  1. (a) `status` + la frase (come `_still_here`, `30_booking.py:1147`).
+  2. (b) `data.request purpose=booking_choice fields=offer_id` + la frase. Ancora meglio, se il cittadino ha **una sola** offerta aperta, prenotare quella senza chiedere niente (Rule 5.1.5); se ne ha più di una, ripetere le offerte aperte nello stesso messaggio.
+- Test a parole: "dato un catalogo di 2 pagine, mi aspetto che il messaggio di attesa al cittadino cominci con `status`"; "dato `confirm` senza `offer_id` e due offerte aperte, mi aspetto `data.request … fields=offer_id` con le due offerte"
+- Priorità secondo te: P1
+
+| Caso | Soluzione | Logica | Test |
+|---|---|---|---|
+| Messaggio di attesa senza atto | `status` davanti alla frase | Il cittadino legge l'atto prima del testo | catalogo 2 pagine → `status …` |
+| Conferma senza numero d'offerta | `data.request fields=offer_id` (o prenota l'unica offerta aperta) | Una domanda leggibile evita `no_reply` | `confirm` senza id → `data.request` |
+
+### [ ] P-magesh-14: centro prenotazioni, "le ho già mandato i posti liberi" quando nessuna offerta è aperta
+- Journey: nessuno (lettura del codice su `main` 15c6524) — ruolo: booking_centre
+- Cosa fa il cittadino: ha ricevuto solo la lista d'attesa (`offer … waiting_list=true`), oppure ha annullato una a una tutte le offerte; poi riscrive ("ci sono novità?", "quindi?").
+- Cosa risponde oggi il nostro agente: `status Le ho già mandato i posti liberi: mi risponda con quello che preferisce e lo blocco, oppure mi dica se nessuno le va bene e cerco ancora.` In `_still_here` (`30_booking.py:1141`) basta **un qualsiasi** `offer` mandato in passato, anche la lista d'attesa o un'offerta già annullata.
+- Review / punti persi: −1 review (passivo: rimanda il cittadino a posti che non ha più); la frase descrive un'offerta che non esiste, rischio audit "offerta descritta in modo falso" (−2).
+- Cosa dovrebbe fare: guardare solo le offerte **ancora aperte** (quelle che `_open_offers` già calcola, senza la lista d'attesa):
+  1. Offerte aperte → la frase di oggi.
+  2. Solo lista d'attesa → `status waiting_list=true` + "È in lista d'attesa per <procedura>: appena si libera un posto adatto glielo propongo io. Se il disturbo cambia, contatti il suo medico di base."
+  3. Tutte annullate, nessuna lista → "sto controllando" e una nuova ricerca, non "le ho già mandato".
+- Test a parole: "dato solo `offer … waiting_list=true` e poi `ci sono novità?`, mi aspetto `status waiting_list=true …` e **non** 'Le ho già mandato i posti liberi'"; "dato 3 offerte tutte annullate e poi un nuovo messaggio, mi aspetto una nuova ricerca o la lista d'attesa"
+- Priorità secondo te: P1
+
+| Caso | Soluzione | Logica | Test |
+|---|---|---|---|
+| Solo lista d'attesa, il cittadino riscrive | Frase "è in lista d'attesa" con `waiting_list=true` | Dire solo ciò che il Ledger/le offerte mostrano | lista d'attesa + "novità?" → `status waiting_list=true` |
+| Offerte tutte annullate | Nuova ricerca invece di "le ho già mandato" | Nessuna offerta aperta = niente da scegliere | 3 cancel + messaggio → nuova ricerca |
+
+### [ ] P-magesh-13: centro prenotazioni, i giorni a parole leggono anche "non posso il lunedì" (seguito di BK-56)
+- Journey: nessuno (lettura del codice su `main` 15c6524) — ruolo: booking_centre. Seguito di BK-56 (`CASI.md`, journey 249).
+- Cosa fa il cittadino: nomina un giorno che **non** vuole, o che non c'entra con l'appuntamento. Es. "Non posso il lunedì, va bene qualsiasi altro giorno", "I can come any day except Friday", oppure al medico: "Il dolore al ginocchio è iniziato lunedì scorso".
+- Cosa risponde oggi il nostro agente: `_days` (`30_booking.py:262`) prende ogni nome di giorno nei messaggi del cittadino, anche quelli scritti al medico. Provato sul codice: le tre frasi danno `{mon}`, `{fri}`, `{mon}`. Il giorno sbagliato diventa il giorno preferito: la prima offerta è proprio il giorno escluso, e la richiesta alle altre ASST porta `days=mon` (`30_booking.py:825`), quindi il partner può cercare solo quel giorno.
+- Review / punti persi: +2 (slot preferito) che scende a +1, o rifiuti in serie; −1 "nessuna prenotazione con S non vuoto" se il partner, filtrando sul giorno sbagliato, non offre niente.
+- Cosa dovrebbe fare:
+  1. Un giorno preceduto da "non", "tranne", "eccetto", "except", "not", "no" è un giorno **escluso**: non entra fra i preferiti (meglio ancora: va in fondo all'ordine).
+  2. Contano solo i messaggi del cittadino **al centro prenotazioni** (e il token `days=` passato dal medico), non il racconto del sintomo al medico ("iniziato lunedì", "da venerdì").
+  3. "qualsiasi giorno" / "any day" → nessuna preferenza di giorno.
+- Test a parole: "dato `Non posso il lunedì, va bene qualsiasi altro giorno`, mi aspetto nessun `days=mon` e il lunedì non come prima offerta"; "dato al medico `il dolore è iniziato lunedì scorso` e al booking nessun giorno, mi aspetto nessuna preferenza di giorno"; "dato `Posso venire solo lunedì o mercoledì` (journey 249), mi aspetto ancora `{mon, wed}`"
+- Priorità secondo te: P1
+
+| Caso | Soluzione | Logica | Test |
+|---|---|---|---|
+| Giorno negato letto come preferito | "non/tranne/except" + giorno = giorno escluso | Il cittadino rifiuta lo slot nel giorno che ha escluso | "non posso il lunedì" → niente `days=mon` |
+| Giorno del sintomo letto come preferito | Solo i messaggi al booking contano | La data del sintomo non è un vincolo d'agenda | "iniziato lunedì" al gp → nessun giorno |
+| BK-56 resta valido | Frase positiva invariata | Non rompere il fix del 249 | "solo lunedì o mercoledì" → `{mon, wed}` |
+
 > **⚠️ DA FARE PER PRIME: P-magesh-10, P-magesh-11, P-magesh-12 (medico di base).**
 > Implementarle **prima di tutte le altre proposte aperte** di questo file. Proteggono le perdite più grandi
 > del medico di base: −2 per una red flag persa e i percorsi falliti per `no_reply`. Sono modifiche piccole
