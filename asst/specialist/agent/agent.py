@@ -9747,8 +9747,11 @@ async def _on_checked_in(
 # for when the path requires it nor its priority, so it is left to a documented rule.
 # _REPORT_SILENCE is our choice, not the kit's: a citizen who never answers must not leave the
 # report unfiled ("Referto mancante" -1); e19 warns that waiting for an answer that never comes
-# keeps the journey stuck until the timeout.
-_REPORT_SILENCE = 90.0
+# keeps the journey stuck until the timeout. A report filed without consent_ref cannot get it later
+# (no Ledger command updates a report), so the wait must cover the city's delays: REGISTRO G16 p50
+# 235 s per message, MACH-2.0 R13 median 254 s. 240 s as P-magesh-26. Local run (time x100): a yes
+# after 150 s or 230 s is shared with 240 s, lost with 90 s; no answer -> filed, not shared.
+_REPORT_SILENCE = 240.0
 _REPORT_TIMERS: set["asyncio.Task[None]"] = set()
 _REPORT_FILED: OrderedDict[tuple[str, str | None, str], None] = OrderedDict()
 
