@@ -5,6 +5,222 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 
 <!-- aggiungi qui sotto -->
 
+### [x] P-magesh-22: livello 4, il cittadino non risponde MAI alla domanda di consenso cross-ASST che porta già un `consent_ref` (dopo BK-58); consultorio con posti che passano prima del confirm
+- Journey: N-2026-11-02-8909120001600004, N-2026-11-02-8909120002570004, N-2026-11-02-8909120002090004, N-2026-11-02-8909120002610002, N-2026-11-02-8909120001920004, N-2026-11-02-8909120001720004, N-2026-11-02-8909120002120004 (booking_centre); N-2026-11-02-8909120002750003, N-2026-11-02-8909120002900002 (family_counseling). L4, ondata W01QQQ, Niguarda distretto 5, 02:53–04:02 UTC, prima di BK-59/60/61. Il gp prende +2 in tutti. `answer_set`: 104 (0160, 0257, VIS-CARD it), 78 (0192, VIS-FIS it), 5 (0209, ka, ASST Giambellino), 0 (0261 ha, 0172 am, 0212 ka).
+- Cosa fa il cittadino: riceve la ricetta B, poi scrive al booking `need.request area={'district':_5} lang=... prescription_number=... service_type=...`. Alla domanda di consenso cross-ASST non risponde mai: in tutti i 13 journey scaricati con `consent purpose=cross_asst consent_ref=cx-<need>` (L3 e L4) il messaggio seguente del cittadino è di nuovo la need.request, oppure il silenzio. Gli stessi cittadini rispondono subito a `data.request purpose=booking fields=address,...` con `data.response ...`.
+- Cosa risponde oggi il nostro agente: `consent purpose=cross_asst consent_ref=cx-<need> May I look for an appointment in another ASST of Milan? Only the search criteria leave our centre; ...` (in 0209/0212: "May I ask the ASST Giambellino for you? Their physiatrist speaks Georgian."). Spesso la domanda parte due volte PRIMA della need.request (0160: 03:15 e 03:18, need.request alle 03:31), quindi alla need.request arriva subito `offer offer_id=wl-<need> waiting_list=true ...`, che il cittadino annulla con `reason=waiting_list`. In 0261 e 0257 la domanda si ripete fino a quando il cittadino rinuncia. In 0192 (it, 78 posti) la lista d'attesa arriva senza nessuna domanda sulle altre ASST. Consultorio: 0275 offre il 01/12 alle 12:00 e alle 14:30 alle 03:49; alle 03:53 il cittadino annulla le 12:00 `reason=past` e conferma le 14:30; noi rispondiamo alle 04:02 `cancel ... reason=expired`. In 0290 il confirm arriva 19 minuti dopo l'offerta: l'hold è già scaduto (`ledger.expired`), poi `cancel reason=stale_fence`, un'altra offerta, `cancel reason=no_capacity`, `status` e la lista d'attesa.
+- Review / punti persi: booking `citizen.booking_centre.wrong_outcome −1` in 5 su 7 (`no_booking` in 0160, 0257, 0209, 0192; `no_alternative` in 0261); 0 (`relaxed_alternative`) in 0172 e 0212. Consultorio: 0 in tutti e due, persi +2 (prenotato senza ricetta) e +1 (posto onorato). Review 0192: proactivity 0, collaboration 0, domain 0.
+- Cosa dovrebbe fare: (1) Causa probabile: da BK-58 (`2624fd7`) la domanda porta un `consent_ref` scritto da noi, quindi per il cittadino sembra un consenso già dato e non c'è niente a cui rispondere. Chiedere con la forma del kit (e19, tabella dei template: centro prenotazioni → cittadino `data.request` con `purpose=cross_asst`): `data.request purpose=cross_asst fields=consent Posso cercare un appuntamento in un'altra ASST di Milano? ...`, senza il nostro `consent_ref`. La `data.response purpose=cross_asst` vale come consenso (già BK-36); la domanda `data.request` va contata come domanda di consenso (`_cross_consent`, `_cross_asks`, `_cross_asst` in `30_booking.py` ~612–655 e ~867). Da verificare: che il Ledger accetti sull'hold cross-ASST il riferimento `cx-<need>` costruito da noi (regola P2, `CONSENT_MISSING`). Questo cambia il punto "insieme alla domanda di consenso (`consent purpose=cross_asst consent_ref=cx-<need>`)" di P-magesh-21. (2) Mai la domanda prima della need.request del cittadino (come P-magesh-21): va come risposta alla need.request, e le domande si contano solo da lì. (3) Se il messaggio seguente del cittadino non porta il consenso: nello stesso turno la lista d'attesa `offer offer_id=wl-<need> waiting_list=true procedure=... priority=...`, mai una terza domanda, mai silenzio (come P-francesco-34). (4) 0192: guardare nel trace (`slots ... fitting=`, `cross`) perché con 78 posti accettabili non è partita la ricerca nelle altre ASST; e per 0160/0257 (104 posti) se erano nelle ASST partner o se i nostri sono stati scartati per il salto dell'agenda (BK-59). (5) Consultorio e booking: l'agenda va avanti di un'ora ogni minuto reale e il cittadino conferma dopo 4–19 minuti. Il margine di 5 ore di MACH-1.2 (`_LEAD_BOOK`) è ancora corto per 0290 (19 minuti): offrire posti almeno ~12 ore di agenda avanti (U escluso), e rispondere al confirm in pochi secondi (0275: 9 minuti tra confirm e risposta).
+- Test a parole: "dato un booking senza posti locali e la `need.request ... lang=ka ... service_type=hospital.physiatry`, mi aspetto `data.request purpose=cross_asst fields=consent ...` senza `consent_ref`; data `data.response purpose=cross_asst ...`, mi aspetto le offerte del partner `offer ... cross_asst=true`; dato invece un altro messaggio senza consenso, mi aspetto subito `offer offer_id=wl-... waiting_list=true`. Dato il consultorio con agenda alle 08:00, mi aspetto nessuna offerta prima delle ~20:00 dello stesso giorno".
+- Priorità secondo te: P0 (7 journey su 9 in L4 senza prenotazione; nessun consenso cross-ASST è mai arrivato dopo BK-58, e al livello 4 i posti sono nelle ASST partner).
+
+### [~] P-magesh-21: centro prenotazioni, priorità B: la domanda di consenso cross-ASST arriva prima della need.request, si ripete, e il cittadino resta senza posto
+- Journey: N-2026-11-02-8909120001650004, N-2026-11-02-8909120001820006, N-2026-11-02-8909120002400002, N-2026-11-02-8909120002510002, N-2026-11-02-890912000291, N-2026-11-02-890912000300, N-2026-11-02-8909120002390005, N-2026-11-02-8909120001690003 (L3, ondata W01QQQ, 02:41–03:42 UTC, prima del rilascio delle 03:56 UTC); ruolo: booking_centre. Tutte VIS-CARD o VIS-FIS priorità B. `answer_set` 104–156: posti accettabili c'erano.
+- Cosa fa il cittadino: riceve la ricetta dal gp verso le 02:43, poi scrive al booking la `need.request ... prescription_number=... service_type=specialist_care.cardiology` (o `hospital.physiatry`) solo verso le 03:15. Non risponde mai alla domanda di consenso cross-ASST.
+- Cosa risponde oggi il nostro agente: scrive per primo, circa 25 minuti dopo la ricetta e prima della need.request: "Ho la sua richiesta e sto controllando tutti i posti liberi per lei; le riscrivo tra un momento.", poi `consent purpose=cross_asst consent_ref=cx-<need> Posso cercare un appuntamento in un'altra ASST di Milano? ...`. Alla need.request: la stessa domanda di consenso una seconda volta (0165, 0182, 0240), niente (0291), oppure solo la lista d'attesa `offer offer_id=wl-... waiting_list=true` (0300, 0239: il cittadino la annulla con `reason=waiting_list`). In 0169 invece offre 3 posti del 30/11, già oltre la scadenza B: il cittadino li annulla tutti con `reason=deadline`.
+- Review / punti persi: `citizen.booking_centre.wrong_outcome −1 no_booking` in tutti gli 8. Il verdetto arriva 15–18 minuti dopo la need.request (dopo il salto dell'agenda delle 03:18, vedi BK-59). Nota review 0169: "Propone slot non conformi ai tempi previsti dalla priorità B della ricetta, costringendo il cittadino a rifiutare le disponibilità per scadenza dei termini." (domain 0, proactivity 0).
+- Cosa dovrebbe fare: niente messaggi al cittadino prima della sua need.request: la ricerca può partire con la ricetta, ma la risposta va come risposta alla need.request. Alla need.request, se il consenso cross-ASST è già stato chiesto e non c'è risposta, non ripetere la sola domanda: in UN messaggio mandare il miglior posto locale entro la scadenza B (`offer offer_id=... slot_id=... priority=B ...`), oppure se non c'è la lista d'attesa, insieme alla domanda di consenso (`consent purpose=cross_asst consent_ref=cx-<need>`). Così il cittadino ha sempre qualcosa da confermare. Mai offrire posti oltre la scadenza B (0169: controllo da rifare con l'orologio dopo il salto dell'agenda, BK-59).
+- Test a parole: "dato un consenso cross_asst già chiesto senza risposta e poi `need.request prescription_number=... service_type=specialist_care.cardiology` con priorità B, mi aspetto un solo messaggio con `offer` (posto entro 2 giorni) oppure `offer ... waiting_list=true`, più `consent purpose=cross_asst`; non la sola domanda di consenso ripetuta, e nessun messaggio al cittadino prima della sua need.request".
+- Priorità secondo te: P1 (8 journey su 12 in L3, −1 ciascuno con posti disponibili).
+
+### [~] P-magesh-20: centro prenotazioni, il cittadino conferma e riceve "le ho già mandato i posti liberi": nessun hold, nessuna ricevuta, loop su "Which offer_id, slot_id?"
+- Journey: N-2026-11-02-8909120001430005, N-2026-11-02-8909120002340005, N-2026-11-02-890912000292 (L3, ondata W01QQQ, 02:37–03:50 UTC, prima del rilascio delle 03:56 UTC); ruolo: booking_centre. VIS-FIS priorità D, posti del nostro ospedale (agent:jdj692g4145e). `answer_set` 520.
+- Cosa fa il cittadino: riceve 5 offerte in un messaggio, risponde a `data.request` con `data.response address=... car=false ...`, poi alle 03:31:42 manda `confirm consent_ref=cons-<need>-booking offer_id=of-W01QQQ-asst-niguarda-h2-20261127-1600` (0143; stesso schema in 0234 e 0292).
+- Cosa risponde oggi il nostro agente: già alle 03:07–03:13, PRIMA di ogni confirm, `data.request purpose=booking fields=address,disability,car,car_euro_class Mentre blocco il suo appuntamento: ...` (dice "blocco" quando nessun posto è stato scelto). Dopo il confirm: `status Le ho già mandato i posti liberi: mi risponda con quello che preferisce e lo blocco, oppure mi dica se nessuno le va bene e cerco ancora.` Il cittadino chiede "Which offer_id, slot_id?" e noi rimandiamo le stesse 5 offerte. Il giro si ripete (03:19 → 03:22 → 03:25 → 03:31 → 03:34 → 03:37 → 03:40) fino al verdetto. Nessun `booking.receipt`.
+- Review / punti persi: `citizen.booking_centre.wrong_outcome −1 no_booking` in tutti e 3 (+2 o +1 possibili). Rischio audit: "Mentre blocco il suo appuntamento" senza hold sul Ledger è vicino a un'offerta descritta in modo falso (−2).
+- Cosa dovrebbe fare: (1) a un `confirm` con `offer_id` e `consent_ref` validi: hold e commit sul Ledger (BK-57) e poi `booking.receipt booking_id=... slot_id=... facility=...`; se l'hold c'è già per quello slot, andare avanti con commit e ricevuta, mai un turno che finisce senza parole. Da guardare nel trace del team console: need 0001430005 alle 03:31:42Z, perché il confirm non ha prodotto né hold né ricevuta (sospetto: `_on_confirm` vede un hold già scritto alle ~03:07, salta l'hold e chiude il turno in silenzio, `30_booking.py` ~1913). (2) Se il turno è lento, la riga di attesa per un confirm deve essere `booking.pending offer_id=... slot_id=... Ho la sua conferma e sto bloccando questo appuntamento: le mando la ricevuta appena è pronta.`, non "le ho già mandato i posti liberi" (`_still_here`, ~1299, oggi non guarda se il messaggio è un confirm). (3) A "Which offer_id, slot_id?" rispondere con UNA sola riga `offer` (quella confermata, o la migliore), non tutte e 5. (4) Non scrivere "mentre blocco" in una `data.request` prima del confirm.
+- Test a parole: "date 5 offerte aperte e poi `confirm consent_ref=cons-X-booking offer_id=of-...-h2-20261127-1600`, mi aspetto hold+commit sul Ledger e poi `booking.receipt ... slot_id=...-h2-20261127-1600`; se il Ledger è lento mi aspetto `booking.pending offer_id=...`, mai `status Le ho già mandato i posti liberi`. Dato `Which offer_id, slot_id?` dopo un confirm, mi aspetto una sola riga `offer`".
+- Priorità secondo te: P1 (3 journey su 12 in L3, il cittadino aveva già scelto: +2 persi ognuno).
+
+### [~] P-magesh-19: il cittadino dice al gp un sintomo e al booking un altro: la ricetta non corrisponde e nessuno se ne accorge
+- Journey: N-2026-11-02-890912000278, N-2026-11-02-890912000281, N-2026-11-02-890912000286 (L6, ondata W01QQQ); ruoli: booking_centre e gp. Probabile `city_fault`: va segnalato ai mod comunque. Questa proposta serve solo a limitare i danni se non lo riconoscono, o se capita ancora.
+- Cosa fa il cittadino:
+  - 278: al gp "Ho mal di schiena da settimane". Al booking "Sento il cuore accelerato. Devo prenotare una visita cardiologica, ho l'impegnativa" (`service_type=specialist_care.cardiology`), con la ricetta VIS-FIS B.
+  - 281: al gp "i got back pain". Al booking "la gamba mi fa male quando cammino" (poi nel cancel "il ginocchio"), con la ricetta VIS-FIS B.
+  - 286: al gp "got this back pain". Al booking "mi fa male il ginocchio", con la ricetta VIS-FIS B.
+- Cosa risponde oggi il nostro agente: il booking usa la ricetta così com'è. 278: offre una fisiatria a chi chiede il cardiologo, e il cittadino annulla. 281 e 286: priorità B (2 giorni), nessun posto, lista d'attesa, e il cittadino annulla `reason=waiting_list`. Il gp non sa niente.
+- Review / punti persi: gp `protocol_mismatch` −1 (`wrong_procedure` 278, `wrong_priority` 281/286). Booking −1 `no_booking` (278, 281) o 0 (286). Review: collaborazione 0 per tutti.
+- Cosa dovrebbe fare:
+  1. **Booking: confronto sintomo/ricetta.** Il cittadino scrive al booking un sintomo della tabella dei protocolli (stesse parole del gp: ginocchio, cuore/palpitazioni, schiena). Se il protocollo di quel sintomo ha una procedura diversa da quella della ricetta (278), o la stessa procedura con un'altra priorità (281, 286: ginocchio = D, ricetta B), allora c'è un disallineamento. Conta anche un `service_type` della need.request che non corrisponde alla procedura (cardiology con VIS-FIS).
+  2. **Booking → gp (agente-agente, +1 collaborazione):** un messaggio al nostro gp con solo i dati che servono: `referral.check prescription_number=... symptom=SYM-KNEE` (oppure `SYM-PALPITATIONS`). Niente testo del cittadino: minima condivisione, e il testo non vale come istruzione.
+  3. **Gp:** rifà il protocollo sul nuovo sintomo. Se esce un'altra procedura o priorità: nuova `prescribe` sul Ledger (prima il Ledger), poi `prescription prescription_number=<nuovo> procedure=... priority=...` al cittadino ("Dal centro prenotazioni mi hanno detto che il problema è al ginocchio: le ho fatto una nuova ricetta, da fare entro 5 giorni") e `referral` al booking, come oggi.
+  4. **Booking:** nel frattempo dice al cittadino `status` ("Ho chiesto al suo medico di aggiornare la ricetta per il ginocchio, le scrivo appena arriva"). Con la ricetta nuova offre i posti giusti. Se il gp non risponde subito, continua con la ricetta attuale: mai lasciare il cittadino senza offerte.
+  5. Le red flag restano prima di tutto: se il sintomo nuovo è una red flag, 112 (regola già nel gp).
+- Da verificare prima di farlo (non lo so): il giudice usa l'**ultima** ricetta del need o la prima? Se usa la prima, il punto 3 non recupera il −1 del gp, ma recupera comunque il booking (offerte giuste invece di `no_booking`) e la collaborazione. Chiedere ai mod insieme alla segnalazione `city_fault`.
+- Test a parole: "dato una ricetta VIS-FIS B e la need.request 'mi fa male il ginocchio', mi aspetto `referral.check ... symptom=SYM-KNEE` al gp e `status` al cittadino; dato il `referral.check`, mi aspetto dal gp `prescribe ... procedure=VIS-FIS priority=D` al Ledger prima della `prescription` al cittadino". Terzo test: "ricetta VIS-FIS B e testo 'mal di schiena': nessun `referral.check`".
+- Priorità secondo te: P2 (3 casi in un'ondata, causati dal modello della città; prima la segnalazione ai mod)
+
+### [x] P-magesh-18: centro prenotazioni, livello 6: il cittadino rifiuta il sesso del medico (`reason=gender`) e il giorno (`reason=day`) solo nel cancel, e noi rioffriamo lo stesso medico
+- Journey: N-2026-11-02-890912000304 (L6), N-2026-11-02-8909120002440003 (L6), N-2026-11-02-8909120002280005 (L5), ondata W01QQQ (ruolo: booking_centre). Caso particolare di P-francesco-49 (motivo del cancel ignorato), che non parla del sesso.
+- Cosa fa il cittadino: non dice mai il sesso del medico che vuole (nessun `gender=` nella need.request, niente nel testo). Lo dice solo annullando le nostre offerte:
+  - 304: "posso solo lunedì o mercoledì"; riceve 5 offerte, tutte con `asst-niguarda-h1` (donna); le annulla tutte e 5 con `reason=gender`.
+  - 0002440003: riceve h1 mar 10:30, h3 mar 10:30, h1 mar 12:00; annulla h1 `reason=gender`, h3 `reason=day`, h1 `reason=gender`.
+  - 0228: 4 offerte, tutte h1 lunedì, tutte annullate `reason=gender`.
+- Cosa risponde oggi il nostro agente: niente dopo i cancel (era il silenzio di P-magesh-17, già risolto). Ma anche con P-17 online, `_gender` (`30_booking.py:219`) legge solo `gender=`/`gender_preference=` scritti dal cittadino, e il motivo del cancel non entra in `fitting`. Il giro dopo offre quindi altri posti di h1 (304: h1 ha ancora lunedì e mercoledì), arrivano nuovi `reason=gender`, e dopo 2 giri locali (BK-29) va in lista d'attesa.
+- Review / punti persi: `citizen.booking_centre.wrong_outcome` −1 `no_booking` in tutti e tre, con `answer_set` non vuoto (0002440003: size 130). Fatto `offer_claim ok=true`, quindi le offerte erano vere ma fuori da `S`. Gp +2 in tutti e tre.
+- Cosa dovrebbe fare:
+  1. Dai cancel del cittadino sulle nostre offerte ricavare i vincoli: `reason=gender` → il sesso del medico di quell'offerta (`doctor_gender` se c'è, altrimenti la tabella `_DOCTORS`) è **escluso**; `reason=day` → l'`agenda_day` di quell'offerta è **escluso**.
+  2. Nel giro di sostituzione, scartare gli slot con medico del sesso escluso o in un giorno escluso. Qui serve un filtro, non un ordinamento: il cittadino ha detto che quello slot è fuori da `S`. P-francesco-31 resta valido per il `gender=` scritto, che è solo una preferenza.
+  3. Se un solo sesso è escluso, l'altro diventa il `gender` del caso: ordina gli slot, va nella need.request cross-ASST (`gender=` e `gender_preference=`, X-47) e ordina le offerte dei partner.
+  4. Il tetto di 2 giri (BK-29) non deve chiudere con la lista d'attesa se il secondo giro ha nuovi vincoli e restano slot compatibili (come in P-francesco-49).
+  - Esiti attesi: 304 (lun/mer, no donna) → h2 mercoledì (uomo, wed/thu/fri). 0002440003 (no donna, no martedì) → h2 mer/gio/ven o h3 giovedì. 0228 → h2 o h3. Se non resta nessuno slot locale, si passa al cross-ASST o alla lista d'attesa (0, non −1).
+- Test a parole: "dato un caso con offerte h1 tutte annullate `reason=gender` e la pagina slot con h1 e h2 di mercoledì, mi aspetto un solo messaggio `offer` con solo h2". Secondo test: "dato un cancel `reason=day` su un'offerta di martedì, nel giro dopo nessuno slot di martedì".
+- Nota a parte (gp, da non correggere nel codice): in 278, 281 e 286 (L6) il cittadino dice al gp "mal di schiena" (VIS-FIS B) e poi al booking parla di ginocchio (281, 286) o di cuore/cardiologia (278). Il giudice dà al gp `wrong_priority`/`wrong_procedure` −1. Il gp non può saperlo dal testo: sembra un errore del modello del cittadino (`city_fault`). Da segnalare ai mod dalla console, non da correggere.
+- Priorità secondo te: P1 (3 su 9 falliti del livello 6, −1 ognuno, e il caso torna dopo 15 minuti)
+
+### [x] P-magesh-17: centro prenotazioni muto dopo le 03:00 UTC (deploy in pausa): nessuna risposta alla need.request e ai cancel
+- Journey: N-2026-11-02-8909120001310003 (L3), N-2026-11-02-8909120002280005 (L5), N-2026-11-02-890912000278 (L6), ondata W01QQQ — ruolo: booking_centre
+- Cosa fa il cittadino:
+  - 0131 (L3): manda `need.request … prescription_number=… service_type=hospital.physiatry` alle 03:03:53 UTC.
+  - 0228 (L5): riceve 4 offerte e le annulla tutte e 4 alle 03:12:52 UTC (`cancel offer_id=… reason=gender`).
+  - 278 (L6): riceve 1 offerta e la annulla alle 03:08:00 UTC (`cancel offer_id=… reason=past`).
+- Cosa risponde oggi il nostro agente: **niente**. 0131: nessuna risposta in 13 minuti, fino al verdetto. 0228 e 278: nessuna risposta dopo i cancel fino al verdetto (4–5 minuti dopo). Anche quando risponde, il booking è lento: in 0228 le offerte sono arrivate dopo **7 minuti** (03:01:28 → 03:08:35).
+- Perché conta: il cittadino molla circa 48 minuti dopo il primo messaggio (0131: 02:26 → verdetto 03:17; 278: 02:25 → verdetto 03:13). Ne passano già circa 35 tra il medico e il primo messaggio al booking, quindi al booking restano circa 10 minuti: un silenzio o una risposta lenta bastano a perdere il percorso. Non è un deploy: OPS-10 ha fermato i deploy dalle 03:00 UTC (l'ultimo ship è delle 02:58). Il codice dopo un cancel dovrebbe rimandare i posti ancora liberi (`30_booking.py:1457`), quindi il turno o non parte o non finisce. La causa vera va letta nei log del booking tra le 03:03 e le 03:18 UTC (`city logs booking_centre`). Casi simili già visti: BK-28, BK-39.
+- Review / punti persi: `citizen.booking_centre.wrong_outcome reason=no_booking` **−1 in tutti e 3**, con 520, 130 e 208 posti accettabili liberi. Si perdono anche il +2/+1 della prenotazione, il +2 del check-in e il +1 del Ledger. Ogni percorso torna dopo 15 minuti e può fallire di nuovo.
+- Cosa dovrebbe fare: ogni messaggio del cittadino riceve un messaggio con atto entro pochi secondi, sempre:
+  1. alla `need.request`, subito `status` + "Ho la sua richiesta, sto cercando i posti liberi per lei", poi le offerte;
+  2. dopo uno o più `cancel`, in un solo messaggio le altre offerte ancora libere oppure, solo se non ce ne sono, la lista d'attesa (BK-10);
+  3. se il turno sta durando troppo (Ledger lento), mandare comunque al cittadino quello che si ha, mai silenzio.
+  Il motivo del cancel (`reason=gender`, `reason=past`) è già in P-francesco-49: qui conta solo che arrivi una risposta.
+- Test a parole: "data una need.request valida, mi aspetto un messaggio al cittadino che comincia con `status` o `offer`"; "dati 4 cancel di fila con 130 posti ancora liberi, mi aspetto un messaggio con nuove `offer` diverse da quelle annullate"
+- Priorità secondo te: P0 (agente muto)
+
+| Caso | Soluzione | Logica | Test |
+|---|---|---|---|
+| need.request senza risposta (0131) | `status` subito, poi offerte | Il cittadino ha solo ~10 minuti per il booking | need.request → `status`/`offer` |
+| Cancel senza risposta (0228, 278) | Nuove offerte o lista d'attesa, in un messaggio | Mai silenzio: −1 `no_booking` con posti liberi | 4 cancel → nuove `offer` |
+| Causa del silenzio | Leggere i log booking 03:03–03:18 UTC | Non è un deploy (OPS-10) | — |
+
+### [x] P-magesh-16: consultorio, la red flag in gravidanza (CO-10b) scatta su domande normali → 112 invece della visita
+- Journey: N-2026-11-02-8909120002290002 (livello 3, ondata W01QQQ) — ruolo: family_counseling. Ricontrollato leggendo il codice su `main` 1ae5051.
+- Cosa fa il cittadino: chiede una visita al consultorio, riceve le offerte, conferma (sul Ledger c'è un hold `bk-edbbfafc-…`). Il testo esatto del cittadino non l'ho letto: va aperto nel trace per vedere quale parola ha fatto scattare l'allarme.
+- Cosa risponde oggi il nostro agente: annulla l'hold e manda **3 volte** `escalate.emergency reason=red_flag` "Capisco, quello che mi descrive va preso sul serio subito. Chiami subito il 112…". Percorso **Failed**: 208 posti accettabili, 208 ancora liberi a fine percorso.
+- Perché succede: `20_gp.py:20-23` (CO-10b, P-magesh-6) dà red flag quando c'è **una qualsiasi** parola di gravidanza insieme a **una qualsiasi** parola di pericolo, cercata come pezzo di parola ("sangue", "perdite", "dolore forte", "blood"…). `handle()` (`00_core.py`, X-41) fa questo controllo per tutti i ruoli, quindi anche il consultorio. Ho provato la funzione `_emergency()` del brain su frasi di tutti i giorni al consultorio, e tutte danno red flag:
+  - "sono incinta e vorrei fare gli esami del sangue"
+  - "I'm pregnant and need a blood test"
+  - "sono in gravidanza, ho delle perdite bianche, è normale?"
+  - "incinta di 10 settimane, ho un dolore forte alla schiena"
+  Al consultorio scrivono molte donne in gravidanza, e gli esami del sangue e le perdite sono argomenti normali: il caso tornerà spesso, e ogni volta torna dopo 15 minuti e fallisce di nuovo.
+- Review / punti persi: −2 check-in mancato, −2 consulenza senza prescrizione mancata, −1 posto prenotato non onorato sul Ledger, −1 review ("lavoro rimandato al cittadino", lo mandiamo via senza motivo). Il test CO-10 attuale (`tests/test_brain.py`, `test_co10_pregnancy`) ha un solo caso negativo, senza parole di pericolo, quindi non vede il problema.
+- Cosa dovrebbe fare: la red flag in gravidanza scatta solo su **frasi** di pericolo, non su parole isolate: "perdite di sangue", "perdo sangue", "sanguinamento", "contrazioni forti/frequenti", "perso le acque", "rottura delle acque", "dolore forte/intenso alla pancia/all'addome/al basso ventre"; in inglese "bleeding", "losing blood", "strong contractions", "waters broke", "severe abdominal pain". Frasi come "esami del sangue", "analisi del sangue", "blood test" non contano mai come pericolo. Tutto il resto segue il percorso normale del consultorio: offerte, hold, commit, nessuna prescrizione richiesta. I casi positivi di oggi devono restare red flag ("sono incinta di 7 mesi e ho perdite di sangue", "I'm pregnant and have strong contractions"). Aggiornare la riga CO-10b in CASI.md.
+- Test a parole: "date le 4 frasi sopra al consultorio, mi aspetto `offer …` e nessun `escalate.emergency`"; "dato 'sono incinta di 7 mesi e ho perdite di sangue', mi aspetto `escalate.emergency reason=red_flag` e nessuna offerta"
+- Priorità secondo te: P1 (punti persi spesso al consultorio; la sicurezza resta perché le vere red flag continuano a scattare)
+
+| Caso | Soluzione | Logica | Test |
+|---|---|---|---|
+| Domanda normale in gravidanza con "sangue/perdite/dolore forte" → 112 | Pericolo solo su frasi precise; "esami del sangue"/"blood test" esclusi | Una parola isolata non è un'emergenza; il consultorio deve prenotare | 4 frasi normali → offerte, nessun 112 |
+| Vera red flag in gravidanza | Resta `escalate.emergency` | Sicurezza prima di tutto | "incinta + perdite di sangue" → 112, nessuna offerta |
+
+### [x] P-magesh-15: centro prenotazioni, due messaggi al cittadino senza atto
+- Journey: nessuno (lettura del codice su `main` 15c6524) — ruolo: booking_centre
+- Cosa fa il cittadino: (a) chiede una visita e il catalogo del Ledger ha più pagine; (b) manda un `confirm` senza `offer_id` né `slot_id` (es. "va bene il primo").
+- Cosa risponde oggi il nostro agente: (a) `30_booking.py:1567` "Ho la sua richiesta e sto controllando tutti i posti liberi per lei; le riscrivo tra un momento." (b) `30_booking.py:1675` "Mi scriva il numero dell'offerta per prenotare l'appuntamento." Tutte e due **solo testo, senza atto** e senza token.
+- Review / punti persi: il cittadino legge prima l'atto e poi i token `chiave=valore`; il testo libero non conta per le decisioni (Rule 5.1.2). Nel caso (b) il cittadino non capisce cosa mandare: rimanda lo stesso messaggio fino a `no_reply`, percorso fallito, niente +2/+1 della prenotazione, −1 review ("lavoro rimandato al cittadino").
+- Cosa dovrebbe fare: stessa frase, con l'atto davanti, come gli altri messaggi del file:
+  1. (a) `status` + la frase (come `_still_here`, `30_booking.py:1147`).
+  2. (b) `data.request purpose=booking_choice fields=offer_id` + la frase. Ancora meglio, se il cittadino ha **una sola** offerta aperta, prenotare quella senza chiedere niente (Rule 5.1.5); se ne ha più di una, ripetere le offerte aperte nello stesso messaggio.
+- Test a parole: "dato un catalogo di 2 pagine, mi aspetto che il messaggio di attesa al cittadino cominci con `status`"; "dato `confirm` senza `offer_id` e due offerte aperte, mi aspetto `data.request … fields=offer_id` con le due offerte"
+- Priorità secondo te: P1
+
+| Caso | Soluzione | Logica | Test |
+|---|---|---|---|
+| Messaggio di attesa senza atto | `status` davanti alla frase | Il cittadino legge l'atto prima del testo | catalogo 2 pagine → `status …` |
+| Conferma senza numero d'offerta | `data.request fields=offer_id` (o prenota l'unica offerta aperta) | Una domanda leggibile evita `no_reply` | `confirm` senza id → `data.request` |
+
+### [x] P-magesh-14: centro prenotazioni, "le ho già mandato i posti liberi" quando nessuna offerta è aperta
+- Journey: nessuno (lettura del codice su `main` 15c6524) — ruolo: booking_centre
+- Cosa fa il cittadino: ha ricevuto solo la lista d'attesa (`offer … waiting_list=true`), oppure ha annullato una a una tutte le offerte; poi riscrive ("ci sono novità?", "quindi?").
+- Cosa risponde oggi il nostro agente: `status Le ho già mandato i posti liberi: mi risponda con quello che preferisce e lo blocco, oppure mi dica se nessuno le va bene e cerco ancora.` In `_still_here` (`30_booking.py:1141`) basta **un qualsiasi** `offer` mandato in passato, anche la lista d'attesa o un'offerta già annullata.
+- Review / punti persi: −1 review (passivo: rimanda il cittadino a posti che non ha più); la frase descrive un'offerta che non esiste, rischio audit "offerta descritta in modo falso" (−2).
+- Cosa dovrebbe fare: guardare solo le offerte **ancora aperte** (quelle che `_open_offers` già calcola, senza la lista d'attesa):
+  1. Offerte aperte → la frase di oggi.
+  2. Solo lista d'attesa → `status waiting_list=true` + "È in lista d'attesa per <procedura>: appena si libera un posto adatto glielo propongo io. Se il disturbo cambia, contatti il suo medico di base."
+  3. Tutte annullate, nessuna lista → "sto controllando" e una nuova ricerca, non "le ho già mandato".
+- Test a parole: "dato solo `offer … waiting_list=true` e poi `ci sono novità?`, mi aspetto `status waiting_list=true …` e **non** 'Le ho già mandato i posti liberi'"; "dato 3 offerte tutte annullate e poi un nuovo messaggio, mi aspetto una nuova ricerca o la lista d'attesa"
+- Priorità secondo te: P1
+
+| Caso | Soluzione | Logica | Test |
+|---|---|---|---|
+| Solo lista d'attesa, il cittadino riscrive | Frase "è in lista d'attesa" con `waiting_list=true` | Dire solo ciò che il Ledger/le offerte mostrano | lista d'attesa + "novità?" → `status waiting_list=true` |
+| Offerte tutte annullate | Nuova ricerca invece di "le ho già mandato" | Nessuna offerta aperta = niente da scegliere | 3 cancel + messaggio → nuova ricerca |
+
+### [x] P-magesh-13: centro prenotazioni, i giorni a parole leggono anche "non posso il lunedì" (seguito di BK-56)
+- Journey: nessuno (lettura del codice su `main` 15c6524) — ruolo: booking_centre. Seguito di BK-56 (`CASI.md`, journey 249).
+- Cosa fa il cittadino: nomina un giorno che **non** vuole, o che non c'entra con l'appuntamento. Es. "Non posso il lunedì, va bene qualsiasi altro giorno", "I can come any day except Friday", oppure al medico: "Il dolore al ginocchio è iniziato lunedì scorso".
+- Cosa risponde oggi il nostro agente: `_days` (`30_booking.py:262`) prende ogni nome di giorno nei messaggi del cittadino, anche quelli scritti al medico. Provato sul codice: le tre frasi danno `{mon}`, `{fri}`, `{mon}`. Il giorno sbagliato diventa il giorno preferito: la prima offerta è proprio il giorno escluso, e la richiesta alle altre ASST porta `days=mon` (`30_booking.py:825`), quindi il partner può cercare solo quel giorno.
+- Review / punti persi: +2 (slot preferito) che scende a +1, o rifiuti in serie; −1 "nessuna prenotazione con S non vuoto" se il partner, filtrando sul giorno sbagliato, non offre niente.
+- Cosa dovrebbe fare:
+  1. Un giorno preceduto da "non", "tranne", "eccetto", "except", "not", "no" è un giorno **escluso**: non entra fra i preferiti (meglio ancora: va in fondo all'ordine).
+  2. Contano solo i messaggi del cittadino **al centro prenotazioni** (e il token `days=` passato dal medico), non il racconto del sintomo al medico ("iniziato lunedì", "da venerdì").
+  3. "qualsiasi giorno" / "any day" → nessuna preferenza di giorno.
+- Test a parole: "dato `Non posso il lunedì, va bene qualsiasi altro giorno`, mi aspetto nessun `days=mon` e il lunedì non come prima offerta"; "dato al medico `il dolore è iniziato lunedì scorso` e al booking nessun giorno, mi aspetto nessuna preferenza di giorno"; "dato `Posso venire solo lunedì o mercoledì` (journey 249), mi aspetto ancora `{mon, wed}`"
+- Priorità secondo te: P1
+
+| Caso | Soluzione | Logica | Test |
+|---|---|---|---|
+| Giorno negato letto come preferito | "non/tranne/except" + giorno = giorno escluso | Il cittadino rifiuta lo slot nel giorno che ha escluso | "non posso il lunedì" → niente `days=mon` |
+| Giorno del sintomo letto come preferito | Solo i messaggi al booking contano | La data del sintomo non è un vincolo d'agenda | "iniziato lunedì" al gp → nessun giorno |
+| BK-56 resta valido | Frase positiva invariata | Non rompere il fix del 249 | "solo lunedì o mercoledì" → `{mon, wed}` |
+
+> **⚠️ DA FARE PER PRIME: P-magesh-10, P-magesh-11, P-magesh-12 (medico di base).**
+> Implementarle **prima di tutte le altre proposte aperte** di questo file. Proteggono le perdite più grandi
+> del medico di base: −2 per una red flag persa e i percorsi falliti per `no_reply`. Sono modifiche piccole
+> in `asst/brain/parts/20_gp.py` e `asst/brain/parts/00_core.py`. Ordine consigliato: 11 → 12 → 10.
+
+### [x] P-magesh-10: medico di base, secondo messaggio con sintomo non riconosciuto → silenzio
+- Journey: nessuno (lettura del codice su `main` 77b907a) — ruolo: gp
+- Cosa fa il cittadino: scrive un disturbo che la tabella non riconosce ("non mi sento bene"); il medico gli chiede dove e da quando; il cittadino risponde con parole sue che la tabella e il modello ancora non riconoscono ("mi fa male qui sul fianco da tre giorni"). Oppure, dopo aver ricevuto la ricetta, scrive "grazie, e adesso?"
+- Cosa risponde oggi il nostro agente: al primo messaggio la domanda di GP-05 ("Mi descrive meglio il disturbo: dove sente il problema e da quanto tempo?…"). Al secondo: **niente**. In `20_gp.py:292` la risposta parte solo se il medico non ha mai scritto prima a quel cittadino (`asked`); se ha già scritto anche una sola volta, nessuna risposta
+- Review / punti persi: −1 review ("messaggio senza risposta", passivo); il cittadino aspetta 16 minuti, rimanda e dopo 3 tentativi abbandona → `no_reply`, percorso fallito e nessun +2 per la ricetta
+- Cosa dovrebbe fare: **non lasciare mai un messaggio del cittadino senza risposta**. GP-05 resta ("una sola domanda, niente interrogatorio"), ma il secondo messaggio non riconosciuto riceve una risposta diversa e più stretta:
+  1. Se il medico ha già chiesto dettagli e non c'è ancora una ricetta: una domanda chiusa con le scelte che conosciamo, nella lingua del cittadino. Es. "Per prepararle la ricetta giusta mi aiuta a capire: si tratta della schiena, del ginocchio, del cuore che batte forte, o di un controllo del cuore?" / "So I can prepare the right prescription: is it your back, your knee, your heart racing, or a heart check-up?"
+  2. Se il medico ha già mandato una ricetta a questo cittadino: ripetere `prescription prescription_number=… procedure=… priority=…` con una frase breve sul prossimo passo ("La sua ricetta è pronta: contatti il centro prenotazioni con questo numero").
+  3. Dal terzo messaggio non riconosciuto in poi: una frase gentile che non ripete la stessa domanda (per non sembrare un robot), es. "Mi dispiace, non riesco ancora a capire il disturbo. Se peggiora o compare dolore al petto chiami il 112."
+- Test a parole: "dato `non mi sento bene` e poi `mi fa male qui sul fianco da tre giorni` (nessuna parola nota, modello `NONE`), mi aspetto al secondo messaggio una risposta con le quattro scelte, non il silenzio"; "dato una ricetta già mandata e poi `grazie, e adesso?`, mi aspetto di nuovo `prescription prescription_number=…` con il prossimo passo"
+- Priorità secondo te: **P0** (agente muto)
+
+| Caso | Soluzione | Logica | Test |
+|---|---|---|---|
+| Secondo messaggio non riconosciuto → silenzio | Domanda chiusa con le 4 scelte del protocollo | GP-05 vieta l'interrogatorio, non la risposta: ogni messaggio del cittadino ha una risposta | 2 messaggi ignoti → 2 risposte diverse |
+| Messaggio dopo la ricetta → silenzio | Ripetere i token della ricetta + prossimo passo | Il cittadino ha la ricetta ma non sa cosa fare: proattività invece di silenzio | ricetta + "grazie, e adesso?" → `prescription prescription_number=…` |
+
+### [x] P-magesh-11: medico di base, red flag scritte in altro modo riconosciute solo dal modello
+- Journey: nessuno (lettura del codice su `main` 77b907a) — ruolo: gp (vale anche per gli altri ruoli che usano `_emergency`)
+- Cosa fa il cittadino: descrive un'emergenza con parole diverse da quelle della lista fissa. Es. "ho un forte **male al petto**", "**dolore toracico** da stamattina", "sento un'**oppressione al petto**", "ho perso **forza alla gamba**", "**non sento la gamba** destra", "mi fa male il petto e il braccio sinistro", "chest tightness", "my chest hurts", "I can't feel my leg"
+- Cosa risponde oggi il nostro agente: la lista fissa (`_RED_FLAGS` in `00_core.py:56`, `_RED_FLAGS_MORE` in `00_core.py:65`, le frasi in `20_gp.py:12`) riconosce solo "dolore al petto", "chest pain", "perdita di forza alle gambe", "non sento **più** le gamb**e**" (plurale). Le frasi sopra passano solo se `city.llm` risponde `RED_FLAG` entro 4 s (GP-03). Se il modello è lento, giù o risponde male → **nessuna escalation**: il cittadino riceve la domanda "Mi descrive meglio il disturbo?" o addirittura una ricetta (es. "mal di schiena e non sento la gamba" → ricetta fisiatrica, perché la parola "schiena" viene trovata prima)
+- Review / punti persi: **−2** emergenza (primo agente sul caso senza escalation), più il rischio per la sicurezza del cittadino
+- Cosa dovrebbe fare: la red flag non deve mai dipendere dal modello. Allargare il controllo fisso, che gira prima del modello, con radici di parole invece di frasi esatte:
+  1. **Petto**: "petto" o "torac" insieme a "dolor", "male", "stretta", "oppressione", "peso", "fa male"; in inglese "chest" con "pain", "tight", "pressure", "hurt"
+  2. **Gambe**: "gamba"/"gambe" (singolare e plurale, con o senza "più") con "non sento", "non riesco a muovere", "perso forza", "perdita di forza", "formicolio forte"; in inglese "leg"/"legs" con "can't feel", "cannot move", "lost strength", "numb"
+  3. Il controllo della red flag va fatto **prima** del sintomo: se c'è una red flag, escalation anche se il messaggio contiene "schiena" o "ginocchio"
+  4. Meglio un falso allarme che un'emergenza persa (stessa logica di GP-03)
+- Test a parole: "dato `ho un forte male al petto` con il modello spento, mi aspetto `escalate.emergency reason=red_flag`"; "dato `mal di schiena e non sento la gamba` con il modello spento, mi aspetto `escalate.emergency reason=red_flag` e **nessun** `prescribe`"; "dato `my chest feels tight` con il modello spento, mi aspetto `escalate.emergency reason=red_flag`"
+- Priorità secondo te: **P0** (112)
+
+| Caso | Soluzione | Logica | Test |
+|---|---|---|---|
+| Red flag con parole diverse dalla lista | Controllo fisso con radici (petto/torac + dolore/male/stretta; gamba/e + non sento/forza) | Il modello può essere lento o giù: il −2 e la sicurezza non devono dipendere da lui | "male al petto", modello spento → `escalate.emergency` |
+| Red flag + sintomo noto nello stesso messaggio | Escalation prima della ricetta | La red flag vince sempre sul protocollo | "mal di schiena e non sento la gamba" → escalation, nessun `prescribe` |
+
+### [~] P-magesh-12 (da decidere: Filippo ha scelto avviso prima del 112; la frase "il più vicino" è già corretta con GP-15): medico di base, il messaggio del 112 aspetta le ricerche prima di partire
+- Journey: nessuno (lettura del codice su `main` 77b907a) — ruolo: gp (`_escalate` è usato da tutti i ruoli)
+- Cosa fa il cittadino: scrive una red flag ("dolore al petto").
+- Cosa risponde oggi il nostro agente: il messaggio giusto (`escalate.emergency reason=red_flag` + "Chiami subito il 112…"), ma **in ritardo**. In `_escalate` (`20_gp.py:30`), prima di mandarlo, il medico aspetta: (a) `_peer` per trovare il nostro ospedale (fino a 5 s, solo la prima volta); (b) insieme (X-55) l'avviso all'ospedale e la ricerca del pronto soccorso più vicino (`_zone_point` + `_nearest_line`, fino a 4 s + 4 s con l'Index lento). Nel caso peggiore il cittadino aspetta **circa 13 secondi** il 112. In più la frase dice sempre "Il pronto soccorso più vicino nella nostra zona è il nostro ospedale in Via Arganini Gerolamo 38", anche se la ricerca subito dopo nomina un altro ospedale più vicino (due frasi in contrasto)
+- Review / punti persi: risposta lenta proprio nel caso più grave (sicurezza, review); rischio −2 audit "offerta descritta in modo falso" se il PS "più vicino" non è il nostro
+- Cosa dovrebbe fare: **il 112 parte per primo, subito, senza aspettare nessuna ricerca.** X-55 resta, ma spostato dopo:
+  1. Primo messaggio, immediato: `escalate.emergency reason=red_flag` + "Capisco, va preso sul serio subito. Chiami subito il 112 o vada al pronto soccorso più vicino. Non si metta alla guida: se può, si faccia accompagnare e non resti da solo." Nessuna ricerca prima di questo messaggio
+  2. Poi, in parallelo: l'avviso `emergency.notice reason=red_flag` al nostro ospedale e la ricerca del PS più vicino
+  3. Secondo messaggio al cittadino, appena finiscono: "Ho già avvisato il nostro ospedale (Via Arganini Gerolamo 38, accessibile in sedia a rotelle)" e, solo se la ricerca lo trova, "Il pronto soccorso più vicino alla sua zona è …". Dire "il più vicino" solo quando la ricerca lo conferma; altrimenti dire "il nostro ospedale"
+  4. La domanda "Mi dice dove si trova adesso?" (X-42) resta dopo
+  - La collaborazione resta visibile nella chat del cittadino (era il motivo di X-55): il "li ho già avvisati" passa solo nel secondo messaggio
+- Test a parole: "dato `dolore al petto` con l'Index che risponde dopo 4 s, mi aspetto `escalate.emergency reason=red_flag` come **primo** messaggio al cittadino, prima di qualsiasi `city.find`"; "dato un PS più vicino di un'altra ASST, mi aspetto che la frase non dica che il nostro ospedale è il più vicino"
+- Priorità secondo te: **P0** (112)
+
+| Caso | Soluzione | Logica | Test |
+|---|---|---|---|
+| Il 112 aspetta `_peer` + ricerca PS (fino a ~13 s) | 112 subito, ricerche dopo, secondo messaggio con avviso e PS più vicino | Nell'emergenza conta il primo secondo; X-55 resta ma non blocca più il 112 | Index lento → primo messaggio = `escalate.emergency` |
+| "Il PS più vicino è il nostro" sempre | Dire "il più vicino" solo se la ricerca lo conferma | Nessuna frase falsa al cittadino (audit −2) | PS di altra ASST più vicino → la frase non dice "il nostro è il più vicino" |
+
 ### [ ] P-magesh-9: consultorio, hold rifiutato → rioffre lo stesso slot rifiutato → la seconda conferma resta senza risposta
 - Journey: N-2026-11-02-8909120001050002 (cittadino 000105, L3, Fallito, wave W01QQQ) — ruolo: family_counseling. Lettura del codice su `main` 78dab8a
 - Cosa fa il cittadino: chiede una visita al consultorio (00:30:13); riceve 3 offerte (10:30, 12:00, 14:30 del 17/11) e, in un secondo messaggio, una quarta (16:00); conferma `of-…-20261117-1030` con `cons-…-booking` (00:30:42). Dopo l'annullamento riceve di nuovo le stesse 3 offerte e riconferma **la stessa** `of-…-1030` (01:03:37)

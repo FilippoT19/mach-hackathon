@@ -143,7 +143,14 @@ async def test_x13_impostor(check) -> None:
 async def test_co10_pregnancy(check) -> None:
     for text, flag in (("sono incinta di 7 mesi e ho perdite di sangue", True),
                        ("I'm pregnant and have strong contractions", True),
-                       ("vorrei una visita ginecologica di controllo in gravidanza", False)):
+                       ("vorrei una visita ginecologica di controllo in gravidanza", False),
+                       # P-magesh-16: normal questions in pregnancy are not 112.
+                       ("sono incinta e vorrei fare gli esami del sangue", False),
+                       ("I'm pregnant and need a blood test", False),
+                       ("sono in gravidanza, ho delle perdite bianche, è normale?", False),
+                       ("incinta di 10 settimane, ho un dolore forte alla schiena", False),
+                       ("sono incinta e ho perso le acque", True),
+                       ("pregnant and bleeding a lot", True)):
         msg = Message(type="chat", sender=CITIZEN, msg_id="m-co", need_id="N-co", recipient="agent:mm18nddkfc5w", body={"text": text})
         city = FakeCity("agent:mm18nddkfc5w")
         await brain.handle("family_counseling", city, msg, [])
@@ -443,6 +450,66 @@ async def test_000113(check) -> None:
     check("OPS-07 nessun testo del cittadino nei log", not any("English-speaking" in l for l in lines), lines)
 
 
+async def test_p17_never_silent(check) -> None:
+    """P-magesh-17: a slow or broken booking turn still sends the citizen a status line."""
+    real, early = brain._desk_route, brain._EARLY_STATUS
+
+    async def slow(city, message, chat, **kw):
+        await asyncio.sleep(0.3)
+        await brain._say(city, message.sender, "offer offer_id=o-1 slot_id=s-1 Posto libero")
+
+    async def broken(city, message, chat, **kw):
+        raise RuntimeError("ledger down")
+
+    try:
+        brain._EARLY_STATUS = 0.05
+        for name, route, want in (("lento", slow, ["status", "offer"]), ("errore", broken, ["status"])):
+            brain._desk_route = route
+            city = FakeCity("agent:fn64xfq2jft4")
+            msg = Message(type="chat", sender=CITIZEN, msg_id=f"m-p17-{name}", need_id=f"N-p17-{name}",
+                          recipient="agent:fn64xfq2jft4",
+                          body={"text": "need.request prescription_number=prescription_number-N-1 service_type=hospital.physiatry"})
+            await brain._desk(city, msg, [msg], hold_self=False, fixed=None)
+            got = [o.split()[0] for o in to(city, CITIZEN)]
+            check(f"P-magesh-17 turno {name}: il cittadino riceve {want}", got == want, to(city, CITIZEN))
+    finally:
+        brain._desk_route, brain._EARLY_STATUS = real, early
+
+
+async def test_bk59_fa20(check) -> None:
+    """BK-59: agenda jump at a level change (deadline -> renewal, past -> read the agenda again).
+    FA-21: a held line after the wait still gets its commit."""
+    import dataclasses
+
+    def at(n, minute):
+        return dataclasses.replace(row(*n), sent_at=f"2026-11-21T03:{minute:02d}:00Z")
+    offer = ("offer offer_id=of-S-1 slot_id=S-1 doctor_id=d-s1 facility=agent:spec procedure=VIS-CARD "
+             "agenda_date=2026-11-05T10:00:00Z priority=B prescription_number=prescription_number-RX-9")
+    base = [
+        at(("agent:gp", CITIZEN, "prescription prescription_number=prescription_number-RX-9 procedure=VIS-CARD priority=B", 1), 0),
+        at((CITIZEN, "agent:bk", "need.request prescription_number=prescription_number-RX-9", 2), 2),
+        at((LEDGER, "agent:bk", "prescription prescription_number=prescription_number-RX-9 procedure=VIS-CARD priority=B state=issued", 3), 2),
+        at((LEDGER, "agent:bk", f"agenda agenda_now={NOW}", 4), 2),
+        at(("agent:bk", CITIZEN, offer, 5), 3),
+    ]
+    for reason, want in (("deadline", "renewal"), ("past", "agenda")):
+        brain._SENT.clear() if hasattr(brain, "_SENT") else None
+        cancel = at((CITIZEN, "agent:bk", f"cancel offer_id=of-S-1 reason={reason}", 6), 4)
+        cancel = dataclasses.replace(cancel, need_id=f"N-59-{reason}")
+        city = FakeCity("agent:bk")
+        await brain._desk(city, cancel, [*base, cancel], hold_self=False, fixed=None)
+        if want == "renewal":
+            ok = any("purpose=prescription_renewal" in t for t in to(city, CITIZEN))
+        else:
+            ok = any(r == LEDGER and t == "agenda" for r, t in city.sent)
+        check(f"BK-59 cancel reason={reason}: {want}", ok, city.sent)
+    hold = at(("agent:bk", LEDGER, "hold slot_id=S-7 citizen=citizen:c-1 consent_ref=c-7", 7), 5)
+    held = at((LEDGER, "agent:bk", "held hold_id=H-7 slot_id=S-7", 8), 6)
+    city = FakeCity("agent:bk")
+    await brain._desk(city, held, [*base, hold, held], hold_self=False, fixed=None)
+    check("FA-21 held in ritardo: commit sul Ledger", any(r == LEDGER and t.startswith("commit hold_id=H-7") for r, t in city.sent), city.sent)
+
+
 async def test_x49(check) -> None:
     """X-49: the address is asked when the citizen confirms, before the booking.receipt."""
     BKX, HOSP = "agent:bk", "agent:jdj692g4145e"
@@ -468,7 +535,9 @@ async def test_x49(check) -> None:
         ]
         c = FakeCity(BKX)
         await brain._desk(c, base[-1], base, hold_self=False, fixed=None)
-        check(f"X-49 [{lang}] confirm inoltrato alla struttura", any(t.startswith("confirm ") and "slot_id=S-49" in t for t in to(c, HOSP)), c.sent)
+        # BK-57 (journey 104): our own hospital's slot is held by the booking centre in this
+        # same turn (no 14-minute hop through the hospital); no confirm goes to the hospital.
+        check(f"BK-57 [{lang}] hold sul Ledger nello stesso turno della scelta", any(t.startswith("hold slot_id=S-49") and "consent_ref=" in t for t in to(c, LEDGER)) and not any(t.startswith("confirm ") for t in to(c, HOSP)), c.sent)
         cit = to(c, CITIZEN)
         check(f"X-49 [{lang}] indirizzo chiesto alla conferma, con scopo",
               len(cit) == 1 and cit[0].startswith("data.request purpose=booking fields=address") and word in cit[0], cit)
@@ -538,6 +607,11 @@ async def main() -> int:
     check("X-52 bengalese -> ASST San Siro", brain._rare_hospital(bn, "VIS-FIS")[0] == "agent:k2nwktpp02xx"
           and "San Siro" in brain._cross_question(bn, "VIS-FIS"), brain._cross_question(bn, "VIS-FIS"))
 
+    # X-54: the citizen's street gives the point (no more district centre).
+    pt = brain._street_point("Via_Ornato_Luigi_65")
+    check("X-54 Via Ornato 65 -> Niguarda", pt is not None and 45.51 < pt[0] < 45.53 and 9.18 < pt[1] < 9.20, pt)
+    check("X-54 via sconosciuta -> None", brain._street_point("via inesistente 4") is None)
+    check("X-54 data.response address -> punto", brain._citizen_point("data.response address=viale_Monza_120 car=false") is not None)
     # P-francesco-37: a prescription number we issued, no renewal words -> no new prescription.
     gp = FakeCity("agent:gp")
     issued = row("agent:gp", CITIZEN, "prescription prescription_number=prescription_number-N-1 procedure=VIS-FIS priority=B", 1)
@@ -570,6 +644,35 @@ async def main() -> int:
     check("ginocchio (frase fissa) -> VIS-FIS D", any("procedure=VIS-FIS priority=D" in t for t in to(c, LEDGER)), c.sent)
     c = await run_gp("da ieri sento il cuore a mille, tipo tamburo", model("SYM-PALPITATIONS"))
     check("testo libero + modello -> VIS-CARD B", any("procedure=VIS-CARD priority=B" in t for t in to(c, LEDGER)), c.sent)
+
+    # GP-15 (journey 183): a known symptom by keyword is never turned into 112 by the model.
+    c = await run_gp("raga, tipo ultimamente sento il cuore che batte un po' troppo, lowkey vorrei un check, boh", model("RED_FLAG"))
+    check("GP-15 palpitazioni + modello RED_FLAG -> ricetta VIS-CARD B, niente 112", any("procedure=VIS-CARD priority=B" in t for t in to(c, LEDGER)) and not any(t.startswith("escalate.emergency") for t in to(c, CITIZEN)), c.sent)
+    # P-magesh-11: red flags in other words, model down -> 112, no prescription.
+    for t in ("ho un forte male al petto", "dolore toracico da stamattina", "my chest feels tight", "mal di schiena e non sento la gamba"):
+        c = await run_gp(t, model("NONE"))
+        check(f"P-magesh-11 '{t}' -> 112 senza modello", to(c, CITIZEN) and to(c, CITIZEN)[0].startswith("escalate.emergency") and not to(c, LEDGER), c.sent)
+    c = await run_gp("mio cuore che batte veloce, voglio controllo per favore.", model("RED_FLAG"))
+    check("P-magesh-11 palpitazioni restano ricetta", any("procedure=VIS-CARD" in t for t in to(c, LEDGER)), c.sent)
+    # P-magesh-10: the second unmatched message gets the closed question, the third a safety line.
+    first = citizen_msg("non mi sento bene")
+    c = FakeCity("agent:gp", model("NONE"))
+    await brain._gp(c, first, [])
+    asked10 = [first] + [row("agent:gp", r, t, 300 + i) for i, (r, t) in enumerate(c.sent) if r == CITIZEN]
+    second = row(CITIZEN, "agent:gp", "mi fa male qui sul fianco da tre giorni", 310)
+    c2 = FakeCity("agent:gp", model("NONE"))
+    await brain._gp(c2, second, [*asked10, second])
+    check("P-magesh-10 secondo messaggio -> domanda con le 4 scelte", to(c2, CITIZEN) and to(c2, CITIZEN)[0].startswith("gp.choices") and "ginocchio" in to(c2, CITIZEN)[0], c2.sent)
+    third = row(CITIZEN, "agent:gp", "boh non so", 320)
+    hist = [*asked10, second, row("agent:gp", CITIZEN, to(c2, CITIZEN)[0] if to(c2, CITIZEN) else "", 311), third]
+    c3 = FakeCity("agent:gp", model("NONE"))
+    await brain._gp(c3, third, hist)
+    check("P-magesh-10 terzo messaggio -> frase di sicurezza, non la stessa domanda", to(c3, CITIZEN) and to(c3, CITIZEN)[0].startswith("gp.note") and "112" in to(c3, CITIZEN)[0], c3.sent)
+    rxrow = row("agent:gp", CITIZEN, "prescription prescription_number=prescription_number-RX-9 procedure=VIS-FIS priority=D Ecco la ricetta.", 330)
+    after = row(CITIZEN, "agent:gp", "grazie, e adesso?", 331)
+    c4 = FakeCity("agent:gp", model("NONE"))
+    await brain._gp(c4, after, [citizen_msg("mi fa male il ginocchio"), rxrow, after])
+    check("P-magesh-10 dopo la ricetta -> ripete la ricetta e il passo dopo", to(c4, CITIZEN) and to(c4, CITIZEN)[0].startswith("prescription prescription_number=prescription_number-RX-9"), c4.sent)
 
     # 3. Model says RED_FLAG -> escalation, nothing else.
     c = await run_gp("ho una stretta fortissima qui in mezzo al torace", model("RED_FLAG"))
@@ -719,6 +822,37 @@ async def main() -> int:
     await brain._desk(city, msg, done, hold_self=False, fixed=None)
     check("X-27 una sola risposta per need", not city.sent, city.sent)
 
+    # BK-56 (journey 249): days written only in words; the booking message wins over the GP one.
+    gp249 = citizen_msg("Ciao, io ho dolore a ginocchio. Posso venire solo lunedì, martedì o giovedì.")
+    bk249 = row(CITIZEN, BK, "Buongiorno. Io ho dolore al ginocchio. Vorrei prenotare visita. Posso venire solo lunedì o mercoledì. need.request lang=it prescription_number=prescription_number-RX-1 service_type=hospital.physiatry", 249)
+    cx249 = row(CITIZEN, BK, "No grazie. Forse posso venire un altro giorno? cancel offer_id=of-1 reason=past", 250)
+    check("BK-56 giorni scritti a parole, vince l'ultimo messaggio", brain._days([gp249, bk249, cx249]) == frozenset({"mon", "wed"}), brain._days([gp249, bk249, cx249]))
+    check("BK-56 token days= resta valido", brain._days([row(CITIZEN, BK, "need.request days=mon/fri", 251)]) == frozenset({"mon", "fri"}), None)
+    check("BK-56 senza accento e in inglese", brain._days([row(CITIZEN, BK, "giovedi o venerdi", 252)]) == frozenset({"thu", "fri"}) and brain._days([row(CITIZEN, BK, "only Mondays", 253)]) == frozenset({"mon"}), None)
+
+    # BK-58 (journey 0002040003): "Which consent_ref?" is a question, not a refusal; our
+    # question carries the reference; a word "cancel" inside a sentence is not a cancel.
+    first64 = brain._cx_head([citizen_msg("x")])
+    check("BK-64 la prima domanda cross-ASST non porta il nostro consent_ref",
+          first64 == "consent purpose=cross_asst " , first64)
+    which = row(CITIZEN, BK, "Which consent_ref?", 581)
+    ask58 = row(BK, CITIZEN, brain._cx_head([citizen_msg("x"), which]) + "May I ask the ASST Giambellino for you?", 580)
+    check("BK-58 dopo 'Which consent_ref?' la domanda porta consent_ref", "consent_ref=cx-" in ask58.text and ask58.text.startswith("consent purpose=cross_asst"), ask58.text)
+    check("BK-58 'Which consent_ref?' non è un rifiuto", brain._cross_consent([ask58, which, ask58, which], BK)[0] is None, brain._cross_consent([ask58, which, ask58, which], BK))
+    yes = row(CITIZEN, BK, "consent consent_ref=cx-N-1 purpose=cross_asst", 582)
+    check("BK-58 il cittadino ripete il riferimento -> sì", brain._cross_consent([ask58, which, ask58, yes], BK) == (True, "cx-N-1"), brain._cross_consent([ask58, which, ask58, yes], BK))
+    check("BK-58 'no' resta un rifiuto", brain._cross_consent([ask58, row(CITIZEN, BK, "No, I refuse", 583)], BK)[0] is False, None)
+    check("BK-58 'cancel' dentro una frase non annulla", not brain._citizen_cancels("I would like to book, can I cancel later if needed?") and not brain._citizen_cancels("Non voglio cancellare niente, vorrei prenotare"), None)
+    check("BK-58 il vero cancel resta", brain._citizen_cancels("No grazie. cancel offer_id=of-1 reason=past") and brain._citizen_cancels("cancel booking_id=B-1"), None)
+
+    # P-magesh-13: negated days, the GP symptom story, "any day".
+    GPID = "agent:fddgaqmp6kb0"
+    check("P-magesh-13 'non posso il lunedì' esclude il lunedì", brain._days([row(CITIZEN, BK, "Non posso il lunedì, va bene qualsiasi altro giorno", 600)]) == frozenset({"tue", "wed", "thu", "fri"}), None)
+    check("P-magesh-13 'any day except Friday'", brain._days([row(CITIZEN, BK, "I can come any day except Friday", 601)]) == frozenset({"mon", "tue", "wed", "thu"}), None)
+    check("P-magesh-13 il giorno detto al gp non conta", brain._days([row(CITIZEN, GPID, "Il dolore al ginocchio è iniziato lunedì scorso", 602), row(CITIZEN, BK, "vorrei prenotare", 603)]) is None, None)
+    check("P-magesh-13 BK-56 resta valido", brain._days([row(CITIZEN, BK, "Posso venire solo lunedì o mercoledì", 604)]) == frozenset({"mon", "wed"}), None)
+    check("P-magesh-13 virgola chiude la negazione", brain._days([row(CITIZEN, BK, "not on monday please, tuesday or wednesday is fine", 605)]) == frozenset({"tue", "wed"}), None)
+
     # 17. X-28: red flag -> acknowledge the person, 112, safety, and warn OUR hospital (no id).
     HO = "agent:jdj692g4145e"
     brain._PEERS.clear()
@@ -736,6 +870,28 @@ async def main() -> int:
     ho = to(city, HO)
     check("X-28 red flag avvisa il nostro ospedale", len(ho) == 1 and ho[0].startswith("emergency.notice") and "citizen:" not in ho[0], city.sent)
     check("X-28 nessun messaggio all'ospedale di un'altra squadra", not to(city, "agent:other-ho"), city.sent)
+    # X-56 (journey 0000540007): the Index shows nobody (slow or down) -> the notice still goes.
+    brain._PEERS.clear()
+    city56 = FakeCity("agent:gp", peers=[])
+    await brain._gp(city56, citizen_msg("da stamattina ho un dolore al petto mica da ridere"), [])
+    check("X-56 avviso all'ospedale anche senza Index", any(t.startswith("emergency.notice") for t in to(city56, HO)), city56.sent)
+    check("X-56 il 112 dice 'li ho già avvisati'", to(city56, CITIZEN) and "li ho già avvisati io" in to(city56, CITIZEN)[0], to(city56, CITIZEN))
+    # X-55: the notice to our hospital leaves BEFORE the 112 message, which says "already told".
+    order = [r for r, t in city.sent if t.startswith(("emergency.notice", "escalate.emergency"))]
+    check("X-55 avviso ospedale prima del 112", order[:2] == [HO, CITIZEN], city.sent)
+    check("X-55 il 112 dice 'li ho già avvisati'", cit and "li ho già avvisati io" in cit[0], cit)
+    CA = __import__("city_sdk.city", fromlist=["CivicAddress"]).CivicAddress
+    OTHER = "agent:k2nwktpp02xx"
+    city55 = FakeCity("agent:gp", peers=[Peer(agent_id=HO, role="hospital", capabilities=("hospital",), address=CA(label="Via Arganini Gerolamo 38", lat=45.5155, lon=9.1835)),
+                                         Peer(agent_id=OTHER, role="hospital", capabilities=("hospital",), address=CA(label="Via Altra 1", lat=45.4781, lon=9.1240))])
+    brain._PEERS.clear()
+    brain._ANSWERED_ER.clear()
+    far = row(CITIZEN, "agent:gp", "data.response address=Piazzale_Lotto lat=45.4800 lon=9.1250", 19)
+    await brain.handle("gp", city55, far, [citizen_msg("ho dolore al petto"), *asked42, far])
+    out55 = to(city55, CITIZEN)
+    check("X-55 avvisa il PS vicino di un'altra ASST, senza dati personali", any(t.startswith("emergency.notice") and "citizen:" not in t for t in to(city55, OTHER)), city55.sent)
+    check("X-55 il cittadino sa che quel PS è avvisato", out55 and "Via Altra 1" in out55[0] and "anche il pronto soccorso" in out55[0], out55)
+    brain._PEERS.clear()
     msg = Message(type="chat", sender="agent:fddgaqmp6kb0", msg_id="e1", need_id="N-1", body={"text": ho[0] if ho else "emergency.notice reason=red_flag"}, recipient=HO)
     city = FakeCity(HO)
     await brain._facility(city, msg, [msg], reports=False, hold_self=False)
@@ -858,7 +1014,13 @@ async def main() -> int:
     fri = [line(f"S-F{h}", "d-s1", f"2026-11-06T0{h}:00:00Z", "fri") for h in (7, 8)]
     city = await run_desk("slots page=1/1\n" + "\n".join(thu + fri))
     got = brain._offer_rows(to(city, CITIZEN)[0]) if to(city, CITIZEN) else []
-    check("P-francesco-48 tre offerte, il posto più vicino resta il primo", len(got) == 3 and got[0]["slot_id"] == "S-T10", got)
+    check("BK-55 tutti i posti adatti in un messaggio, il più vicino resta il primo", len(got) == 7 and got[0]["slot_id"] == "S-T10", got)
+    msg = to(city, CITIZEN)[0] if to(city, CITIZEN) else ""
+    check("BK-55 messaggio sotto i 2000 caratteri", 0 < len(msg) <= 2000, len(msg))
+    many = [line(f"S-M{d:02d}{h}", "d-s2", f"2026-11-{d:02d}T{h}:00:00Z", "thu") for d in (5, 12, 19) for h in (10, 11, 12, 13, 14)]
+    c4 = await run_desk("slots page=1/1\n" + "\n".join(many))
+    m4 = to(c4, CITIZEN)[0] if to(c4, CITIZEN) else ""
+    check("BK-55 con molti posti: un solo messaggio valido (<= 2000)", 0 < len(m4) <= 2000 and len(brain._offer_rows(m4)) >= 3, len(m4))
     check("P-francesco-48 almeno due giorni e due medici", len({g["agenda_day"] for g in got}) >= 2
           and len({g["doctor_id"] for g in got}) >= 2, got)
     # P-francesco-31: the doctor's gender orders the offers, it does not empty them.
@@ -964,6 +1126,14 @@ async def main() -> int:
         out = to(c, req.sender)
         check(f"P-francesco-10 lingua {lang}: disponibilità corretta",
               len(out) == 1 and out[0].startswith(expected) and "slot_id=S-H1" not in out[0], c.sent)
+    # MACH-1.2 (2): the asker's deadline= cuts the partner's slots (S-H3 is after it).
+    brain._PARTNER_DONE.clear()
+    c = FakeCity(HO)
+    req = row("agent:partner-bk", HO, "need.request procedure=VIS-FIS priority=B deadline=2026-11-05T00:00:00Z request_id=R-dl", 4)
+    await brain._facility(c, req, [*pre[1:], req], reports=False, hold_self=False)
+    out = to(c, req.sender)
+    check("MACH-1.2 deadline= del partner: solo slot prima della scadenza",
+          len(out) == 1 and "slot_id=S-H1" in out[0] and "slot_id=S-H3" not in out[0], c.sent)
     # 28. BK-27: deadline from the prescription date.
     rep = {"issued_at": "2026-11-03T09:00:00Z"}
     check("BK-27 slot oltre la scadenza della ricetta escluso", not brain._before_rx_deadline({"at": "2026-11-06T10:00:00Z"}, rep, "B"), "")
@@ -1010,6 +1180,14 @@ async def main() -> int:
         three = row(CITIZEN, booking, "cancel offer_id=of-S-3 reason=deadline", 8)
         await desk_turn(city, two, [*chat, original, cancel, ack, two])
         await desk_turn(city, three, [*chat, original, cancel, ack, two, three])
+        ask = to(city, CITIZEN)[-1]
+        # BK-61: every local offer refused and the catalogue is over: the other ASSTs come before
+        # the waiting list (the answer set can hold slots there). A refusal gives the waiting list.
+        check("BK-61 tutti annullati e catalogo finito: prima la domanda sulle altre ASST",
+              ask.startswith("consent purpose=cross_asst") and not any("waiting_list=true" in t for t in to(city, CITIZEN)), ask)
+        asked = row(booking, CITIZEN, ask, 9)
+        no = row(CITIZEN, booking, "No, preferisco di no.", 10)
+        await desk_turn(city, no, [*chat, original, cancel, ack, two, three, asked, no])
         wait = to(city, CITIZEN)[-1]
         check("P-francesco-14 tutti annullati e catalogo finito: lista d'attesa è un'offerta",
               wait.startswith("offer offer_id=wl-N-1 waiting_list=true procedure=VIS-CARD priority=B "), wait)
@@ -1029,7 +1207,8 @@ async def main() -> int:
             cancel = row(CITIZEN, booking, "cancel offer_id=of-S-NEAR reason=deadline", 5)
             await desk_turn(city, cancel, [*chat, original, cancel])
             check("P-francesco-14 annullo esaurisce pagina 1 e richiede pagina 2",
-                  to(city, LEDGER) == ["world procedure=VIS-CARD page=2"], city.sent)
+                  # BK-61: page 2 is already asked before the first offer (one doctor on page 1).
+                  bool(to(city, LEDGER)) and set(to(city, LEDGER)) == {"world procedure=VIS-CARD page=2"}, city.sent)
             page = slots_near().replace("page=1/1", "page=2").replace("S-NEAR", "S-PAGE-2")
             page = page if available else "slots page=2/2"
             reply = row(LEDGER, booking, page, 7)
@@ -1048,8 +1227,8 @@ async def main() -> int:
         original = row(booking, CITIZEN, "offer offer_id=of-S-NEAR slot_id=S-NEAR", 4)
         cancel = row(CITIZEN, booking, "cancel offer_id=of-S-NEAR reason=deadline", 5)
         await desk_turn(city, cancel, [*chat, original, cancel])
-        check("P-francesco-14 pagina presente solo in history: offre la lista nello stesso turno",
-              any(t.startswith("offer offer_id=wl-N-1 waiting_list=true") for t in to(city, CITIZEN)), city.sent)
+        check("P-francesco-14 pagina presente solo in history: esito nello stesso turno (BK-61: domanda altre ASST)",
+              any(t.startswith("consent purpose=cross_asst") for t in to(city, CITIZEN)), city.sent)
 
     async def test_francesco_15(check):
         brain._SENT.clear()
@@ -1274,7 +1453,299 @@ async def main() -> int:
                                                      "procedure=VIS-CARD priority=P prescription_number="),
                   out)
 
+    async def test_bk59(check):
+        """BK-60 (journey N-2026-11-02-890912000304): "solo lunedì o mercoledì", then five offers
+        with the same doctor all cancelled reason=gender."""
+        brain._SENT.clear()
+        now = "2026-11-02T07:00:00Z"  # a Monday; priority D = five days
+        def slot(sid, doc, at, day):
+            return f"slot_id={sid} doctor_id=asst-niguarda-{doc} facility={hospital} procedure=VIS-FIS at={at} day={day} free=1"
+        slots = "slots page=1/1\n" + "\n".join([
+            slot("A1", "h1", "2026-11-02T15:00:00Z", "mon"), slot("A2", "h1", "2026-11-02T16:00:00Z", "mon"),
+            slot("A3", "h1", "2026-11-03T10:00:00Z", "tue"), slot("A4", "h1", "2026-11-04T10:00:00Z", "wed"),
+            slot("C1", "h3", "2026-11-03T11:00:00Z", "tue"), slot("B2", "h2", "2026-11-05T10:00:00Z", "thu"),
+        ])
+        chat = [
+            row(CITIZEN, booking, "Ho un dolore al ginocchio. Vorrei prenotare una visita, posso solo lunedì o "
+                f"mercoledì. need.request lang=it prescription_number={rx_number}", 0),
+            row(LEDGER, booking, f"prescription prescription_number={rx_number} procedure=VIS-FIS priority=D state=issued", 1),
+            row(LEDGER, booking, f"agenda agenda_now={now}", 2),
+            row(LEDGER, booking, slots, 3),
+        ]
+        city = FakeCity(booking)
+        await desk_turn(city, chat[0], chat)
+        first = [t for t in to(city, CITIZEN) if t.startswith("offer ")]
+        order = [brain.fields_of(line)["agenda_day"] for line in first[0].splitlines() if "offer_id=" in line] if first else []
+        # BK-60b: the said days come first; the other slots stay after them (an unsaid constraint).
+        check("BK-60 solo lunedì o mercoledì: prima i lunedì e mercoledì, poi gli altri",
+              len(first) == 1 and order[:3] and set(order[:3]) <= {"mon", "wed"} and order.count("mon") + order.count("wed") == 3
+              and len(order) == 6, first)
+        if not first:
+            return
+        sent = row(booking, CITIZEN, first[0], 4)
+        rows = [r for r in brain._offer_rows(first[0])]
+        cancels = [row(CITIZEN, booking, f"Per il ginocchio quel giorno non posso. cancel offer_id={r['offer_id']} reason=gender", 5 + i)
+                   for i, r in enumerate(rows) if r["doctor_id"].endswith("-h1")]
+        history = [*chat, sent, *cancels]
+        check("BK-60 cancel reason=gender su una dottoressa -> medico uomo", brain._gender(history) == "m", brain._gender(history))
+        for cancel in cancels:
+            await desk_turn(city, cancel, history)
+        again = [t for t in to(city, CITIZEN) if t.startswith("offer ")][1:]
+        reoffered = {brain.fields_of(line)["doctor_id"] for t in again for line in t.splitlines() if "offer_id=" in line}
+        check("BK-60 dopo i cancel reason=gender nessuna offerta con h1; restano aperte h2/h3",
+              not any(d.endswith("-h1") for d in reoffered)
+              and brain._open_offers([*history], booking, CITIZEN), city.sent)
+        # Days: a later exclusion narrows the stated days; a cancel reason=day drops that day.
+        narrow = [row(CITIZEN, booking, "posso solo lunedì o mercoledì", 1), row(CITIZEN, booking, "non posso il lunedì", 2)]
+        check("BK-60 'solo lun/mer' poi 'non posso il lunedì' -> mercoledì", brain._days(narrow) == frozenset({"wed"}), brain._days(narrow))
+        day_cancel = [chat[0], sent, row(CITIZEN, booking, f"cancel offer_id={rows[0]['offer_id']} reason=day", 9)]
+        check("BK-60 cancel reason=day toglie quel giorno", brain._days(day_cancel) == frozenset({"wed"}), brain._days(day_cancel))
+
+    async def test_bk61(check):
+        """BK-61: findings of the booking review (journey N-2026-11-02-890912000304)."""
+        import os
+        bk = brain._OUR_AGENTS["booking_centre"]
+        gp_id = brain._OUR_AGENTS["gp"]
+
+        def slot(sid, doc, at, day):
+            return f"slot_id={sid} doctor_id=asst-niguarda-{doc} facility={hospital} procedure=VIS-FIS at={at} day={day} free=1"
+
+        class LogCity(FakeCity):
+            """history() is the live case; a world question gets its page from ``pages``."""
+            def __init__(self, agent_id, pages=None):
+                super().__init__(agent_id)
+                self.log, self.pages, self.n = [], pages or {}, 100
+
+            async def history(self, peer=None, *, need_id=None):
+                return list(self.log)
+
+            async def say(self, to, text, *, status=None):
+                out = await super().say(to, text, status=status)
+                self.n += 1
+                self.log.append(row(self.agent_id, to, text, self.n))
+                if to == LEDGER and text.startswith("world"):
+                    page = int(brain.fields_of(text)["page"])
+                    if page in self.pages:
+                        self.n += 1
+                        self.log.append(row(LEDGER, self.agent_id, self.pages[page], self.n))
+                return out
+
+        def case(text, slots, need="lang=it"):
+            return [row(CITIZEN, bk, f"{text} need.request {need} prescription_number={rx_number}", 0),
+                    row(LEDGER, bk, f"prescription prescription_number={rx_number} procedure=VIS-FIS priority=D state=issued", 1),
+                    row(LEDGER, bk, "agenda agenda_now=2026-11-02T07:00:00Z", 2), row(LEDGER, bk, slots, 3)]
+
+        # (2) page 1 has only the woman doctor: one more page is read before the ONE offer message.
+        brain._SENT.clear()
+        p1 = "slots page=1/3\n" + "\n".join(slot(f"A{i}", "h1", f"2026-11-02T1{i}:00:00Z", "mon") for i in range(3, 7))
+        p2 = "slots page=2/3\n" + "\n".join([slot("T1", "h1", "2026-11-03T10:00:00Z", "tue"), slot("T3", "h3", "2026-11-03T11:00:00Z", "tue")])
+        city = LogCity(bk, {2: p2})
+        city.log = case("vorrei una visita", p1)
+        await desk_turn(city, city.log[0], list(city.log))
+        offers = [t for t in to(city, CITIZEN) if t.startswith("offer ")]
+        ids = [f["slot_id"] for f in brain._offer_rows(offers[0])] if offers else []
+        check("BK-61 pagina 1 con un solo genere: legge pagina 2 e offre tutto in UN messaggio",
+              to(city, LEDGER) == ["world procedure=VIS-FIS page=2"] and len(offers) == 1 and "T3" in ids and "A3" in ids, city.sent)
+        brain._SENT.clear()
+        city = LogCity(bk)  # page 2 never comes: the page-1 offers still go out, no waiting list
+        city.log = case("vorrei una visita", p1)
+        await desk_turn(city, city.log[0], list(city.log))
+        offers = [t for t in to(city, CITIZEN) if t.startswith("offer ")]
+        check("BK-61 pagina 2 mai arrivata: offre comunque i posti di pagina 1",
+              len(offers) == 1 and "slot_id=A3" in offers[0] and "waiting_list" not in offers[0], city.sent)
+
+        # (3) every offer cancelled in the same instant: ONE next message, not one per cancel.
+        brain._SENT.clear()
+        lines = [slot(f"{doc}-{d}-{h}", doc, f"2026-11-{d}T{h}:00:00Z", day)
+                 for d, day in (("02", "mon"), ("03", "tue"), ("04", "wed"), ("05", "thu"), ("06", "fri"))
+                 for h in ("15", "16") for doc in ("h1", "h2", "h3") if day in brain._DOCTORS[doc][2]]
+        city = LogCity(bk)
+        city.log = case("vorrei una visita", "slots page=1/1\n" + "\n".join(lines))
+        await desk_turn(city, city.log[0], list(city.log))
+        first = brain._offer_rows(to(city, CITIZEN)[0])
+        cancels = [row(CITIZEN, bk, f"no grazie cancel offer_id={f['offer_id']} reason=time", 50 + i) for i, f in enumerate(first)]
+        city.log.extend(cancels)
+        before = len(city.sent)
+        await asyncio.gather(*(desk_turn(city, m, list(city.log)) for m in cancels))
+        after = [t for r, t in city.sent[before:] if r == CITIZEN and not t.startswith("cancel.ack")]
+        check("BK-61 raffica di cancel: un solo messaggio dopo (prima 3 gruppi di offerte)",
+              len(after) == 1 and sum(t.startswith("cancel.ack") for r, t in city.sent[before:]) == len(cancels), after)
+
+        # (4) the booking centre's own hold (BK-57): the citizen gets the full receipt, the GP a notice.
+        brain._SENT.clear(); brain._RECEIPTS.clear()
+        old_gp = brain._PEERS.get("gp")
+        brain._PEERS["gp"] = gp_id
+        try:
+            city = FakeCity(bk)
+            chat = [*case("vorrei una visita", "slots page=1/1\n" + slot("S-1", "h1", "2026-11-02T15:00:00Z", "mon")),
+                    row(bk, CITIZEN, f"offer offer_id=of-S-1 slot_id=S-1 doctor_id=asst-niguarda-h1 facility={hospital} procedure=VIS-FIS", 4),
+                    row(CITIZEN, bk, "confirm offer_id=of-S-1 consent_ref=cons-1", 5),
+                    row(bk, LEDGER, f"hold slot_id=S-1 citizen={CITIZEN} consent_ref=cons-1", 6),
+                    row(LEDGER, bk, "held hold_id=H-1 slot_id=S-1", 7), row(bk, LEDGER, "commit hold_id=H-1 consent_ref=cons-1", 8)]
+            done = row(LEDGER, bk, "committed booking_id=H-1 hold_id=H-1 slot_id=S-1 ledger_ref=L-1", 9)
+            await brain._on_committed(city, done, [*chat, done])
+            receipt = next((t for t in to(city, CITIZEN) if t.startswith("booking.receipt ")), "")
+            check("BK-61 ricevuta del booking (BK-57): frase, cosa portare, avviso al gp",
+                  "booking_id=H-1 ledger_ref=L-1 La visita è prenotata" in receipt and "tessera sanitaria" in receipt
+                  and "Via Arganini" in receipt and any(t.startswith("booking.notice booking_id=H-1") for t in to(city, gp_id)), city.sent)
+        finally:
+            if old_gp is None:
+                brain._PEERS.pop("gp", None)
+            else:
+                brain._PEERS["gp"] = old_gp
+
+        # (7) the cancel.ack leaves before the first history read ends.
+        brain._SENT.clear()
+        class SlowCity(FakeCity):
+            seen = None
+            async def history(self, peer=None, *, need_id=None):
+                await asyncio.sleep(0.01)
+                if self.seen is None:
+                    self.seen = [t for _, t in self.sent]
+                return []
+        old_role = os.environ.get("CITY_ROLE")
+        os.environ["CITY_ROLE"] = "booking_centre"
+        try:
+            city = SlowCity(bk)
+            city.inbound = row(CITIZEN, bk, "No, quel giorno non posso. cancel offer_id=of-S-1 reason=gender", 60)
+            await brain.main(type("N", (), {"is_emergency": False})(), city)
+            acks = [t for t in to(city, CITIZEN) if t.startswith("cancel.ack")]
+            check("BK-61 cancel.ack parte prima della lettura della history, una volta sola",
+                  bool(city.seen) and city.seen[0].startswith("cancel.ack offer_id=of-S-1") and len(acks) == 1, (city.seen, city.sent))
+        finally:
+            if old_role is None:
+                os.environ.pop("CITY_ROLE", None)
+            else:
+                os.environ["CITY_ROLE"] = old_role
+
     await test_francesco_14(check)
+    await test_bk59(check)
+    async def test_bk62(check):
+        """BK-62: 14 failed journeys of 21/11 (03:19-04:11 UTC)."""
+        from datetime import datetime, timedelta, timezone
+        fam = brain._OUR_AGENTS["family_counseling"]
+
+        # (a) commit refused stale_fence: one more commit without fence, no cancel to the citizen.
+        brain._SENT.clear()
+        chat = [row(CITIZEN, fam, "confirm offer_id=of-C1 slot_id=C1 consent_ref=cons-1", 1),
+                row(fam, LEDGER, f"hold slot_id=C1 citizen={CITIZEN} consent_ref=cons-1", 2),
+                row(LEDGER, fam, "held hold_id=H-C1 slot_id=C1 fence=7", 3),
+                row(fam, LEDGER, "commit hold_id=H-C1 consent_ref=cons-1 fence=7", 4)]
+        no = row(LEDGER, fam, "refused commit reason=stale_fence hold_id=H-C1 slot_id=C1", 5)
+        city = FakeCity(fam)
+        again = await brain._on_refused(city, no, [*chat, no], hold_self=True, slot="C1", hold_id="H-C1")
+        check("BK-62 commit stale_fence: riprova senza fence, nessun cancel al cittadino",
+              again is True and to(city, LEDGER) == ["commit hold_id=H-C1 consent_ref=cons-1"] and not to(city, CITIZEN), city.sent)
+        same = await brain._on_refused(city, no, [*chat, no], hold_self=True, slot="C1", hold_id="H-C1")
+        check("BK-62 lo stesso rifiuto visto da un altro turno: niente doppio commit, niente cancel",
+              same is True and len(to(city, LEDGER)) == 1 and not to(city, CITIZEN), city.sent)
+        retry = row(fam, LEDGER, "commit hold_id=H-C1 consent_ref=cons-1", 6)
+        no2 = row(LEDGER, fam, "refused commit reason=stale_fence hold_id=H-C1 slot_id=C1", 7)
+        await brain._on_refused(city, no2, [*chat, no, retry, no2], hold_self=True, slot="C1", hold_id="H-C1")
+        check("BK-62 secondo rifiuto: il posto si lascia e il cittadino lo sa",
+              any(t.startswith("cancel ") for t in to(city, CITIZEN)) and sum(t.startswith("commit") for t in to(city, LEDGER)) == 1, city.sent)
+
+        # (b) five slots, two doctors, ONE day: the next page is read before the offer.
+        def slot(sid, doc, at, day):
+            return f"slot_id={sid} doctor_id=asst-niguarda-{doc} facility={hospital} procedure=VIS-FIS at={at} day={day} free=1"
+        brain._SENT.clear()
+        p1 = "slots page=1/2\n" + "\n".join([slot("T1", "h1", "2026-11-03T10:30:00Z", "tue"), slot("T2", "h3", "2026-11-03T10:30:00Z", "tue"),
+                                             slot("T3", "h1", "2026-11-03T12:00:00Z", "tue")])
+        city = FakeCity("agent:bk")
+        chat = [row(CITIZEN, "agent:bk", f"posso solo in certi giorni need.request lang=it prescription_number={rx_number}", 0),
+                row(LEDGER, "agent:bk", f"prescription prescription_number={rx_number} procedure=VIS-FIS priority=D state=issued", 1),
+                row(LEDGER, "agent:bk", "agenda agenda_now=2026-11-02T07:00:00Z", 2), row(LEDGER, "agent:bk", p1, 3)]
+        await brain._advance_alone(city, chat[0], chat, "N-1", fixed=None, replacing=False)
+        check("BK-62 offerte tutte in un giorno: chiede la pagina dopo prima di offrire",
+              to(city, LEDGER) == ["world procedure=VIS-FIS page=2"] and not to(city, CITIZEN), city.sent)
+
+        # (c) the agenda time counts the real minutes since the Ledger wrote the agenda line.
+        wrote = datetime.now(timezone.utc) - timedelta(minutes=10)
+        iso = lambda t: t.strftime("%Y-%m-%dT%H:%M:%SZ")
+        anchor = Message(type="chat", sender=LEDGER, msg_id="a1", need_id="N-1", recipient="agent:bk",
+                         body={"text": "agenda agenda_now=2026-12-01T07:00:00Z"}, sent_at=iso(wrote))
+        opened = Message(type="chat", sender=CITIZEN, msg_id="c1", need_id="N-1", recipient="agent:bk",
+                         body={"text": "vorrei una visita"}, sent_at=iso(wrote + timedelta(minutes=1)))
+        now = brain._agenda_now([anchor, opened], opened)
+        hours = (now - datetime(2026, 12, 1, 7, tzinfo=timezone.utc)).total_seconds() / 3600
+        check("BK-62 orologio: 10 minuti reali dopo la riga agenda = 10 ore di agenda (non 1)", 9.9 <= hours <= 10.2, hours)
+        old = Message(type="chat", sender=LEDGER, msg_id="a0", need_id="N-1", recipient="agent:bk",
+                      body={"text": "agenda agenda_now=2026-12-01T07:00:00Z"}, sent_at="2026-11-16T09:00:00Z")
+        check("BK-62 riga agenda di un'altra sessione: l'orologio reale non si usa",
+              brain._agenda_now([old], row(CITIZEN, "agent:bk", "ciao", 9)) == datetime(2026, 12, 1, 7, tzinfo=timezone.utc), "")
+
+    await test_bk61(check)
+    async def test_bk63(check):
+        """BK-63: fewer Ledger rounds, one offer message at the counselling centre, contested slot."""
+        bk, fam = brain._OUR_AGENTS["booking_centre"], brain._OUR_AGENTS["family_counseling"]
+
+        def slot(sid, doc, at, day, fac=hospital, proc="VIS-FIS"):
+            return f"slot_id={sid} doctor_id=asst-niguarda-{doc} facility={fac} procedure={proc} at={at} day={day} free=1"
+
+        # (1a) the request names the service: catalogue page 1 is asked with the prescription.
+        brain._SENT.clear(); brain._HELD_FOR.clear()
+        city = FakeCity(bk)
+        ask = row(CITIZEN, bk, f"Vorrei una visita need.request lang=it prescription_number={rx_number} service_type=hospital.physiatry", 0)
+        await desk_turn(city, ask, [ask])
+        check("BK-63 primo giro di Ledger: ricetta, agenda e catalogo insieme",
+              set(to(city, LEDGER)) == {f"prescription prescription_number={rx_number}", "agenda", "world procedure=VIS-FIS page=1"}, city.sent)
+
+        # (1b) every offer cancelled: the next offers come from the pages already read, no Ledger round.
+        brain._SENT.clear()
+        p1 = "slots page=1/3\n" + "\n".join(slot(f"A{i}", "h1", f"2026-11-03T1{i}:00:00Z", "tue") for i in range(0, 3))
+        p2 = "slots page=2/3\n" + "\n".join([slot("B1", "h2", "2026-11-04T10:00:00Z", "wed"), slot("B2", "h2", "2026-11-05T10:00:00Z", "thu")])
+        offer = "\n".join(f"offer offer_id=of-A{i} slot_id=A{i} doctor_id=asst-niguarda-h1 facility={hospital} procedure=VIS-FIS "
+                          f"agenda_date=2026-11-03T1{i}:00:00Z agenda_day=tue" for i in range(0, 3))
+        chat = [row(CITIZEN, bk, f"need.request lang=it prescription_number={rx_number}", 0),
+                row(LEDGER, bk, f"prescription prescription_number={rx_number} procedure=VIS-FIS priority=D state=issued", 1),
+                row(LEDGER, bk, "agenda agenda_now=2026-11-02T07:00:00Z", 2), row(LEDGER, bk, p1, 3), row(LEDGER, bk, p2, 4),
+                row(bk, CITIZEN, offer, 5)]
+        cancels = [row(CITIZEN, bk, f"cancel offer_id=of-A{i} reason=gender", 6 + i) for i in range(0, 3)]
+        city = FakeCity(bk)
+        await desk_turn(city, cancels[-1], [*chat, *cancels])
+        new = [t for t in to(city, CITIZEN) if t.startswith("offer ")]
+        check("BK-63 dopo i cancel: nuove offerte dalle pagine già lette, nessuna domanda al Ledger",
+              len(new) == 1 and "slot_id=B1" in new[0] and "slot_id=A0" not in new[0] and not to(city, LEDGER), city.sent)
+
+        # (2) counselling centre: citizen turn and the Ledger's pushes at the same time, ONE offer message.
+        brain._SENT.clear()
+        world = "slots page=1/1\n" + "\n".join(slot(f"C{i}", "c1", f"2026-11-0{d}T{h}:00:00Z", day, fam, "CONS-GIN")
+                                                for i, (d, h, day) in enumerate([(2, "16", "mon"), (3, "10", "tue"), (3, "12", "tue"), (3, "14", "tue")]))
+        rows = [row(CITIZEN, fam, "Buongiorno, vorrei prenotare una visita al consultorio", 0),
+                row(LEDGER, fam, "agenda agenda_now=2026-11-02T07:00:00Z", 1), row(LEDGER, fam, world, 2)]
+
+        class Live(FakeCity):
+            async def history(self, peer=None, *, need_id=None):
+                return list(rows)
+
+        city = Live(fam)
+        await asyncio.gather(*(brain.handle("family_counseling", city, m, list(rows)) for m in rows))
+        offers = [t for t in to(city, CITIZEN) if t.startswith("offer ")]
+        check("BK-63 consultorio: tre turni insieme, UN solo messaggio con tutte le offerte",
+              len(offers) == 1 and len(brain._offer_rows(offers[0])) == 4, city.sent)
+
+        # (3) a slot held for another citizen: not offered, and a confirm gets new offers without a hold.
+        brain._SENT.clear(); brain._HELD_FOR.clear()
+        import time as _time
+        brain._HELD_FOR["C1"] = ("N-OTHER", _time.monotonic())
+        city = Live(fam)
+        await brain.handle("family_counseling", city, rows[0], list(rows))
+        offers = [t for t in to(city, CITIZEN) if t.startswith("offer ")]
+        check("BK-63 posto bloccato per un altro cittadino: non viene offerto",
+              len(offers) == 1 and "slot_id=C1 " not in offers[0] and "slot_id=C2" in offers[0], city.sent)
+        brain._SENT.clear()
+        sent_offer = row(fam, CITIZEN, "\n".join(f"offer offer_id=of-C{i} slot_id=C{i} doctor_id=asst-niguarda-c1 facility={fam} procedure=CONS-GIN" for i in range(4)), 3)
+        confirm = row(CITIZEN, fam, "confirm offer_id=of-C1 consent_ref=cons-1", 4)
+        city = FakeCity(fam)
+        await brain.handle("family_counseling", city, confirm, [*rows, sent_offer, confirm])
+        out = to(city, CITIZEN)
+        check("BK-63 confirm di un posto bloccato per un altro: nessun hold, cancel e nuove offerte subito",
+              not any(t.startswith("hold") for t in to(city, LEDGER)) and any(t.startswith("cancel offer_id=of-C1 reason=no_capacity") for t in out)
+              and any(t.startswith("offer ") and "slot_id=C1 " not in t for t in out), city.sent)
+        brain._HELD_FOR.clear()
+
+    await test_bk62(check)
+    await test_bk63(check)
     await test_francesco_15(check)
     await test_francesco_16(check)
     await test_francesco_18(check)
@@ -1285,6 +1756,8 @@ async def main() -> int:
     await test_francesco_23(check)
     await test_000113(check)
     await test_x49(check)
+    await test_p17_never_silent(check)
+    await test_bk59_fa20(check)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 

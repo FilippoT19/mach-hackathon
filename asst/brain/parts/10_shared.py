@@ -183,7 +183,7 @@ def _we(chat: list[Message], agent: str, token: str, *, to: str, word: str) -> b
     for row in chat:
         if row.sender != agent or row.recipient != to:
             continue
-        if token in row.text.split() and word in words(row.text):
+        if (not token or token in row.text.split()) and word in words(row.text):
             return True
     return False
 
@@ -256,6 +256,7 @@ async def _await_line(
     *,
     op: str,
     refusal_matches: Callable[[Message], bool] | None = None,
+    seconds: float | None = None,
 ) -> tuple[Message, list[Message]] | None:
     """The ledger line for ``token``, or a refusal of ``op`` that was not already in ``chat``."""
 
@@ -263,7 +264,7 @@ async def _await_line(
     fresh = chat
     started = time.monotonic()
     for attempt in range(_PULL_TRIES):
-        if attempt and time.monotonic() - started >= 2 * _PULL_SECONDS:  # BK-54 (hold/commit: twice the wait)
+        if attempt and time.monotonic() - started >= (seconds or 2 * _PULL_SECONDS):  # BK-54, FA-21
             break
         try:
             fresh = await city.history(need_id=need_id)
@@ -339,7 +340,7 @@ def fitting(
         horizon = None
     else:
         horizon = now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14))
-    earliest = now + _LEAD
+    earliest = now + (_LEAD if priority == "U" else _LEAD_BOOK)
     chosen: list[tuple[int, datetime, dict[str, str]]] = []
     for line in lines:
         slot = fields_of(line)
