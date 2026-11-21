@@ -61,6 +61,7 @@ _RED_FLAGS = (
 )
 _DEADLINE_DAYS = {"B": 2, "D": 5}
 _EMERGENCY_NEEDS: set[str] = set()
+_EARLY_LLM: dict[str, "asyncio.Task[str | None]"] = {}  # OPS-09: msg_id -> symptom check started early
 _RED_FLAGS_MORE = ("sanguinamento abbondante", "heavy bleeding", "non riesco a respirare", "can't breathe", "cannot breathe", "svenut", "fainted")
 _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
 _LOG = logging.getLogger("care")
@@ -109,8 +110,19 @@ async def main(need: Need, city: City) -> None:
             and "=" not in text and text != "__error__"):
         _LOG.info("ops08.skip sender=%s", message.sender[:40])
         return
-    case = await city.history(need_id=message.need_id)
-    await handle(role_of(), city, message, case)
+    # OPS-09: the GP's symptom check (city.llm, up to 4 s) needs only the citizen's text, so it
+    # runs while the case history is read instead of after it. _gp() takes the result.
+    early = None
+    if role_of() == "gp" and message.sender.startswith("citizen:") and text and not _emergency(message):
+        early = asyncio.get_running_loop().create_task(
+            _llm_symptom(city, message.text, emergency_only=_symptom(message) is not None))
+        _EARLY_LLM[message.msg_id] = early
+    try:
+        case = await city.history(need_id=message.need_id)
+        await handle(role_of(), city, message, case)
+    finally:
+        if early is not None and _EARLY_LLM.pop(message.msg_id, None) is not None:
+            early.cancel()
 
 
 def _asks_address(message: Message) -> bool:

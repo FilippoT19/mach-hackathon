@@ -59,6 +59,7 @@ _RED_FLAGS = (
 )
 _DEADLINE_DAYS = {"B": 2, "D": 5}
 _EMERGENCY_NEEDS: set[str] = set()
+_EARLY_LLM: dict[str, "asyncio.Task[str | None]"] = {}  # OPS-09: msg_id -> symptom check started early
 _RED_FLAGS_MORE = ("sanguinamento abbondante", "heavy bleeding", "non riesco a respirare", "can't breathe", "cannot breathe", "svenut", "fainted")
 _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
 _LOG = logging.getLogger("care")
@@ -107,8 +108,19 @@ async def main(need: Need, city: City) -> None:
             and "=" not in text and text != "__error__"):
         _LOG.info("ops08.skip sender=%s", message.sender[:40])
         return
-    case = await city.history(need_id=message.need_id)
-    await handle(role_of(), city, message, case)
+    # OPS-09: the GP's symptom check (city.llm, up to 4 s) needs only the citizen's text, so it
+    # runs while the case history is read instead of after it. _gp() takes the result.
+    early = None
+    if role_of() == "gp" and message.sender.startswith("citizen:") and text and not _emergency(message):
+        early = asyncio.get_running_loop().create_task(
+            _llm_symptom(city, message.text, emergency_only=_symptom(message) is not None))
+        _EARLY_LLM[message.msg_id] = early
+    try:
+        case = await city.history(need_id=message.need_id)
+        await handle(role_of(), city, message, case)
+    finally:
+        if early is not None and _EARLY_LLM.pop(message.msg_id, None) is not None:
+            early.cancel()
 
 
 def _asks_address(message: Message) -> bool:
@@ -963,7 +975,11 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
         await _renew_prescription(city, message, chat, number)
         return
     if not emergency:
-        assessed = await _llm_symptom(city, message.text, emergency_only=code is not None)
+        early = _EARLY_LLM.pop(message.msg_id, None)  # OPS-09: started in main() with the history read
+        try:
+            assessed = await early if early is not None else await _llm_symptom(city, message.text, emergency_only=code is not None)
+        except Exception:
+            assessed = None
         emergency = assessed == "RED_FLAG"
         code = code or assessed
     if emergency:
@@ -993,16 +1009,6 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     token = f"prescription_number={number}"
     # The citizen's reply window closes before a ledger round trip comes back, so the
     # prescription is said in this same turn. The ledger write is what the judge reads.
-    if not _we(chat, agent, token, to=LEDGER, word="prescribe"):
-        if not await _say(
-            city,
-            LEDGER,
-            (
-                f"prescribe patient={message.sender} procedure={procedure} priority={priority} "
-                f"symptom_code={code} {token}"
-            ),
-        ):
-            return
     if _we(chat, agent, token, to=message.sender, word="prescription"):
         return
     line = _rx_line([*chat, message], procedure, priority, code)
@@ -1012,15 +1018,37 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     # reads the citizen chat, so the agent-to-agent step must be visible there (collaboration).
     en = _lang([*chat, message]) != "it"
     booking = await _peer(city, "booking_centre", "centro prenotazioni booking_centre asst-niguarda")
-    if booking and not _we(chat, agent, token, to=booking, word="referral"):
-        if await _say(
+    # OPS-09: the Ledger write and the referral do not depend on each other: send them together
+    # (one slow round trip instead of two). The citizen hears the prescription only after both.
+    async def _prescribe() -> bool:
+        if _we(chat, agent, token, to=LEDGER, word="prescribe"):
+            return True
+        return await _say(
+            city,
+            LEDGER,
+            (
+                f"prescribe patient={message.sender} procedure={procedure} priority={priority} "
+                f"symptom_code={code} {token}"
+            ),
+        )
+
+    async def _refer() -> bool:
+        if not booking or _we(chat, agent, token, to=booking, word="referral"):
+            return False
+        return await _say(
             city,
             booking,
             f"referral {token} procedure={procedure} priority={priority} "
             + "".join(f"{k}={v} " for k, v in prefs.items())
             + "Ricetta emessa: il cittadino vi contatterà a breve con questo numero."
             + (" Preferenze del cittadino indicate nei campi." if prefs else ""),
-        ):
+        )
+
+    written, referred = await asyncio.gather(_prescribe(), _refer())
+    if not written:
+        return
+    if booking:
+        if referred:
             line = line.replace(
                 "I am telling the booking centre now: contact it",
                 "I have already sent your prescription" + (" and your preferences" if prefs else "")
