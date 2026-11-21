@@ -355,6 +355,21 @@ def _rx_deadline(
     return agenda_now - elapsed * _AGENDA_SPEED + timedelta(days=days) - _DEADLINE_MARGIN
 
 
+def _agenda_now(chat: list[Message], message: Message) -> datetime | None:
+    """The agenda time of this turn. The Ledger's ``agenda`` line is read once per case; a turn that
+    opens minutes later (the citizen writes again after 16 minutes) is that many agenda hours
+    ahead, and a slot that was free then is in the past now (``reason=past``, 0001110003)."""
+
+    anchor = next((row for row in reversed(chat) if row.sender == LEDGER and first_word(row.text) == "agenda"), None)
+    if anchor is None:
+        return None
+    now = _when(fields_of(anchor.text).get("agenda_now", ""))
+    read_at, turn_at = _when(anchor.sent_at), _when(message.sent_at)
+    if now is not None and read_at is not None and turn_at is not None and turn_at > read_at:
+        now += (turn_at - read_at) * _AGENDA_SPEED
+    return now
+
+
 def _within(at: str, deadline: datetime | None) -> bool:
     when = _when(at)
     return deadline is None or when is None or when <= deadline
@@ -503,7 +518,7 @@ class _Sent:
     """
 
     __slots__ = ("offers", "trigger", "again", "replacement_page", "citizen_replacement", "cross_asked", "cross_sent",
-                 "cross_peers", "partner_offers", "reasked", "notes", "pending_page", "pool", "rounds")
+                 "cross_peers", "partner_offers", "reasked", "notes", "pending_page", "rounds")
 
     def __init__(self) -> None:
         self.offers: set[str] = set()
@@ -520,7 +535,6 @@ class _Sent:
         # in ``offers`` made the desk believe an offer was open and stop without a word.
         self.notes: set[str] = set()
         self.pending_page: int | None = None  # BK-45: catalogue page asked and not read yet
-        self.pool: dict[str, dict[str, str]] = {}  # BK-47: partner offers that fit, by offer_id
         self.rounds = 0  # BK-47: partner offer messages sent to the citizen
 
 
@@ -931,12 +945,7 @@ async def _partner_round(
     if rounds >= _PARTNER_ROUNDS:
         return False
     number = _number(chat)
-    agenda = _ledger(chat, "agenda")
-    now = _when("" if agenda is None else agenda.get("agenda_now", ""))
-    anchor = next((r for r in reversed(chat) if r.sender == LEDGER and first_word(r.text) == "agenda"), None)
-    read_at, last = (_when(anchor.sent_at) if anchor is not None else None), _when(message.sent_at)
-    if now is not None and read_at is not None and last is not None and last > read_at:
-        now += (last - read_at) * _AGENDA_SPEED  # the agenda went on while the partners answered
+    now = _agenda_now(chat, message)  # the agenda went on while the partners answered
     deadline = _rx_deadline(chat, _prescription_reply(chat, number), priority, number)
     limit = _search_limit(now, priority, deadline) if now is not None else deadline
     lang = _lang(chat)
@@ -1362,6 +1371,7 @@ async def _advance_alone(
     if now is None or world is None:
         _trace("stop", message, why="no_world")
         return
+    now = _agenda_now(chat, message) or now  # BK-48: a later turn is later on the agenda too
     # A cancel drops every offer the citizen was holding, so the ones still free are sent again,
     # once per cancel: a second turn for the same cancel or refusal does not repeat them.
     sent = _sent(key)
