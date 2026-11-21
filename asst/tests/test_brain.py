@@ -476,6 +476,19 @@ async def test_p17_never_silent(check) -> None:
         brain._desk_route, brain._EARLY_STATUS = real, early
 
 
+async def test_bk66(check) -> None:
+    """BK-66 (0002120005): two questions, "Which consent_ref?", then the request again in plain words."""
+    bk = "agent:bk"
+    q = "consent purpose=cross_asst May I ask the ASST Giambellino for you?"
+    chat = [row(CITIZEN, bk, "need.request lang=ka prescription_number=prescription_number-RX-66", 1),
+            row(bk, CITIZEN, q, 2), row(bk, CITIZEN, q, 3), row(CITIZEN, bk, "Which consent_ref?", 4),
+            row(CITIZEN, bk, "Hello. My back hurts. need.request lang=ka prescription_number=prescription_number-RX-66", 5)]
+    check("BK-66 richiesta ripetuta dopo 'Which consent_ref?' non e' un rifiuto",
+          brain._cross_consent(chat, bk) == (None, ""), brain._cross_consent(chat, bk))
+    no = [*chat[:4], row(CITIZEN, bk, "no grazie", 5)]
+    check("BK-66 'no grazie' resta un rifiuto", brain._cross_consent(no, bk)[0] is False, brain._cross_consent(no, bk))
+
+
 async def test_bk59_fa20(check) -> None:
     """BK-59: agenda jump at a level change (deadline -> renewal, past -> read the agenda again).
     FA-21: a held line after the wait still gets its commit."""
@@ -1763,6 +1776,7 @@ async def main() -> int:
     await test_x49(check)
     await test_p17_never_silent(check)
     await test_bk59_fa20(check)
+    await test_bk66(check)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 
