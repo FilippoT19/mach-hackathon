@@ -5,6 +5,29 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 
 <!-- aggiungi qui sotto -->
 
+### [ ] P-magesh-9: consultorio, hold rifiutato → rioffre lo stesso slot rifiutato → la seconda conferma resta senza risposta
+- Journey: N-2026-11-02-8909120001050002 (cittadino 000105, L3, Fallito, wave W01QQQ) — ruolo: family_counseling. Lettura del codice su `main` 78dab8a
+- Cosa fa il cittadino: chiede una visita al consultorio (00:30:13); riceve 3 offerte (10:30, 12:00, 14:30 del 17/11) e, in un secondo messaggio, una quarta (16:00); conferma `of-…-20261117-1030` con `cons-…-booking` (00:30:42). Dopo l'annullamento riceve di nuovo le stesse 3 offerte e riconferma **la stessa** `of-…-1030` (01:03:37)
+- Cosa risponde oggi il nostro agente: `cancel offer_id=of-…-1030 reason=facility_cancelled` (00:31:25), poi rioffre 10:30 / 12:00 / 14:30, **compreso lo slot appena rifiutato** (00:31:26). Alla seconda conferma: **niente**. Il testo dell'offerta comincia anche con "offer offer"
+- Review / punti persi: percorso Fallito, il giudice non ha registrato il motivo; Valutazioni NEUTRAL. Cittadino che conferma e non riceve risposta. Lo stesso schema (cittadini 000064 ×4, 000057, 000051, 000113 ×3) potrebbe spiegare altri Falliti: **da confermare** con il log del Consultorio (Log → Scarica JSON) di questo journey e di 2-3 altri
+- Causa probabile (codice):
+  1. **Slot rifiutato riofferto**: `_on_refused` (`40_facility.py:346`) manda il `cancel` al cittadino e poi chiama `_advance(replacing=True)` (`40_facility.py:375`) con la stessa storia del caso, che non contiene ancora il `cancel` appena mandato (`_say` non lo aggiunge). Così `_withdrawn` (`30_booking.py:116`, usato a `:1121`) non vede lo slot annullato e lo rioffre. Al booking_centre questo non succede, perché lì il `cancel` arriva dal partner ed è già nella storia
+  2. **Seconda conferma muta**: in `_on_confirm` (`30_booking.py:1268`) l'`hold` per quello slot risulta "già mandato", quindi non si manda un nuovo `hold`; `_finish_booking` (`30_booking.py:1343`) aspetta una risposta che non arriva o ritrova il vecchio rifiuto, il cui `cancel` è già stato mandato → al cittadino non arriva niente
+  3. **Motivo del rifiuto nascosto**: il Ledger ha rifiutato l'`hold` ma il motivo diventa `facility_cancelled`. Già coperto da Francesco (`proposte/francesco.md`, codice del Ledger nel `reason=`); la lettura nuova del catalogo dopo il rifiuto è il punto 2 di P-magesh-8
+- Cosa dovrebbe fare:
+  1. Dopo un `hold`/`commit` rifiutato, lo slot rifiutato non va **mai** riofferto: contarlo tra gli slot annullati prima di cercare le nuove offerte, e rioffrire solo gli altri (12:00, 14:30, 16:00)
+  2. Se il cittadino conferma uno slot che ha già avuto un `hold` rifiutato, mai silenzio: rispondere subito "Mi dispiace, quel posto non è più disponibile. Le propongo questi altri orari" con le offerte ancora libere (o la lista d'attesa se non ce ne sono)
+  3. Togliere il doppio "offer offer" all'inizio della frase al cittadino
+- Test a parole: "dato il consultorio con offerte s1030, s1200, s1430, il cittadino conferma s1030 e il Ledger risponde `refused hold slot_id=s1030`: mi aspetto `cancel offer_id=of-s1030` al cittadino e una nuova offerta **senza** `slot_id=s1030`"; "dato poi un secondo `confirm offer_id=of-s1030`, mi aspetto un messaggio al cittadino (posto non disponibile + altre offerte o lista d'attesa), non il silenzio e non un secondo `hold` per s1030"
+- Priorità secondo te: P0 (cittadino che conferma e non riceve risposta)
+
+| Caso | Soluzione | Logica | Test |
+|---|---|---|---|
+| Hold rifiutato al consultorio, lo slot rifiutato viene riofferto | Escludere lo slot rifiutato dalle nuove offerte | La storia del caso non contiene ancora il nostro `cancel`, quindi lo slot va segnato come annullato a mano | `refused hold slot_id=s1030` → nuova offerta senza s1030 |
+| Seconda conferma dello slot rifiutato → silenzio | Rispondere sempre: posto non disponibile + altre offerte / lista d'attesa | Un `hold` già rifiutato non si rimanda, ma il cittadino deve sapere cosa succede | secondo `confirm of-s1030` → messaggio al cittadino, nessun nuovo `hold` |
+| "offer offer" nel testo | Togliere la parola ripetuta | Frase pulita per il cittadino | il testo dell'offerta non contiene "offer offer" |
+
+
 ### [~] P-magesh-8 (punto 1 fatto: BK-38; punti 2-3 a Giulia): dopo la contesa (`no_capacity`) il booking salta gli slot locali ancora liberi e chiede subito il consenso cross_asst
 - Journey: ID da aggiungere (journey del 21/11, 01:05–01:11, esito Fallito) — ruolo: booking_centre
 - Cosa fa il cittadino: riceve l'offerta `slot s2 gio 19 nov 15:30` (01:06:07) e la conferma con il consenso (01:06:28). Lo slot lo prende un'altra squadra: tutte le ASST ricevono lo stesso cittadino nello stesso momento

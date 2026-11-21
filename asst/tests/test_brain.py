@@ -534,6 +534,9 @@ async def main() -> int:
     ka = [row(CITIZEN, "agent:bk", "need.request lang=ka mal di schiena", 1)]
     check("X-51 georgiano -> ASST Giambellino", brain._rare_hospital(ka, "VIS-FIS")[0] == "agent:h6r1v45esk77"
           and "Giambellino" in brain._cross_question(ka, "VIS-FIS"), brain._cross_question(ka, "VIS-FIS"))
+    bn = [row(CITIZEN, "agent:bk", "need.request lang=bn mal di schiena", 1)]
+    check("X-52 bengalese -> ASST San Siro", brain._rare_hospital(bn, "VIS-FIS")[0] == "agent:k2nwktpp02xx"
+          and "San Siro" in brain._cross_question(bn, "VIS-FIS"), brain._cross_question(bn, "VIS-FIS"))
 
     # P-francesco-37: a prescription number we issued, no renewal words -> no new prescription.
     gp = FakeCity("agent:gp")

@@ -656,6 +656,7 @@ _RARE_LANG_HOSPITAL = {
     "ja": ("agent:nanpr5mgm2py", "Lambrate", "giapponese", "Japanese"),
     "si": ("agent:xtj1dk9x3qej", "Greco", "singalese", "Sinhala"),
     "ti": ("agent:bb01ggxymm05", "Bicocca", "tigrino", "Tigrinya"),
+    "bn": ("agent:k2nwktpp02xx", "San Siro", "bengalese", "Bengali"),  # X-52
 }
 
 
