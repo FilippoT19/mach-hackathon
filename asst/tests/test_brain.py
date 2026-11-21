@@ -1455,23 +1455,26 @@ async def main() -> int:
         city = FakeCity(booking)
         await desk_turn(city, chat[0], chat)
         first = [t for t in to(city, CITIZEN) if t.startswith("offer ")]
-        days = {brain.fields_of(line)["agenda_day"] for line in first[0].splitlines() if "offer_id=" in line} if first else set()
-        check("BK-60 solo lunedì o mercoledì: nessun martedì o giovedì aggiunto per varietà",
-              len(first) == 1 and days == {"mon", "wed"}, first)
+        order = [brain.fields_of(line)["agenda_day"] for line in first[0].splitlines() if "offer_id=" in line] if first else []
+        # BK-60b: the said days come first; the other slots stay after them (an unsaid constraint).
+        check("BK-60 solo lunedì o mercoledì: prima i lunedì e mercoledì, poi gli altri",
+              len(first) == 1 and order[:3] and set(order[:3]) <= {"mon", "wed"} and order.count("mon") + order.count("wed") == 3
+              and len(order) == 6, first)
         if not first:
             return
         sent = row(booking, CITIZEN, first[0], 4)
         rows = [r for r in brain._offer_rows(first[0])]
         cancels = [row(CITIZEN, booking, f"Per il ginocchio quel giorno non posso. cancel offer_id={r['offer_id']} reason=gender", 5 + i)
-                   for i, r in enumerate(rows)]
+                   for i, r in enumerate(rows) if r["doctor_id"].endswith("-h1")]
         history = [*chat, sent, *cancels]
         check("BK-60 cancel reason=gender su una dottoressa -> medico uomo", brain._gender(history) == "m", brain._gender(history))
         for cancel in cancels:
             await desk_turn(city, cancel, history)
         again = [t for t in to(city, CITIZEN) if t.startswith("offer ")][1:]
-        doctors = {brain.fields_of(line)["doctor_id"] for line in again[0].splitlines() if "offer_id=" in line} if again else set()
-        check("BK-60 nuove offerte solo con medici uomini (h2/h3), mai più h1",
-              len(again) == 1 and doctors and all(not d.endswith("-h1") for d in doctors), city.sent)
+        reoffered = {brain.fields_of(line)["doctor_id"] for t in again for line in t.splitlines() if "offer_id=" in line}
+        check("BK-60 dopo i cancel reason=gender nessuna offerta con h1; restano aperte h2/h3",
+              not any(d.endswith("-h1") for d in reoffered)
+              and brain._open_offers([*history], booking, CITIZEN), city.sent)
         # Days: a later exclusion narrows the stated days; a cancel reason=day drops that day.
         narrow = [row(CITIZEN, booking, "posso solo lunedì o mercoledì", 1), row(CITIZEN, booking, "non posso il lunedì", 2)]
         check("BK-60 'solo lun/mer' poi 'non posso il lunedì' -> mercoledì", brain._days(narrow) == frozenset({"wed"}), brain._days(narrow))
