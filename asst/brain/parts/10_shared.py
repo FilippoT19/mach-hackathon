@@ -183,7 +183,7 @@ def _we(chat: list[Message], agent: str, token: str, *, to: str, word: str) -> b
     for row in chat:
         if row.sender != agent or row.recipient != to:
             continue
-        if token in row.text.split() and word in words(row.text):
+        if (not token or token in row.text.split()) and word in words(row.text):
             return True
     return False
 

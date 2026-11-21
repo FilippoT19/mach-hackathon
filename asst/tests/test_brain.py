@@ -579,6 +579,32 @@ async def main() -> int:
     # GP-15 (journey 183): a known symptom by keyword is never turned into 112 by the model.
     c = await run_gp("raga, tipo ultimamente sento il cuore che batte un po' troppo, lowkey vorrei un check, boh", model("RED_FLAG"))
     check("GP-15 palpitazioni + modello RED_FLAG -> ricetta VIS-CARD B, niente 112", any("procedure=VIS-CARD priority=B" in t for t in to(c, LEDGER)) and not any(t.startswith("escalate.emergency") for t in to(c, CITIZEN)), c.sent)
+    # P-magesh-11: red flags in other words, model down -> 112, no prescription.
+    for t in ("ho un forte male al petto", "dolore toracico da stamattina", "my chest feels tight", "mal di schiena e non sento la gamba"):
+        c = await run_gp(t, model("NONE"))
+        check(f"P-magesh-11 '{t}' -> 112 senza modello", to(c, CITIZEN) and to(c, CITIZEN)[0].startswith("escalate.emergency") and not to(c, LEDGER), c.sent)
+    c = await run_gp("mio cuore che batte veloce, voglio controllo per favore.", model("RED_FLAG"))
+    check("P-magesh-11 palpitazioni restano ricetta", any("procedure=VIS-CARD" in t for t in to(c, LEDGER)), c.sent)
+    # P-magesh-10: the second unmatched message gets the closed question, the third a safety line.
+    first = citizen_msg("non mi sento bene")
+    c = FakeCity("agent:gp", model("NONE"))
+    await brain._gp(c, first, [])
+    asked10 = [first] + [row("agent:gp", r, t, 300 + i) for i, (r, t) in enumerate(c.sent) if r == CITIZEN]
+    second = row(CITIZEN, "agent:gp", "mi fa male qui sul fianco da tre giorni", 310)
+    c2 = FakeCity("agent:gp", model("NONE"))
+    await brain._gp(c2, second, [*asked10, second])
+    check("P-magesh-10 secondo messaggio -> domanda con le 4 scelte", to(c2, CITIZEN) and to(c2, CITIZEN)[0].startswith("gp.choices") and "ginocchio" in to(c2, CITIZEN)[0], c2.sent)
+    third = row(CITIZEN, "agent:gp", "boh non so", 320)
+    hist = [*asked10, second, row("agent:gp", CITIZEN, to(c2, CITIZEN)[0] if to(c2, CITIZEN) else "", 311), third]
+    c3 = FakeCity("agent:gp", model("NONE"))
+    await brain._gp(c3, third, hist)
+    check("P-magesh-10 terzo messaggio -> frase di sicurezza, non la stessa domanda", to(c3, CITIZEN) and to(c3, CITIZEN)[0].startswith("gp.note") and "112" in to(c3, CITIZEN)[0], c3.sent)
+    rxrow = row("agent:gp", CITIZEN, "prescription prescription_number=prescription_number-RX-9 procedure=VIS-FIS priority=D Ecco la ricetta.", 330)
+    after = row(CITIZEN, "agent:gp", "grazie, e adesso?", 331)
+    c4 = FakeCity("agent:gp", model("NONE"))
+    await brain._gp(c4, after, [citizen_msg("mi fa male il ginocchio"), rxrow, after])
+    check("P-magesh-10 dopo la ricetta -> ripete la ricetta e il passo dopo", to(c4, CITIZEN) and to(c4, CITIZEN)[0].startswith("prescription prescription_number=prescription_number-RX-9"), c4.sent)
+
     # 3. Model says RED_FLAG -> escalation, nothing else.
     c = await run_gp("ho una stretta fortissima qui in mezzo al torace", model("RED_FLAG"))
     check("red flag dal modello -> escalate.emergency", to(c, CITIZEN) and to(c, CITIZEN)[0].startswith("escalate.emergency reason=red_flag"), c.sent)
