@@ -5,6 +5,40 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 
 <!-- aggiungi qui sotto -->
 
+> **Giro 6: i falliti del booking e come risolverli al meglio, su `main` @ `b6670f2`** (booking 1.0.17, online dalle 01:51).
+> Dati: 79 falliti alle 01:52; letti 47 verdetti. Il 77% (36/47) è `citizen.booking_centre.wrong_outcome`: **no_booking 26**
+> (slot accettabili rimasti) e **no_alternative 10** (nessuna alternativa). 42 su 47 passano dal consenso cross-ASST,
+> ma **42 su 47 sono di livello 2-3**, dove l'altra ASST non serve: il booking ci entra perché brucia o scarta gli slot locali.
+> Regola chiave (e19): "`S` si calcola… **dai vincoli che il cittadino non vi ha ancora detto**": il cittadino li rivela
+> annullando con un motivo (`reason=deadline`, `lang`…). Tutti i punti sotto sono **ancora aperti** su `b6670f2`.
+> Già fatti e quindi esclusi: BK-38 (tutto il catalogo locale prima del cross), BK-39 (pagina persa), X-51, GP-21.
+
+**Soluzione d'insieme (consigliata): una sola scala di decisione a ogni turno**
+1. slot locali con le preferenze (giorni, sesso) → 2. slot locali **senza** preferenze ma nel rispetto dei vincoli rivelati
+→ 3. altre ASST (prima la ricerca con soli criteri, poi il consenso **insieme** alle offerte) → 4. `offer offer_id=wl-… waiting_list=true`.
+Ogni turno finisce con un messaggio vero (offerte, consenso con offerte, o lista d'attesa). Mai silenzio.
+
+#### Tabella: problemi aperti e soluzione migliore (ordine consigliato di lavoro)
+
+| ID | Problema (in parole semplici) | Falliti che spiega | Dove (@ `b6670f2`) | Soluzione migliore | Test a parole | Certezza | Priorità |
+|---|---|---|---|---|---|---|---|
+| P-francesco-48 | **Le 3 offerte sono troppo simili** (prime 3 per data: spesso stesso giorno e stesso medico). Se il vincolo nascosto è "non quel giorno / non quel medico" cadono tutte insieme | no_booking (26), i 16 con offerte senza prenotazione | `30_booking.py:946` (`picks = chosen[:3]`); ordine in `10_shared.py:360` | Scegliere 3 slot **diversi**, tutti nella scadenza: 1° il più vicino con le preferenze; 2° un altro giorno; 3° un altro medico (e di sesso diverso se il cittadino non l'ha chiesto) | 5 slot giovedì h2 + 2 martedì h1 → nelle offerte almeno un martedì e due medici | Certo | **P0** (modifica piccola) |
+| P-francesco-31 (ancora aperta) | **Il sesso del medico scarta** invece di ordinare | no_booking al livello 2 (vincoli) | `10_shared.py:356` | Sesso come ordinamento, come i giorni: prima `S_pref`, poi `S` | `gender=f`, solo medici uomini liberi → offerta, nessun consenso cross | Certo | **P0** (modifica piccola) |
+| P-francesco-49 | **Il motivo dell'annullamento viene ignorato**; al 2° annullo lista d'attesa anche se `S` ha ancora slot | no_booking (26) | `_citizen_cancel` `30_booking.py:1606-1640` (`acks >= 1` → `_relaxed` a `:1631`; altrimenti `_advance(replacing=True)` senza `reason`) | **Vincoli rivelati** ricostruiti dalla storia (annulli del cittadino), passati a `fitting`: `deadline` → solo slot **prima** di quello annullato; `lang` → solo medici di quella lingua; giorno/orario → escluso; `waiting_list` → torna al passo 2. Continuare con gli slot locali compatibili; lista d'attesa solo quando finiti. Il tetto di 2 giri conta solo i giri **senza** nuove informazioni | 3 slot annullati `reason=deadline` → giro dopo solo con slot precedenti; se nessuno, lista d'attesa (0, non −1) | Certo | **P0** |
+| P-francesco-34 (ancora aperta, allargata) | **Il ramo cross-ASST non ha uscita**: consenso già chiesto → `return True` muto; ricerca già fatta → `return True` muto; partner che non rispondono → "aspetto risposte" e basta | **no_alternative (10)** + 10 no_booking "mai un'offerta dopo il consenso" | `_cross_asst` (`30_booking.py:458+`): `:474-478`, `:482-483`, `:542-547` | Ogni turno del ramo cross-ASST finisce con un esito: offerte dei partner arrivate (filtrate) + consenso, **oppure** lista d'attesa. Non aspettare chi non risponde. Se un partner annulla dopo il nostro confirm → altre offerte ricevute o lista d'attesa | Ricerca già fatta, nessuna risposta, il cittadino riscrive → `offer … waiting_list=true` | Certo | **P0** |
+| P-francesco-50 | **Consenso chiesto prima di cercare**: al livello 2-3 è una domanda inutile, costa un giro e consuma la scadenza | Tutti i 42 con consenso | `30_booking.py:479` (consenso prima del `need.request`) | Invertire (e19 permette il `need.request` solo criteri senza consenso): 1) richiesta ai partner (non nostri, con lingua/sesso/giorni); 2) raccogliere le risposte qualche secondo; 3) offerte valide → **un** messaggio con offerte + `consent purpose=cross_asst`; nessuna offerta → lista d'attesa **senza** consenso | Nessun partner con posti → lista d'attesa e nessun `consent purpose=cross_asst` | Certo | **P1** |
+| P-francesco-33 (ancora aperta, allargata) | **Offerte dei partner non filtrate**: lingua solo se c'è `doctor_lang`; scadenza, sesso, giorni mai | Parte dei 16 con offerte senza prenotazione | `_partner_offer` `30_booking.py:605+` (riga `:626`) | Stesso controllo degli slot locali (finestra priorità e ricetta, lingua, vincoli rivelati di P-49); lingua ≠ `it` senza `doctor_lang` → scartata; un solo messaggio con i soli token ufficiali | Offerta partner oltre la scadenza → scartata; se non resta nulla → lista d'attesa | Certo | **P1** |
+| P-francesco-51 | **Risposte del Ledger perse** dopo ~6 s (il push "può non aprire un turno"): niente `commit`, niente ricevuta, booking fermo | Parte dei 9 "nessun motivo registrato" (000111, 000114, 000116, 000122, …0001110002) | Struttura `40_facility.py:211`, `:227` (`care.held.missing`, `care.commit.missing`); attese `_PULL_TRIES`/`_PULL_PAUSE` in `00_core.py` | **Ricontrollo all'inizio di ogni turno** per lo stesso need (booking e strutture): `held` senza nostro `commit` → commit; `committed` senza ricevuta → ricevuta; `slots`/`prescription` arrivati e non usati → riprendere da lì. Booking: se il cittadino rimanda la conferma e la ricevuta manca, rimandare il `confirm` alla struttura (retry dopo timeout, ammesso da e19) | Storia con `held` e nessun `commit`, arriva un qualsiasi messaggio → `commit` | Certo nel codice; collegamento ai 9 casi da verificare | **P1** |
+| P-francesco-52 | **Ricevuta valida rifiutata** al check-in (−2 alla struttura) | receipt_refused (2) | Da capire dalle tracce | Prima leggere le due tracce. Candidati: il cittadino usa la ricevuta di una prenotazione **annullata e rifatta** (alla nuova ricevuta dire che la vecchia non vale più); check-in arrivato quando il commit non era stato letto (P-51) | — | Da verificare | **P2** |
+
+**Verifiche sui 47 verdetti già scaricati (per confermare l'ordine):**
+1. motivi (`reason=`) degli annullamenti nei 16 casi con offerte senza prenotazione (se domina `deadline` → P-49 prima di tutto);
+2. quante volte le 3 offerte di un messaggio sono dello stesso giorno o dello stesso medico (P-48);
+3. quanti falliti **dopo le 01:51** (booking 1.0.17) chiedono ancora il consenso cross al livello 2-3 (effetto di BK-38/39).
+
+**Test da aggiungere al simulatore** (`asst/tests/test_journey.py`, oggi prova solo il percorso normale): vincolo nascosto
+rivelato con `reason=deadline`; `gender=f` senza dottoresse libere; altra ASST con un partner che non risponde; `held` arrivato dopo l'attesa.
+
 > **Giro 5: riepilogo semplice di cosa non funziona su `main` @ `0b49404`** (dopo i rilasci delle 01:26).
 > Rivalutato da zero sul codice e sulle regole (e19). Il percorso normale funziona (test e simulatore verdi), ma i test
 > coprono **solo** quello. I problemi sono quasi tutti del centro prenotazioni quando **non trova subito** un posto.
