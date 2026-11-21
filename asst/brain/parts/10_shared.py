@@ -190,11 +190,18 @@ def _exact(chat: list[Message], agent: str, text: str) -> bool:
     return any(row.sender == agent and row.text.strip() == text for row in chat)
 
 
+# BK-33: who this turn has written to, so the booking desk can tell a silent turn (None = not tracked).
+_SAID: contextvars.ContextVar[set[str] | None] = contextvars.ContextVar("_SAID", default=None)
+
+
 async def _say(city: City, to: str, text: str) -> bool:
     try:
         await city.say(to, text)
     except CapError:
         return False
+    said = _SAID.get()
+    if said is not None:
+        said.add(to)
     return True
 
 

@@ -282,6 +282,167 @@ async def test_facility_proposals(check) -> None:
     brain._CHECKIN_REQUESTS.clear()
 
 
+async def test_000113(check) -> None:
+    """Journeys N-...000113 and N-...1130002: English citizen, back pain, no local slot."""
+    import logging
+
+    BKX = "agent:bk"
+    PARTNER = "agent:etpwrfmfa8hm"  # a known partner id (Isola)
+    RX = "prescription_number-RX-113"
+    base = [
+        (LEDGER, BKX, f"prescription prescription_number={RX} procedure=VIS-FIS priority=B state=issued"),
+        (LEDGER, BKX, f"agenda agenda_now={NOW}"),
+        (LEDGER, BKX, "slots page=1/1\nslot_id=S-FAR doctor_id=asst-niguarda-h2 facility=agent:hos procedure=VIS-FIS at=2026-11-25T09:00:00Z day=wed free=1"),
+    ]
+
+    def case(extra):
+        texts = base + extra
+        return [row(s, r, t, i) for i, (s, r, t) in enumerate(texts)]
+
+    # BK-33: the GP referral gives the language before the citizen writes to us.
+    brain._PREF_BY_RX.clear()
+    brain._PREF_BY_RX[RX] = {"lang": "en"}
+    check("BK-33 lingua dal referral prima del cittadino", brain._lang(case([])) == "en", brain._lang(case([])))
+    brain._PREF_BY_RX.clear()
+
+    # BK-33: consent asked, then the citizen writes a request -> asked again, in English (000113).
+    chat = case([
+        (BKX, CITIZEN, "consent purpose=cross_asst There is no free appointment in your ASST."),
+        (CITIZEN, BKX, f"need.request prescription_number={RX} lang=en Back pain. English-speaking doctor, please. Fast."),
+    ])
+    brain._SENT.clear()
+    c = FakeCity(BKX)
+    await brain._advance_alone(c, chat[-1], chat, "N-1", fixed=None, replacing=False)
+    out = to(c, CITIZEN)
+    check("BK-33 consenso in sospeso -> lo richiedo, mai silenzio",
+          len(out) == 1 and out[0].startswith("consent purpose=cross_asst") and "consent" in out[0].lower(), c.sent)
+    check("BK-33 richiesta di consenso in inglese", out and "May I look for an appointment in another ASST" in out[0], out)
+    c = FakeCity(BKX)
+    await brain._advance_alone(c, chat[-1], chat, "N-1", fixed=None, replacing=False)
+    check("BK-33 stesso messaggio: non ripeto la domanda", not to(c, CITIZEN), c.sent)
+
+    # BK-34: partner offer refused for language, partners already asked -> waiting list (1130002).
+    consent = [
+        (CITIZEN, BKX, f"need.request prescription_number={RX} lang=en Back pain."),
+        (BKX, CITIZEN, "consent purpose=cross_asst May I look in another ASST?"),
+        (CITIZEN, BKX, "consent purpose=cross_asst consent_ref=cons-N-1-cross_asst"),
+        (PARTNER, BKX, "offer offer_id=of-W1 slot_id=W1 doctor_id=asst-bicocca-h1 facility=agent:far "
+                       "procedure=VIS-FIS agenda_date=2026-11-04T16:00:00Z request_id=cross-N-1"),
+        (BKX, CITIZEN, "offer offer_id=of-W1 slot_id=W1 doctor_id=asst-bicocca-h1 facility=agent:far cross_asst=true"),
+        (CITIZEN, BKX, "cancel offer_id=of-W1 reason=lang Sorry, I need an English-speaking doctor."),
+    ]
+    chat = case(consent)
+    for replacing in (True,):  # main: a citizen cancel always replaces (P-F14)
+        brain._SENT.clear()
+        brain._sent("N-1").cross_sent = True
+        brain._sent("N-1").cross_peers.add(PARTNER)
+        brain._sent("N-1").partner_offers.add("of-W1")
+        c = FakeCity(BKX)
+        await brain._advance_alone(c, chat[-1], chat, "N-1", fixed=None, replacing=replacing)
+        out = to(c, CITIZEN)
+        check(f"BK-34 dopo il rifiuto e partner già chiesti -> lista d'attesa (replacing={replacing})",
+              any("waiting_list=true" in t and "offer_id=wl-N-1" in t for t in out), c.sent)
+        check(f"BK-34 lista d'attesa in inglese (replacing={replacing})", any("waiting list" in t for t in out), out)
+    # BK-34: a partner offer the citizen still holds keeps the search waiting (no waiting list yet).
+    held = case(consent[:5])
+    brain._SENT.clear()
+    brain._sent("N-1").cross_sent = True
+    brain._sent("N-1").cross_peers.add(PARTNER)
+    brain._sent("N-1").partner_offers.add("of-W1")
+    c = FakeCity(BKX)
+    await brain._advance_alone(c, held[2], held, "N-1", fixed=None, replacing=False)
+    check("BK-34 offerta partner ancora aperta -> niente lista d'attesa",
+          not any("waiting_list=true" in t for t in to(c, CITIZEN)), c.sent)
+
+    # BK-35: doctor language from the offer fields or the shared doctor table.
+    sp = brain._offer_speaks
+    check("BK-35 asst-bicocca-h2 non parla inglese", not sp({"doctor_id": "asst-bicocca-h2"}, "en"), "")
+    check("BK-35 asst-bicocca-h1 parla inglese", sp({"doctor_id": "asst-bicocca-h1"}, "en"), "")
+    check("BK-35 h3 lingua rara della sua ASST", sp({"doctor_id": "asst-bicocca-h3"}, "ti"), "")
+    check("BK-35 h3 non parla la lingua rara di un'altra ASST", not sp({"doctor_id": "asst-bicocca-h3"}, "vi"), "")
+    check("BK-35 doctor_lang esplicito vince", not sp({"doctor_id": "asst-bicocca-h1", "doctor_lang": "it"}, "en"), "")
+    check("BK-35 medico sconosciuto: fiducia", sp({"doctor_id": "d-x"}, "en"), "")
+
+    # BK-35: an Italian-only partner doctor never reaches an English citizen; the waiting list follows.
+    late = case(consent[:3] + [
+        (PARTNER, BKX, "offer offer_id=of-W2 slot_id=W2 doctor_id=asst-bicocca-h2 facility=agent:far "
+                       "procedure=VIS-FIS agenda_date=2026-11-04T16:00:00Z request_id=cross-N-1\nEcco i nostri posti liberi."),
+    ])
+    brain._SENT.clear()
+    brain._sent("N-1").cross_sent = True
+    brain._sent("N-1").cross_peers.add(PARTNER)
+    c = FakeCity(BKX)
+    await brain._desk(c, late[-1], late, hold_self=False, fixed=None)
+    out = to(c, CITIZEN)
+    check("BK-35 offerta partner con medico solo italiano non inoltrata", not any("of-W2" in t for t in out), out)
+    check("BK-35 al suo posto la lista d'attesa", any("waiting_list=true" in t for t in out), c.sent)
+
+    # BK-35: a partner offer that fits goes on with a sentence in the citizen's language, without
+    # the partner's sentence meant for us.
+    ok = case(consent[:3] + [
+        (PARTNER, BKX, "offer offer_id=of-W3 slot_id=W3 doctor_id=asst-bicocca-h1 facility=agent:far "
+                       "procedure=VIS-FIS agenda_date=2026-11-04T16:00:00Z request_id=cross-N-1\nEcco i nostri posti liberi."),
+    ])
+    brain._SENT.clear()
+    brain._sent("N-1").cross_sent = True
+    brain._sent("N-1").cross_peers.add(PARTNER)
+    c = FakeCity(BKX)
+    await brain._desk(c, ok[-1], ok, hold_self=False, fixed=None)
+    out = to(c, CITIZEN)
+    check("BK-35 offerta partner adatta inoltrata con cross_asst=true",
+          out and "offer_id=of-W3" in out[0] and "cross_asst=true" in out[0], out)
+    check("BK-35 frase in inglese, non quella del partner",
+          out and "other ASSTs" in out[0] and "Ecco i nostri" not in out[0], out)
+
+    # BK-33: a citizen turn that would end in silence gets a line (no prescription -> ask for it).
+    brain._SENT.clear()
+    brain._ANSWERED.clear()
+    hello = Message(type="chat", sender=CITIZEN, msg_id="m-hello", need_id="N-H", recipient=BKX,
+                    body={"text": "Hello, I would like to book a visit please"})
+    c = FakeCity(BKX)
+    await brain._desk(c, hello, [hello], hold_self=False, fixed=None)
+    out = to(c, CITIZEN)
+    check("BK-33 turno muto -> chiedo il numero della ricetta",
+          len(out) == 1 and out[0].startswith("prescription.request") and "prescription number" in out[0], c.sent)
+
+    # OPS-07: every step is logged with the need_id, searchable in the console.
+    lines: list[str] = []
+
+    class Grab(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+
+    grab = Grab()
+    brain._LOG.addHandler(grab)
+    old_level = brain._LOG.level
+    brain._LOG.setLevel(logging.INFO)
+    try:
+        pending = case([
+            (BKX, CITIZEN, "consent purpose=cross_asst May I look in another ASST?"),
+            (CITIZEN, BKX, f"need.request prescription_number={RX} lang=en Back pain. English-speaking doctor, please."),
+        ])
+        brain._SENT.clear()
+        brain._ANSWERED.clear()
+        c = FakeCity(BKX)
+        await brain._desk(c, pending[-1], pending, hold_self=False, fixed=None)
+        check("BK-33 via _desk: need.request con consenso in sospeso ha risposta",
+              any(t.startswith("consent purpose=cross_asst") for t in to(c, CITIZEN)), c.sent)
+        brain._SENT.clear()
+        brain._sent("N-1").cross_sent = True
+        brain._sent("N-1").cross_peers.add(PARTNER)
+        brain._sent("N-1").partner_offers.add("of-W1")
+        c = FakeCity(BKX)
+        await brain._advance_alone(c, chat[-1], chat, "N-1", fixed=None, replacing=True)
+    finally:
+        brain._LOG.removeHandler(grab)
+        brain._LOG.setLevel(old_level)
+    check("OPS-07 log con need_id a ogni passo",
+          any(l.startswith("booking.in need_id=N-1") for l in lines)
+          and any(l.startswith("booking.slots need_id=N-1") for l in lines)
+          and any(l.startswith("booking.offer need_id=N-1") and "waiting_list" in l for l in lines), lines)
+    check("OPS-07 nessun testo del cittadino nei log", not any("English-speaking" in l for l in lines), lines)
+
+
 async def main() -> int:
     failures = 0
 
@@ -934,6 +1095,7 @@ async def main() -> int:
     await test_francesco_21(check)
     await test_francesco_22(check)
     await test_francesco_23(check)
+    await test_000113(check)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 
