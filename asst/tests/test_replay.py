@@ -123,7 +123,8 @@ class Sim:
     def __init__(self, need: str, *, lang: str, procedure: str, agenda: str, first: str, priority: str = "B",
                  rx_age_min: float = 0.2, partners: list[Partner] | None = None, taken: set[str] | None = None,
                  cross: str = "ref", refuse_hold: set[str] | None = None, page_size: int = 10,
-                 extra_token: str = "", disability: str = "none", push: bool | None = None):
+                 extra_token: str = "", disability: str = "none", push: bool | None = None,
+                 lost_pages: set[int] | None = None):
         self.need, self.lang, self.procedure, self.priority = need, lang, procedure, priority
         self.citizen = f"citizen:{WAVE}-12-{need[-6:]}"
         self.rx = f"prescription_number-{need}"
@@ -141,6 +142,7 @@ class Sim:
         self.outcome: list[str] = []
         self.ledger_asks: list[str] = []
         self.holds: dict[str, str] = {}
+        self.lost_pages = lost_pages or set()
         # The GP prescribed rx_age_min real minutes ago and told the booking centre (X-27).
         issued_real = self.real - timedelta(minutes=rx_age_min)
         self.issued = self.agenda_at(issued_real)
@@ -202,6 +204,8 @@ class Sim:
             rows, size = self.catalogue(f.get("procedure", self.procedure)), self.page_size
             pages = max(1, -(-len(rows) // size))
             page = int(f.get("page", "1"))
+            if page in self.lost_pages:
+                return  # BK-39: the Ledger never answers this page
             reply = "\n".join([f"slots page={page}/{pages}"] + rows[(page - 1) * size: page * size])
         elif head == "hold":
             if f["slot_id"] in self.refuse_hold:
@@ -658,7 +662,16 @@ async def r16():
     return s, verdict(s, lang="en", max_messages=4, outcome="waiting_list", max_offer_messages=0)
 
 
-REPLAYS = [r01, r02, r03, r04, r05, r06, r07, r08, r09, r10, r11, r12, r13, r14, r15, r16]
+async def r17():
+    """000206 (L?, 01:37): 'sto controllando', then the Ledger never sends page 2. BK-39: the citizen
+    gets the waiting list in the same turn, once, and nothing is offered blind."""
+    agenda = "2026-11-18T15:25:00Z"
+    s = await Sim("N-2026-11-02-890912000206", lang="it", procedure="VIS-FIS", agenda=agenda, page_size=2, lost_pages={2},
+                  first="Buongiorno, ho mal di schiena da giorni e vorrei prenotare la visita.").start()
+    return s, verdict(s, lang="it", max_messages=3, outcome="waiting_list", max_offer_messages=0)
+
+
+REPLAYS = [r01, r02, r03, r04, r05, r06, r07, r08, r09, r10, r11, r12, r13, r14, r15, r16, r17]
 
 
 async def main() -> int:

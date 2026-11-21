@@ -1241,7 +1241,7 @@ async def _advance(
             if page is None:
                 break
             sent.pending_page = None
-            for _try in range(3):
+            for _try in range(4):  # BK-39: the Ledger can take well over 6 s; wait up to ~25 s
                 fresh = await _until(
                     city, message.need_id, chat, lambda rows: _slots_page(rows, city.agent_id, page) is not None,
                 )
@@ -1250,9 +1250,16 @@ async def _advance(
                     break
             chat = fresh
             if reply is None:
-                # The Ledger has not answered in three waits. No outcome is invented: the page's
-                # own push (or the citizen's next message) takes the search up from here.
                 _trace("stop", message, why="page_missing", page=page)
+                citizen = _citizen(chat)
+                if message.sender.startswith("citizen:") and citizen and "page_lost" not in sent.notes:
+                    # BK-39: the next page never came. Never leave the citizen silent: waiting list
+                    # now. (The page's own push, if it comes, can still bring real offers.)
+                    sent.notes.add("page_lost")
+                    _LOG.warning("booking.page_lost need_id=%s page=%s", message.need_id, page)
+                    number = _number(chat)
+                    rx = _prescription_reply(chat, number) or {}
+                    await _relaxed(city, message, chat, key, citizen, fixed or rx.get("procedure"), number, rx.get("priority"))
                 break
             await _advance_alone(city, reply, chat, key, fixed=fixed, replacing=False)
 

@@ -6,7 +6,7 @@ Ogni stato ha un test di replay in `asst/tests/test_replay.py`.
 
 Fonte: 67 percorsi letti dalla console il 21/11 tra le 01:18 e le 01:45 (26 nati dopo il deploy di
 booking 1.0.10 delle 01:01, 41 nati prima e usati come contesto). Elenco in fondo.
-In quell'ora `main` è passato da 1.0.10 a 1.0.16: la sezione 3 guarda il codice di 1.0.16.
+In quell'ora `main` è passato da 1.0.10 a 1.0.17: la sezione 3 guarda il codice di 1.0.17.
 
 ## 1. Fatti della città che comandano il disegno
 
@@ -69,7 +69,7 @@ Esiti finali: `RICEVUTA` (poi `MAPPA`), `LISTA`, `RINNOVO`. Ogni percorso ne ha 
 | Riceve | Le pagine `slots page=n/m` del Ledger. |
 | Fa | Filtra: medico che parla la lingua, giorno del medico, almeno 4 ore di agenda da adesso, **entro la scadenza contata dalla ricetta**, genere, riserva U. Legge la pagina dopo **nello stesso turno**. |
 | Risponde | Una volta "sto controllando", solo se serve la pagina 2. |
-| Si ferma | Slot trovati → `OFFERTA`. Pagine finite, pagina 20, oppure (dalla pagina 2) una pagina tutta oltre la scadenza → `CONSENSO`. Nessun nostro medico parla la lingua → `CONSENSO` senza leggere il catalogo. |
+| Si ferma | Slot trovati → `OFFERTA`. Il Ledger non manda la pagina in 4 attese → `LISTA` (BK-39). Pagine finite, pagina 20, oppure (dalla pagina 2) una pagina tutta oltre la scadenza → `CONSENSO`. Nessun nostro medico parla la lingua → `CONSENSO` senza leggere il catalogo. |
 
 ### OFFERTA
 
@@ -126,9 +126,9 @@ Dopo, un `cancel` del cittadino riceve solo `cancel.ack`.
 
 ## 3. Dove il codice di oggi non rispetta la macchina
 
-"Oggi" è `main` a booking 1.0.16 (`d2f7da3`, 21/11 01:45). Le righe sono di
+"Oggi" è `main` a booking 1.0.17 (`b6670f2`, 21/11 circa 02:00). Le righe sono di
 `asst/brain/parts/30_booking.py` su quel commit. Ogni riga è riprodotta da un replay che su `main`
-fallisce (14 replay su 16, 46 controlli) e su questo branch passa. Per rivederlo:
+fallisce (14 replay su 17, 46 controlli nelle due modalità) e su questo branch passa. Per rivederlo:
 `REPLAY_BRAIN=<agent.py di main> python tests/test_replay.py`.
 
 | # | Causa vera | Sintomo visto | Percorsi | Riga responsabile su `main` | Caso | Replay |
@@ -150,8 +150,8 @@ coprire l'attesa, e proprio quel messaggio fermava la ricerca alla pagina dopo. 
 l'attesa della spinta del Ledger, ma il blocco restava.
 
 Già a posto su `main` e tenuti: `data.response purpose=cross_asst` vale come consenso (BK-36), pagina
-dopo nello stesso turno (BK-37), 20 pagine (BK-38), fermata della metro vera (X-50), ASST giusta per la
-lingua rara (X-51).
+dopo nello stesso turno (BK-37), 20 pagine (BK-38), pagina persa → lista d'attesa (BK-39), fermata della
+metro vera (X-50), ASST giusta per la lingua rara (X-51).
 
 ## 4. Cosa resta fuori da questa PR
 
