@@ -911,6 +911,17 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
         )
         ours = _we(chat, agent, f"prescription_number={number}", to=message.sender, word="prescription")
         if ours and not wants:
+            # P-francesco-43: the official renewal message carries only the number. Ask the Ledger
+            # for the state before saying "valid"; expired or used means renew.
+            def _state(rows: list[Message]) -> bool:
+                return any(r.sender == LEDGER and number in r.text and first_word(r.text) == "prescription"
+                           and "state=" in r.text for r in rows)
+            if not _state(chat):
+                await _say(city, LEDGER, f"prescription prescription_number={number}")
+                chat = await _until(city, message.need_id, chat, _state)
+            wants = any(r.sender == LEDGER and number in r.text
+                        and re.search(r"state=(?!issued|valid|active)", r.text) for r in chat)
+        if ours and not wants:
             # P-francesco-37: a valid prescription we just issued is not a renewal request.
             if not _we(chat, agent, "", to=message.sender, word="prescription.valid"):
                 en = _lang([*chat, message]) != "it"
