@@ -7037,6 +7037,14 @@ async def _on_confirm(
     number = fields.get("prescription_number") or offer.get("prescription_number")
     procedure = fields.get("procedure") or offer.get("procedure", "")
     book_here = hold_self or message.sender.startswith("agent:") or facility == agent
+    # BK-57 (journey 104): the slot was locked only when our hospital worked our confirm, ~14
+    # minutes later under load; by then the Ledger refused it (reason=expired) and the citizen
+    # lost the visit (no_booking -1). For a slot of OUR own hospital or specialist the booking
+    # centre holds and commits it on the Ledger in this same turn, like the counselling desk.
+    if (not book_here and _DESK_HOLDS[0] and message.sender.startswith("citizen:") and consent
+            and facility in (_OUR_AGENTS["hospital"], _OUR_AGENTS["specialist"])
+            and offer.get("cross_asst") != "true"):
+        book_here = True
     if book_here and hold_self and message.sender.startswith("citizen:") and slot in _refused_slots(
         chat, agent, _sent(message.need_id or message.msg_id)
     ):
@@ -7060,6 +7068,11 @@ async def _on_confirm(
             parts.append(f"consent_ref={consent}")
             if not await _ledger_ask(city, message, " ".join(parts)):
                 return
+        if not hold_self and message.sender.startswith("citizen:"):
+            # X-49 kept for BK-57: ask where the citizen comes from while the Ledger locks the slot.
+            if message.need_id:
+                _BOOKED_AT[message.need_id] = facility
+            await _ask_where(city, message, chat, citizen, early=True)
         await _finish_booking(city, message, chat, slot, hold_self=hold_self)
         return
     if not facility or not citizen:
@@ -7638,6 +7651,12 @@ async def _on_where(city: City, message: Message, chat: list[Message]) -> None:
     ) + (extra if exact else _zone_words(extra)))
 
 
+# BK-57: False once the Ledger refuses a booking-centre hold for a permission reason; the
+# booking centre then forwards the confirm to the facility again (the path before BK-57).
+_DESK_HOLDS = [True]
+_PERMISSION_WORDS = ("owner", "forbidden", "not_allowed", "unauthori", "permission", "scope", "role", "not_your")
+
+
 async def _nearest_hospital(city: City, point: tuple[float, float]) -> tuple[str, str, float] | None:
     """X-32 / X-55: the nearest hospital in the whole city (any ASST), from the Index doors:
     (agent_id, door label, km)."""
@@ -8136,7 +8155,12 @@ async def _cancel_booking(
                 break
     identity = f"offer_id={offer_id}" if offer_id else f"slot_id={slot}"
     if not _we(chat, agent, identity, to=target, word="cancel"):
-        await _say(city, target, f"cancel {identity} reason={reason}")
+        line = ""
+        if target.startswith("citizen:"):  # BK-35 / BK-57: the citizen always reads a sentence
+            line = (" I am sorry, that appointment is no longer available. I am looking for another one for you now."
+                    if _lang(chat) != "it" else
+                    " Mi dispiace, quel posto non è più disponibile. Le cerco subito un altro appuntamento.")
+        await _say(city, target, f"cancel {identity} reason={reason}{line}")
 
 
 _BOOKING_REFUSALS = {"prescription_expired", "consent_missing", "no_capacity"}
@@ -8170,11 +8194,15 @@ async def _on_refused(
     if not re.fullmatch(r"[a-z]+(?:_[a-z0-9]+)*", reason):
         reason = next(iter(words(message.text) & _BOOKING_REFUSALS), "facility_cancelled")
     await _cancel_booking(city, chat, slot, reason=reason, hold_id=hold_id if commit_refused else "")
-    if slot and hold_self:
+    desk = agent == _OUR_AGENTS["booking_centre"]  # BK-57: the booking centre now holds our slots
+    if desk and any(w in reason or w in message.text.lower() for w in _PERMISSION_WORDS):
+        _DESK_HOLDS[0] = False
+        _LOG.info("bk57.desk_holds_off reason=%s", reason[:40])
+    if slot and (hold_self or desk):
         # P-magesh-9: the cancel just sent is not in ``chat`` yet, so the refused slot looked free
         # and went out again with the next offers. Remember it: it is never offered again.
         _sent(message.need_id or message.msg_id).notes.add("refused:" + slot)
-        await _advance(city, message, chat, fixed="CONS-GIN", replacing=True)
+        await _advance(city, message, chat, fixed=None if desk else "CONS-GIN", replacing=True)
 
 
 _CHECKIN_LIMIT = 3

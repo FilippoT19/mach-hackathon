@@ -468,7 +468,9 @@ async def test_x49(check) -> None:
         ]
         c = FakeCity(BKX)
         await brain._desk(c, base[-1], base, hold_self=False, fixed=None)
-        check(f"X-49 [{lang}] confirm inoltrato alla struttura", any(t.startswith("confirm ") and "slot_id=S-49" in t for t in to(c, HOSP)), c.sent)
+        # BK-57 (journey 104): our own hospital's slot is held by the booking centre in this
+        # same turn (no 14-minute hop through the hospital); no confirm goes to the hospital.
+        check(f"BK-57 [{lang}] hold sul Ledger nello stesso turno della scelta", any(t.startswith("hold slot_id=S-49") and "consent_ref=" in t for t in to(c, LEDGER)) and not any(t.startswith("confirm ") for t in to(c, HOSP)), c.sent)
         cit = to(c, CITIZEN)
         check(f"X-49 [{lang}] indirizzo chiesto alla conferma, con scopo",
               len(cit) == 1 and cit[0].startswith("data.request purpose=booking fields=address") and word in cit[0], cit)

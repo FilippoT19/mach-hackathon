@@ -1702,6 +1702,14 @@ async def _on_confirm(
     number = fields.get("prescription_number") or offer.get("prescription_number")
     procedure = fields.get("procedure") or offer.get("procedure", "")
     book_here = hold_self or message.sender.startswith("agent:") or facility == agent
+    # BK-57 (journey 104): the slot was locked only when our hospital worked our confirm, ~14
+    # minutes later under load; by then the Ledger refused it (reason=expired) and the citizen
+    # lost the visit (no_booking -1). For a slot of OUR own hospital or specialist the booking
+    # centre holds and commits it on the Ledger in this same turn, like the counselling desk.
+    if (not book_here and _DESK_HOLDS[0] and message.sender.startswith("citizen:") and consent
+            and facility in (_OUR_AGENTS["hospital"], _OUR_AGENTS["specialist"])
+            and offer.get("cross_asst") != "true"):
+        book_here = True
     if book_here and hold_self and message.sender.startswith("citizen:") and slot in _refused_slots(
         chat, agent, _sent(message.need_id or message.msg_id)
     ):
@@ -1725,6 +1733,11 @@ async def _on_confirm(
             parts.append(f"consent_ref={consent}")
             if not await _ledger_ask(city, message, " ".join(parts)):
                 return
+        if not hold_self and message.sender.startswith("citizen:"):
+            # X-49 kept for BK-57: ask where the citizen comes from while the Ledger locks the slot.
+            if message.need_id:
+                _BOOKED_AT[message.need_id] = facility
+            await _ask_where(city, message, chat, citizen, early=True)
         await _finish_booking(city, message, chat, slot, hold_self=hold_self)
         return
     if not facility or not citizen:
@@ -2301,6 +2314,12 @@ async def _on_where(city: City, message: Message, chat: list[Message]) -> None:
     await _say(city, message.sender, head + " " + _route_line(
         en, km, door, fields_of(message.text), point, ours=_ours(facility), exact=exact,
     ) + (extra if exact else _zone_words(extra)))
+
+
+# BK-57: False once the Ledger refuses a booking-centre hold for a permission reason; the
+# booking centre then forwards the confirm to the facility again (the path before BK-57).
+_DESK_HOLDS = [True]
+_PERMISSION_WORDS = ("owner", "forbidden", "not_allowed", "unauthori", "permission", "scope", "role", "not_your")
 
 
 async def _nearest_hospital(city: City, point: tuple[float, float]) -> tuple[str, str, float] | None:
