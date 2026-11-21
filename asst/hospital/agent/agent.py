@@ -5849,6 +5849,8 @@ def _cross_consent(chat: list[Message], agent: str) -> tuple[bool | None, str]:
             if asks >= _CROSS_ASKS + 1:
                 decision = (False, "")
             continue
+        if _WHICH_REF.search(row.text) and not _CROSS_NO.match(row.text.strip().lower()):
+            continue  # BK-58: the citizen asks which reference; the next question carries it
         if head == "consent" or _CROSS_NO.match(row.text.strip().lower()) or asks >= _CROSS_ASKS:
             decision = (False, "")
     return decision
@@ -6032,6 +6034,17 @@ def _rare_hospital(chat: list[Message], procedure: str | None) -> tuple[str, str
     return _RARE_LANG_HOSPITAL.get(_lang(chat) or "")
 
 
+def _cx_head(chat: list[Message]) -> str:
+    """BK-58 (journey 0002040003): the citizen answered our cross-ASST question twice with
+    "Which consent_ref?" and went to the waiting list (no_booking -1). The question now carries
+    the reference the citizen can answer with, as the local booking consent does."""
+    need = next((row.need_id for row in chat if row.need_id), "") or "case"
+    return f"consent purpose=cross_asst consent_ref=cx-{need} "
+
+
+_WHICH_REF = re.compile(r"\b(?:which|what|quale|che)\b[^.!]{0,20}\bconsent", re.I)
+
+
 def _cross_question(chat: list[Message], procedure: str | None = None) -> str:
     # BK-49: a plain question, as in the kit ("consent purpose=report_sharing Posso ...?"). Asking
     # for "the consent reference" made the citizen answer "Which consent_ref?" (000172).
@@ -6079,7 +6092,7 @@ async def _cross_asst(
             # was still open. Never silence: ask again, once per citizen message, in their language.
             if message.sender.startswith("citizen:") and message.msg_id not in sent.reasked:
                 sent.reasked.add(message.msg_id)
-                await _say(city, citizen, "consent purpose=cross_asst " + (
+                await _say(city, citizen, _cx_head(chat) + (
                     "I have your request. There is no suitable appointment in your ASST. "
                     if _lang(chat) != "it" else
                     "Ho la sua richiesta. Nella sua ASST non ci sono posti adatti. "
@@ -6088,7 +6101,7 @@ async def _cross_asst(
             else:
                 _trace("cross", message, state="consent_pending")
             return True
-        if await _say(city, citizen, "consent purpose=cross_asst " + _cross_question(chat, procedure)):
+        if await _say(city, citizen, _cx_head(chat) + _cross_question(chat, procedure)):
             sent.cross_asked = True
         _trace("cross", message, state="consent_asked", lang=_lang(chat))
         return True
@@ -6550,7 +6563,7 @@ async def _desk_route(
         )
         if purpose == "cross_asst" or cross_pending:
             if _cross_consent(chat, city.agent_id)[0] is None:
-                await _say(city, message.sender, "consent purpose=cross_asst " + _cross_question(
+                await _say(city, message.sender, _cx_head(chat) + _cross_question(
                     chat, (_prescription_reply(chat, _number(chat)) or {}).get("procedure")))
             else:
                 await _advance(city, message, chat, fixed=fixed, replacing=False)
@@ -6580,11 +6593,20 @@ async def _desk_route(
     if "cancel" in kind and message.sender.startswith("agent:"):
         await _partner_cancel(city, message, chat, fixed=fixed)
         return
-    if "cancel" in kind and message.sender.startswith("citizen:"):
+    if message.sender.startswith("citizen:") and _citizen_cancels(message.text):
         await _citizen_cancel(city, message, chat, fixed=fixed)
         return
     if message.sender == LEDGER or message.sender.startswith("citizen:"):
         await _advance(city, message, chat, fixed=fixed, replacing=False)
+
+
+def _citizen_cancels(text: str) -> bool:
+    """BK-58: "cancel" inside a sentence ("can I cancel later?", "I don't want to cancel") is
+    not a cancel. The act is the first word, or the word with the offer/slot/booking it drops."""
+    if first_word(text) == "cancel":
+        return True
+    fields = fields_of(text)
+    return "cancel" in words(text) and any(fields.get(k) for k in ("offer_id", "slot_id", "booking_id"))
 
 
 async def _on_referral(city: City, message: Message, chat: list[Message]) -> None:
