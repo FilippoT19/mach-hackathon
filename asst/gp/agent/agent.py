@@ -8967,17 +8967,37 @@ async def _cancel_next(
     agent = city.agent_id
     sent = _sent(need_key)
     unseen = _slot_ids(sent.offers) - _offered(chat, agent) - set(sent.partner_offers)
+    listed = offer_id.startswith("wl-")  # P-magesh-27: the citizen cancels the waiting list itself
     if (
         unseen
         or _open_offers(chat, agent, citizen)
         or _we(chat, agent, "", to=citizen, word="booking.receipt")
-        or _we(chat, agent, "waiting_list=true", to=citizen, word="offer")
+        or (not listed and _we(chat, agent, "waiting_list=true", to=citizen, word="offer"))
     ):
         _trace("stop", message, why="cancel_ack_only")
         return True
     number = _number(chat)
     rx = _prescription_reply(chat, number) or _our_offer(chat, agent, offer_id)
     procedure, priority = fixed or rx.get("procedure"), rx.get("priority")
+    if listed:
+        # P-magesh-27 (N-...000393, L8): "I'll take whatever you suggest next. cancel offer_id=wl-...
+        # reason=waiting_list" got the ack and then nothing until the verdict (no_booking, 52 slots
+        # in the city). The waiting list was the last step here, so its cancel is never the end:
+        # the other ASSTs (the question, or the partners if the citizen already said yes), else
+        # one honest line. No second waiting list and no local slot outside the citizen's needs.
+        if fixed is None and procedure and await _cross_asst(city, message, chat, need_key, citizen, procedure, priority):
+            _trace("waiting_list", message, state="cancelled", next="cross")
+            return True
+        await _say(city, citizen, "status " + (
+            "I have taken you off the waiting list. I found no appointment that fits your prescription "
+            "and your needs, and I have nothing else to offer you right now. Your prescription stays "
+            "valid: write to me again and I will search afresh, or ask your GP if you cannot wait."
+            if _lang(chat) != "it" else
+            "L'ho tolta dalla lista d'attesa. Non ho trovato un appuntamento adatto alla sua ricetta e "
+            "alle sue esigenze, e in questo momento non ho altro da proporle. La ricetta resta valida: "
+            "mi riscriva e cerco di nuovo, oppure senta il suo medico di base se non può aspettare."))
+        _trace("waiting_list", message, state="cancelled", next="closed")
+        return True
     batches = [row for row in chat if row.sender == agent and row.recipient == citizen
                and first_word(row.text) == "offer" and "slot_id=" in row.text]
     last_cross = bool(batches) and "cross_asst=true" in batches[-1].text.split()

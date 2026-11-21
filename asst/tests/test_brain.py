@@ -724,6 +724,83 @@ async def test_ops13(check) -> None:
         brain._DESK_HOLDS[0] = True
 
 
+async def test_p_magesh_27(check) -> None:
+    """P-magesh-27 (N-2026-11-02-890912000393, L8): VIS-FIS B, lang=en. The waiting list went out,
+    the citizen cancelled it ("I'll take whatever you suggest next") and got no word until the
+    verdict (no_booking, S=52 in the city)."""
+    BKX, HOS = "agent:bk", "agent:hos"
+    RX = "prescription_number-RX-393"
+    # The week of the journey: born Wed 23/12 14:04 of agenda, at the booking centre on Thu 24/12.
+    week = {"2026-12-24": ("thu", ("h2", "h3")), "2026-12-25": ("fri", ("h2",)), "2026-12-28": ("mon", ("h1",)),
+            "2026-12-29": ("tue", ("h1", "h3")), "2026-12-30": ("wed", ("h1", "h2"))}
+    world = "slots page=1/1\n" + "\n".join(
+        f"slot_id={doc}-{day[5:7]}{day[8:]}-{hour.replace(':', '')} doctor_id=asst-niguarda-{doc} facility={HOS} "
+        f"procedure=VIS-FIS at={day}T{hour}:00Z day={name} free=1"
+        for day, (name, docs) in week.items() for doc in docs for hour in ("09:00", "10:30", "12:00", "14:30", "16:00"))
+    import dataclasses
+
+    def at(n, sender, recipient, text, real):
+        return dataclasses.replace(row(sender, recipient, text, n), sent_at=f"2026-11-21T{real}Z")
+
+    # Real times of the journey; the agenda times come from the wave clock (60x, no weekend):
+    # prescription 10:20:12 = Wed 17:02, request 10:39:26 = Thu 12:16.
+    base = [
+        at(10, "agent:gp", BKX, f"referral prescription_number={RX} procedure=VIS-FIS priority=B lang=en", "10:20:12"),
+        at(0, CITIZEN, BKX, f"Excuse me, I have some back pain and a prescription. need.request area={{'district':_5}} lang=en "
+           f"prescription_number={RX} service_type=hospital.physiatry", "10:39:26"),
+        at(1, LEDGER, BKX, f"prescription prescription_number={RX} procedure=VIS-FIS priority=B state=issued", "10:39:30"),
+        at(2, LEDGER, BKX, "agenda agenda_now=2026-12-24T12:16:00Z", "10:39:30"),
+        at(3, LEDGER, BKX, world, "10:39:40"),
+    ]
+
+    def fresh():
+        for name in ("_SENT", "_ANSWERED", "_CROSS_TIMERS", "_EARLY_ACK"):
+            getattr(brain, name).clear()
+
+    # (0) what was bookable here: nothing. Only h1 speaks English (Mon-Wed) and the B window ends
+    # on Friday: no local offer, the next step is the question about the other ASSTs.
+    fresh()
+    city = FakeCity(BKX)
+    await brain._advance_alone(city, base[4], base, "N-1", fixed=None, replacing=False)
+    out = to(city, CITIZEN)
+    check("P-magesh-27 B + inglese, nato mercoledì: nessun posto locale (h1 lavora lun-mer, la B scade venerdì), domanda cross-ASST",
+          not any(t.startswith("offer ") for t in out) and any(t.startswith("consent purpose=cross_asst") for t in out), city.sent)
+    for task in list(brain._CROSS_TIMERS):
+        task.cancel()
+
+    wl = at(5, BKX, CITIZEN, f"offer offer_id=wl-N-1 waiting_list=true procedure=VIS-FIS priority=B prescription_number={RX} "
+            "You are on the waiting list.", "10:43:50")
+    cancel = at(6, CITIZEN, BKX, "I'm so sorry, but I was hoping for a doctor who speaks English for my back. I'll take "
+                "whatever you suggest next, if that's okay. cancel offer_id=wl-N-1 reason=waiting_list", "10:49:44")
+    question = at(4, BKX, CITIZEN, "consent purpose=cross_asst consent_ref=cx-N-1 May I look for an appointment in another ASST of Milan?", "10:39:00")
+
+    async def turn(chat):
+        fresh()
+        c = FakeCity(BKX)
+        await brain._desk(c, cancel, chat, hold_self=False, fixed=None)
+        for task in list(brain._CROSS_TIMERS):
+            task.cancel()
+        return c, to(c, CITIZEN)
+
+    # (1) the journey: waiting list with no question before it, then the cancel
+    c, out = await turn([*base, wl, cancel])
+    check("P-magesh-27 cancel della lista d'attesa: ack e poi il passo successivo (domanda cross-ASST in inglese), mai solo l'ack",
+          any(t.startswith("cancel.ack offer_id=wl-N-1") for t in out)
+          and sum(1 for t in out if t.startswith("consent purpose=cross_asst")) == 1
+          and any("another ASST" in t for t in out) and not any("waiting_list=true" in t for t in out), c.sent)
+    # (2) the question was already asked and never answered (P-magesh-26 timer -> waiting list)
+    c, out = await turn([*base, question, wl, cancel])
+    check("P-magesh-27 domanda già fatta e senza risposta: dopo il cancel viene rifatta una volta",
+          sum(1 for t in out if t.startswith("consent purpose=cross_asst")) == 1, c.sent)
+    # (3) the citizen had said no to the other ASSTs: an honest closing line, no question, no list
+    no = at(45, CITIZEN, BKX, "No, thank you.", "10:41:00")
+    c, out = await turn([*base, question, no, wl, cancel])
+    check("P-magesh-27 altre ASST già rifiutate: riga finale onesta, nessuna domanda e nessuna nuova lista",
+          any(t.startswith("status ") and "prescription" in t for t in out)
+          and not any(t.startswith("consent ") or "waiting_list=true" in t for t in out), c.sent)
+    fresh()
+
+
 async def test_p_magesh_26(check) -> None:
     """P-magesh-26 (N-...0001240009): consent question, then silence -> waiting list on its own."""
     BKX = "agent:bk"
@@ -2164,6 +2241,7 @@ async def main() -> int:
     await test_bk72(check)
     await test_ops13(check)
     await test_p_magesh_26(check)
+    await test_p_magesh_27(check)
     await test_bk63(check)
 
     async def test_bk67(check):
