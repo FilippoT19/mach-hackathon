@@ -82,6 +82,82 @@ def _latest_slots(chat: list[Message]) -> str | None:
     return found
 
 
+# BK-67 (16 journeys of wave W01QQQ, 21/11 04:45-05:26Z): every case asked the Ledger for the
+# same agenda and the same catalogue and waited ~14 minutes for the answer; the first offer left
+# 32 minutes after the prescription. The Ledger's ``agenda`` and ``slots`` lines are the same for
+# every citizen of one procedure, so the process keeps the latest ones and every case reads them.
+_WORLD: dict[str, dict[int, tuple[Message, float]]] = {}  # procedure -> page -> (row, real time it was true)
+_AGENDA_ROW: list[tuple[Message, float]] = []  # empty, or the latest agenda line
+_ASKED_AT: dict[str, float] = {}  # "agenda", "world:<procedure>", "warm" -> real time of our last question
+_WORLD_TTL = timedelta(minutes=30)
+_WORLD_PAGES = 4
+_WORLD_PROCEDURES = 8
+_WORLD_MAX_PAGES = 20
+_REFRESH_EVERY = 120.0
+_WARM_SECONDS = 4.0
+
+
+def _row_procedure(text: str) -> str | None:
+    """The procedure of a ``slots`` page: the one on its first slot line (None: an empty page)."""
+    for line in text.splitlines()[1:]:
+        if "slot_id=" in line:
+            return fields_of(line).get("procedure") or None
+    return None
+
+
+def _row_time(row: Message, now: float) -> float:
+    """The real time a Ledger line was true: its ``sent_at`` when that is a sane past time, else now."""
+    sent = _when(row.sent_at or "")
+    if sent is not None:
+        at = sent.timestamp()
+        if now - 86400.0 <= at <= now:
+            return at
+    return now
+
+
+def _remember_ledger(rows, agent: str) -> None:
+    """Keep the Ledger's agenda and catalogue lines addressed to us. Only the Ledger is believed."""
+    now = time.time()
+    for row in rows:
+        if row.sender != LEDGER or (row.recipient and row.recipient != agent):
+            continue
+        head = first_word(row.text)
+        if head == "agenda":
+            if _when(fields_of(row.text).get("agenda_now", "")) is None:
+                continue
+            at = _row_time(row, now)
+            if not _AGENDA_ROW or (_AGENDA_ROW[0][0].msg_id != row.msg_id and at >= _AGENDA_ROW[0][1]):
+                _AGENDA_ROW[:] = [(row, at)]
+        elif head == "slots":
+            procedure = _row_procedure(row.text)
+            if not procedure:
+                continue
+            page = _page(row.text)[0]
+            pages = _WORLD.get(procedure)
+            if pages is None:
+                while len(_WORLD) >= _WORLD_PROCEDURES:
+                    del _WORLD[next(iter(_WORLD))]
+                pages = _WORLD[procedure] = {}
+            had = pages.get(page)
+            at = _row_time(row, now)
+            if had is not None and (had[0].msg_id == row.msg_id or at < had[1]):
+                continue
+            if had is None and len(pages) >= _WORLD_MAX_PAGES:
+                continue
+            pages[page] = (row, at)
+
+
+def _memory_rows(procedure: str, *, at: float | None = None) -> list[Message]:
+    """The fresh agenda line, then the fresh catalogue pages of ``procedure`` in page order."""
+    now = time.time() if at is None else at
+    rows: list[Message] = []
+    if _AGENDA_ROW and now - _AGENDA_ROW[0][1] <= _AGENDA_REAL_MAX.total_seconds():
+        rows.append(_AGENDA_ROW[0][0])
+    pages = _WORLD.get(procedure) or {}
+    rows.extend(pages[n][0] for n in sorted(pages) if now - pages[n][1] <= _WORLD_TTL.total_seconds())
+    return rows
+
+
 def _page(text: str) -> tuple[int, int]:
     raw = fields_of(text.splitlines()[0] if text else "").get("page", "")
     left, _, right = raw.partition("/")

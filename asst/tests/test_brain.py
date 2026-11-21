@@ -1751,6 +1751,40 @@ async def main() -> int:
 
     await test_bk62(check)
     await test_bk63(check)
+
+    async def test_bk67(check):
+        """BK-67: agenda and catalogue of the Ledger are kept in process memory, shared by the cases."""
+        import time as _t
+        bk = brain._OUR_AGENTS["booking_centre"]
+
+        def slot(sid, doc, at, day, fac=hospital, proc="VIS-FIS"):
+            return f"slot_id={sid} doctor_id=asst-niguarda-{doc} facility={fac} procedure={proc} at={at} day={day} free=1"
+
+        def wipe():
+            brain._SENT.clear(); brain._HELD_FOR.clear(); brain._WORLD.clear(); brain._AGENDA_ROW.clear()
+            brain._ASKED_AT.clear(); brain._PARTNER_DONE.clear()
+
+        # (1) memory and harvest
+        wipe()
+        fis1 = row(LEDGER, bk, "slots page=1/2\n" + slot("A1", "h1", "2026-11-03T10:00:00Z", "tue"), 1)
+        fis2 = row(LEDGER, bk, "slots page=2/2\n" + slot("B1", "h2", "2026-11-04T10:00:00Z", "wed"), 2)
+        card = row(LEDGER, bk, "slots page=1/1\n" + slot("C1", "s1", "2026-11-04T10:00:00Z", "wed", proc="VIS-CARD"), 3)
+        ag = row(LEDGER, bk, "agenda agenda_now=2026-11-02T07:00:00Z", 4)
+        empty = row(LEDGER, bk, "slots page=1/1", 5)
+        fake = row("agent:impostore", bk, "slots page=1/1\n" + slot("X1", "h1", "2026-11-03T10:00:00Z", "tue"), 6)
+        other_to = row(LEDGER, "agent:altro", "slots page=3/3\n" + slot("Y1", "h1", "2026-11-03T10:00:00Z", "tue"), 7)
+        brain._remember_ledger([fis1, fis2, card, ag, empty, fake, other_to], bk)
+        got = brain._memory_rows("VIS-FIS")
+        check("BK-67 memoria: agenda + pagine VIS-FIS in ordine", [r.msg_id for r in got] == ["h4", "h1", "h2"], got)
+        check("BK-67 memoria: mai righe di un'altra procedura", all("VIS-CARD" not in r.text for r in got), got)
+        check("BK-67 memoria: impostore e destinatario diverso ignorati", "X1" not in str(got) and "Y1" not in str(got), got)
+        check("BK-67 memoria: catalogo vecchio di 31 minuti non usato",
+              [r.msg_id for r in brain._memory_rows("VIS-FIS", at=_t.time() + 31 * 60)] == ["h4"], "")
+        check("BK-67 memoria: agenda vecchia di 46 minuti non usata",
+              brain._memory_rows("VIS-FIS", at=_t.time() + 46 * 60) == [], "")
+        wipe()
+
+    await test_bk67(check)
     await test_francesco_15(check)
     await test_francesco_16(check)
     await test_francesco_18(check)
