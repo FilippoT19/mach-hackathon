@@ -1004,10 +1004,18 @@ async def _advance_alone(
         # BK-37: the Ledger's next page may never open a turn (the push is dropped), so the
         # citizen waited for ever after "I am checking". Read it back now and go on in this turn.
         nxt = page + 1
-        if _slots_page(chat, agent, nxt) is None:
+        for _ in range(4):  # BK-39: the Ledger can take well over 6 s; wait up to ~25 s in this turn
+            if _slots_page(chat, agent, nxt) is not None:
+                break
             chat = await _until(city, message.need_id, chat, lambda rows: _slots_page(rows, agent, nxt) is not None)
         if _slots_page(chat, agent, nxt) is not None and _page(_latest_slots(chat) or "")[0] == nxt:
             await _advance_alone(city, message, chat, key, fixed=fixed, replacing=replacing)
+            return
+        if message.sender.startswith("citizen:") and "page_lost" not in sent.offers:
+            # BK-39: the next page never came. Never leave the citizen silent: waiting list now.
+            sent.offers.add("page_lost")
+            _LOG.warning("booking.page_lost need_id=%s page=%s", message.need_id, nxt)
+            await _relaxed(city, message, chat, key, citizen, procedure, number, priority)
         return
     # Search another ASST only after the complete local catalogue has been exhausted.
     if replacing:
