@@ -1188,7 +1188,8 @@ async def main() -> int:
             cancel = row(CITIZEN, booking, "cancel offer_id=of-S-NEAR reason=deadline", 5)
             await desk_turn(city, cancel, [*chat, original, cancel])
             check("P-francesco-14 annullo esaurisce pagina 1 e richiede pagina 2",
-                  to(city, LEDGER) == ["world procedure=VIS-CARD page=2"], city.sent)
+                  # BK-61: page 2 is already asked before the first offer (one doctor on page 1).
+                  bool(to(city, LEDGER)) and set(to(city, LEDGER)) == {"world procedure=VIS-CARD page=2"}, city.sent)
             page = slots_near().replace("page=1/1", "page=2").replace("S-NEAR", "S-PAGE-2")
             page = page if available else "slots page=2/2"
             reply = row(LEDGER, booking, page, 7)

@@ -6845,6 +6845,9 @@ async def _advance(
                 # BK-54: this turn has searched long enough. The citizen gets an outcome now
                 # (another ASST or the waiting list) instead of waiting for the last page.
                 _trace("stop", message, why="turn_budget", page=page)
+                if _widening(sent):
+                    await _widen_stop(city, message, chat, key, sent, fixed)
+                    break
                 await _after_local(city, message, chat, key, fixed=fixed, replacing=sent.replacement_page is not None)
                 break
             for _try in range(4):  # BK-39: the Ledger can take well over 6 s; wait up to ~25 s
@@ -6859,6 +6862,9 @@ async def _advance(
             chat = fresh
             if reply is None:
                 _trace("stop", message, why="page_missing", page=page)
+                if _widening(sent):
+                    await _widen_stop(city, message, chat, key, sent, fixed)
+                    break
                 citizen = _citizen(chat)
                 if message.sender.startswith("citizen:") and citizen and "page_lost" not in sent.notes:
                     # BK-39: the next page never came. Never leave the citizen silent: waiting list
@@ -6870,6 +6876,48 @@ async def _advance(
                     await _relaxed(city, message, chat, key, citizen, fixed or rx.get("procedure"), number, rx.get("priority"))
                 break
             await _advance_alone(city, reply, chat, key, fixed=fixed, replacing=False)
+
+
+# BK-61 (journey 000304): the first offer message is the citizen's only choice (e19) and its
+# answer set holds constraints it has not said. Five offers from catalogue page 1, all with the
+# same woman doctor, were all cancelled ``reason=gender`` while 52 slots were acceptable. When
+# the slots found so far are all on one side (one doctor gender, or none on the said days) and
+# the catalogue has more pages, the desk reads up to this many more pages before it offers.
+_WIDEN_PAGES = 2
+
+
+def _widening(sent: _Sent) -> bool:
+    return "widen" in sent.notes and "widen_stop" not in sent.notes and not _slot_ids(sent.offers)
+
+
+async def _widen_stop(
+    city: City, message: Message, chat: list[Message], key: str, sent: _Sent, fixed: str | None,
+) -> None:
+    """The extra page did not come in time: offer what the pages read so far hold."""
+    sent.notes.add("widen_stop")
+    await _advance_alone(city, message, chat, key, fixed=fixed, replacing=False)
+
+
+def _one_sided(chosen: list[dict[str, str]], chat: list[Message]) -> bool:
+    days = _days(chat)
+    if days and not any(_slot_day(slot) in days for slot in chosen):
+        return True
+    return _gender(chat) is None and len({_doctor_gender(slot) for slot in chosen}) == 1
+
+
+def _all_slot_lines(chat: list[Message], agent: str) -> list[str]:
+    """Slot lines of every catalogue page the Ledger sent us in this case, once per slot."""
+    seen: set[str] = set()
+    lines: list[str] = []
+    for row in chat:
+        if row.sender != LEDGER or first_word(row.text) != "slots":
+            continue
+        for line in row.text.splitlines():
+            slot = fields_of(line).get("slot_id") if "slot_id=" in line else None
+            if slot and slot not in seen:
+                seen.add(slot)
+                lines.append(line)
+    return lines
 
 
 async def _advance_alone(
@@ -7015,6 +7063,8 @@ async def _advance_alone(
     deadline = _rx_deadline(chat, reply, priority, number)
     learned = _cancel_learned(chat)
     lines = [line for line in world.splitlines() if "slot_id=" in line]
+    if "widen" in sent.notes and not replacing:
+        lines = _all_slot_lines(chat, agent)  # BK-61: the pages read before offering count together
     chosen = [
         slot
         for slot in fitting(
@@ -7050,6 +7100,15 @@ async def _advance_alone(
                 await _say(city, citizen, last.text)
         _trace("stop", message, why="offers_pending")
         return
+    if (chosen and not replacing and fixed is None and "widen_stop" not in sent.notes
+            and page < pages and page < _MAX_PAGE and _one_sided(chosen, chat)
+            and sum(1 for note in sent.notes if note.startswith("widen:")) < _WIDEN_PAGES):
+        sent.notes.update({"widen", f"widen:{page + 1}"})
+        sent.pending_page = page + 1
+        _trace("widen", message, page=page + 1, fitting=len(chosen))
+        if not _asked(chat, agent, procedure, page + 1):
+            await _ledger_ask(city, message, f"world procedure={procedure} page={page + 1}")
+        return
     if chosen:
         # BK-14: every slot in ONE message, one offer per line. The citizen chooses in the turn of
         # the first message that names a place; a later message does not enter that choice.
@@ -7078,6 +7137,11 @@ async def _advance_alone(
             "for other days or put you on the waiting list.",
         )
         offer_lines = _fit([_offer_line(slot, number, priority) for slot in picks], line)
+        if len(offer_lines) < len(picks):
+            # BK-61: fewer lines fit in one message. Choose again for that number, so the cut
+            # keeps the spread over doctors and days instead of dropping the last ones.
+            picks = _diverse(chosen, len(offer_lines))
+            offer_lines = _fit([_offer_line(slot, number, priority) for slot in picks], line)
         picks = picks[:len(offer_lines)]
         text = "\n".join(offer_lines + [line])
         if await _say(city, citizen, text):
