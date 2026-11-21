@@ -718,8 +718,72 @@ async def _on_report_consent(city: City, message: Message, chat: list[Message], 
     await _file_report(city, message, chat, booking_id, consent_ref=ref or None)
 
 
+# --- SP-11: follow-up prescription (e19 "Chi invia cosa", facility.md "Comandi per il Ledger").
+# The kit gives the HOW: `prescribe ... follow_up_of=<booking_id>`, then
+# `report ... follow_up_prescription_number=...`. It does NOT give the WHEN or the priority ("lo
+# decide lo specialista quando il percorso lo richiede"; no protocol row for CTRL-CARD). So the
+# flow is ready and OFF: _FOLLOW_UP is empty. Fill it (visit procedure -> follow-up procedure,
+# priority) only from a real journey verdict, the Ledger's `rules` answer or the Token della Sera.
+_FOLLOW_UP: dict[str, tuple[str, str]] = {}
+
+
+def _visit_procedure(chat: list[Message]) -> str | None:
+    """The procedure of this case's visit, from the latest line that names one."""
+    for row in reversed(chat):
+        proc = fields_of(row.text).get("procedure")
+        if proc:
+            return proc
+    return None
+
+
+async def _follow_up_rx(
+    city: City, message: Message, chat: list[Message], booking_id: str, citizen: str | None,
+) -> tuple[str, str, str] | None:
+    """SP-11: (number, procedure, priority) of the follow-up the Ledger accepted, or None."""
+    rule = _FOLLOW_UP.get(_visit_procedure(chat) or "")
+    if not rule or not citizen:
+        return None
+    procedure, priority = rule
+    number = f"prescription_number-FU-{sha256(f'{citizen}|{booking_id}'.encode()).hexdigest()[:16].upper()}"
+    token = f"prescription_number={number}"
+    if not _we(chat, city.agent_id, token, to=LEDGER, word="prescribe"):
+        if not await _say(city, LEDGER, f"prescribe patient={citizen} procedure={procedure} priority={priority} "
+                          f"{token} follow_up_of={booking_id}"):
+            return None
+    found = await _await_line(city, message.need_id, chat, "prescribed", token, op="prescribe")
+    if found is None or first_word(found[0].text) != "prescribed":
+        _event("facility.follow_up", message.need_id, booking=booking_id, state="not_prescribed")
+        return None  # refused or no answer: the report goes out without a follow-up, never a made-up one
+    return number, procedure, priority
+
+
+async def _send_follow_up(
+    city: City, chat: list[Message], citizen: str, follow: tuple[str, str, str], booking_id: str,
+) -> None:
+    """SP-11: the follow-up goes to our booking centre on our own initiative, then to the citizen."""
+    number, procedure, priority = follow
+    token = f"prescription_number={number}"
+    booking = await _peer(city, "booking_centre", "centro prenotazioni booking_centre asst-niguarda")
+    referred = False
+    if booking and not _we(chat, city.agent_id, token, to=booking, word="referral"):
+        referred = await _say(city, booking, f"referral {token} procedure={procedure} priority={priority} "
+                              f"follow_up_of={booking_id} Ricetta di controllo dopo la visita: il cittadino vi "
+                              "contatterà con questo numero.")
+    if _we(chat, city.agent_id, token, to=citizen, word="prescription"):
+        return
+    en = _lang(chat) != "it"
+    line = ("I have prescribed your follow-up check" + (
+        " and already passed it to the booking centre myself: contact it with this number." if referred
+        else ": contact the booking centre with this number.") if en else
+        "Le ho prescritto il controllo" + (
+        " e l'ho già passato io al centro prenotazioni: lo contatti con questo numero." if referred
+        else ": contatti il centro prenotazioni con questo numero."))
+    await _say(city, citizen, f"prescription {token} procedure={procedure} priority={priority} {line}")
+
+
 async def _file_report(
     city: City, message: Message, chat: list[Message], booking_id: str, *, consent_ref: str | None,
+    citizen: str | None = None,
 ) -> None:
     agent = city.agent_id
     token = f"booking_id={booking_id}"
@@ -729,8 +793,12 @@ async def _file_report(
     _REPORT_FILED[key] = None
     if len(_REPORT_FILED) > _SENT_NEEDS:
         _REPORT_FILED.popitem(last=False)
-    _event("facility.report", message.need_id, booking=booking_id, shared=str(bool(consent_ref)).lower())
-    await _say(city, LEDGER, f"report {token} outcome_code=VISIT" + (f" consent_ref={consent_ref}" if consent_ref else ""))
+    citizen = citizen or (message.sender if message.sender.startswith("citizen:") else _citizen(chat))
+    follow = await _follow_up_rx(city, message, chat, booking_id, citizen)  # SP-11 (off while _FOLLOW_UP is empty)
+    _event("facility.report", message.need_id, booking=booking_id, shared=str(bool(consent_ref)).lower(),
+           follow_up=str(bool(follow)).lower())
+    await _say(city, LEDGER, f"report {token} outcome_code=VISIT" + (f" consent_ref={consent_ref}" if consent_ref else "")
+               + (f" follow_up_prescription_number={follow[0]}" if follow else ""))
     found = await _await_line(city, message.need_id, chat, "reported", token, op="report")
     if found is None:
         _LOG.info("care.report.missing", extra={"need_id": (message.need_id or "")[:48]})
@@ -738,6 +806,8 @@ async def _file_report(
     reply, fresh = found
     if first_word(reply.text) == "reported":
         await _on_reported(city, reply, fresh, shared=bool(consent_ref))
+        if follow and citizen:
+            await _send_follow_up(city, fresh, citizen, follow, booking_id)
 
 
 def _report_timer(city: City, message: Message, citizen: str, booking_id: str, chat: list[Message]) -> None:
@@ -762,7 +832,7 @@ async def _report_silence(
             fresh = chat
         if any(row.sender == citizen and row.msg_id not in known for row in fresh):
             return  # the citizen answered: that turn files the report
-        await _file_report(city, message, fresh, booking_id, consent_ref=None)
+        await _file_report(city, message, fresh, booking_id, consent_ref=None, citizen=citizen)
     except Exception:  # a background step must never raise into the loop
         _LOG.exception("care.report_silence_failed need_id=%s", (message.need_id or "")[:48])
 

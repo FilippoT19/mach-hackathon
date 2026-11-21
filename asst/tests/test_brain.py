@@ -2819,6 +2819,83 @@ async def main() -> int:
 
     await test_gp_proactive(check)
 
+    async def test_sp11(check):
+        """SP-11: follow-up prescription, ready and OFF until _FOLLOW_UP holds a documented rule."""
+        from unittest.mock import patch
+
+        spec, gp, bk = "agent:jmjfst55vgjz", "agent:fddgaqmp6kb0", "agent:fn64xfq2jft4"
+
+        class LedgerCity(FakeCity):
+            def __init__(self, rows):
+                super().__init__(spec, peers=[Peer(agent_id=gp, role="gp"), Peer(agent_id=bk, role="booking_centre")])
+                self.rows = list(rows)
+
+            async def say(self, to, text, *, status=None):
+                mid = await super().say(to, text, status=status)
+                self.rows.append(row(spec, to, text, 300 + len(self.sent)))
+                f = brain.fields_of(text)
+                if to == LEDGER and brain.first_word(text) == "report":
+                    self.rows.append(row(LEDGER, spec, f"reported booking_id={f['booking_id']} outcome_code=VISIT", 400 + len(self.sent)))
+                if to == LEDGER and brain.first_word(text) == "prescribe":
+                    self.rows.append(row(LEDGER, spec, f"prescribed prescription_number={f['prescription_number']} "
+                                         f"procedure={f['procedure']} priority={f['priority']}", 500 + len(self.sent)))
+                return mid
+
+            async def history(self, peer=None, *, need_id=None):
+                return list(self.rows)
+
+        base = [row(CITIZEN, spec, "checkin booking_id=B-11 Buongiorno, sono qui per la visita del cuore", 1),
+                row(bk, spec, f"confirm offer_id=O-11 slot_id=S-11 procedure=VIS-CARD citizen={CITIZEN}", 2),
+                row(spec, CITIZEN, "checkin booking_id=B-11 Check-in registrato", 3),
+                row(spec, CITIZEN, "consent purpose=report_sharing Posso condividere il suo referto?", 4)]
+        yes = row(CITIZEN, spec, "consent purpose=report_sharing consent_ref=R-11", 5)
+        for fill, label in (({}, "spento"), ({"VIS-CARD": ("CTRL-CARD", "P")}, "acceso")):
+            brain._REPORT_FILED.clear()
+            brain._PEERS.pop("gp", None)
+            brain._PEERS.pop("booking_centre", None)
+            brain._LANG_OF.pop("N-1", None)
+            city = LedgerCity([*base, yes])
+            with patch.object(brain, "_FOLLOW_UP", fill):
+                await brain.handle("specialist_care", city, yes, [*base, yes])
+            led = to(city, LEDGER)
+            if not fill:
+                check("SP-11 spento (oggi): nessun prescribe, report come SP-10",
+                      led == ["report booking_id=B-11 outcome_code=VISIT consent_ref=R-11"]
+                      and not to(city, bk), city.sent)
+                continue
+            rx = [t for t in led if t.startswith("prescribe ")]
+            check("SP-11 acceso: prescribe CTRL-CARD con follow_up_of=<booking_id> prima del report",
+                  len(rx) == 1 and "procedure=CTRL-CARD" in rx[0] and "follow_up_of=B-11" in rx[0]
+                  and f"patient={CITIZEN}" in rx[0] and led.index(rx[0]) < next(i for i, t in enumerate(led) if t.startswith("report ")), led)
+            number = brain.fields_of(rx[0]).get("prescription_number", "?") if rx else "?"
+            check("SP-11 acceso: report con consent_ref e follow_up_prescription_number",
+                  f"report booking_id=B-11 outcome_code=VISIT consent_ref=R-11 follow_up_prescription_number={number}" in led, led)
+            check("SP-11 acceso: ricetta di controllo passata al booking di sua iniziativa",
+                  any(t.startswith(f"referral prescription_number={number}") and "follow_up_of=B-11" in t for t in to(city, bk)), city.sent)
+            told = [t for t in to(city, CITIZEN) if t.startswith(f"prescription prescription_number={number}")]
+            check("SP-11 acceso: al cittadino 'le ho prescritto il controllo e l'ho già passato al centro prenotazioni'",
+                  len(told) == 1 and "già passato io al centro prenotazioni" in told[0], told)
+
+        # The Ledger refuses the follow-up: the report still goes out, without a made-up number.
+        class Refusing(LedgerCity):
+            async def say(self, to, text, *, status=None):
+                if to == LEDGER and brain.first_word(text) == "prescribe":
+                    mid = await FakeCity.say(self, to, text, status=status)
+                    self.rows.append(row(LEDGER, spec, "refused prescribe reason=NOT_ALLOWED "
+                                         f"prescription_number={brain.fields_of(text)['prescription_number']}", 600))
+                    return mid
+                return await super().say(to, text, status=status)
+
+        brain._REPORT_FILED.clear()
+        city = Refusing([*base, yes])
+        with patch.object(brain, "_FOLLOW_UP", {"VIS-CARD": ("CTRL-CARD", "P")}), patch.object(brain, "_PULL_SECONDS", 0.01):
+            await brain.handle("specialist_care", city, yes, [*base, yes])
+        check("SP-11 prescribe rifiutato: referto archiviato senza follow_up_prescription_number",
+              "report booking_id=B-11 outcome_code=VISIT consent_ref=R-11" in to(city, LEDGER)
+              and not any("follow_up_prescription_number" in t for t in to(city, LEDGER)), city.sent)
+
+    await test_sp11(check)
+
     async def test_mach2(check):
         """MACH-2.0 (red-agent): ring R17, round of 12 R3, mach/lease tokens, R7, R13, R20, R21."""
         from unittest.mock import patch
