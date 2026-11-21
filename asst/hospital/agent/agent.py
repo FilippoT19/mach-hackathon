@@ -71,7 +71,7 @@ _LOG = logging.getLogger("care")
 # OPS-14: which build took a decision. `seats.py --brain` replaces this line with the digest of the
 # joined parts, so the id is inside agent.py in the image and never comes from the local card
 # (the CLI bumps that after each release; card and `city status` have shown different versions).
-_BUILD = "b-2ad47cedcc75"
+_BUILD = "b-07f5e60053de"
 _CARD_VERSION: list[str] = []
 _STARTED: list[bool] = []
 
@@ -6741,6 +6741,7 @@ async def _cross_asst(
             return True
         if await _say(city, citizen, _cx_head(chat) + _cross_question(chat, procedure)):
             sent.cross_asked = True
+            _cross_timer(city, message, key, citizen, procedure, priority, chat)  # P-magesh-26
         _trace("cross", message, state="consent_asked", lang=_lang(chat))
         return True
     request_id = f"cross-{message.need_id or message.msg_id}"
@@ -7885,6 +7886,52 @@ async def _after_local(
         return
     # BK-10: every page read and no partner can serve it. The waiting list is the safe fallback.
     await _relaxed(city, message, chat, key, citizen, procedure, number, priority)
+
+
+# P-magesh-26 (N-...0001240009, L3): after the cross-ASST consent question the citizen never
+# wrote again, and the brain moves only on messages: no waiting list, -1 no_alternative with an
+# empty answer set (0 was possible). Citizens at L3/L4 almost never answer this question (13/13).
+# After _CROSS_SILENCE real seconds with no word from the citizen, the waiting list goes out on
+# its own. A consent that comes later still asks the partners; their offers replace the list.
+_CROSS_SILENCE = 240.0
+_CROSS_TIMERS: set["asyncio.Task[None]"] = set()
+
+
+def _cross_timer(
+    city: City, message: Message, key: str, citizen: str, procedure: str, priority: str | None,
+    chat: list[Message],
+) -> None:
+    try:
+        task = asyncio.get_running_loop().create_task(
+            _cross_silence(city, message, key, citizen, procedure, priority, list(chat)))
+    except RuntimeError:  # no running loop: nothing to schedule
+        return
+    _CROSS_TIMERS.add(task)
+    task.add_done_callback(_CROSS_TIMERS.discard)
+
+
+async def _cross_silence(
+    city: City, message: Message, key: str, citizen: str, procedure: str, priority: str | None,
+    chat: list[Message],
+) -> None:
+    known = {row.msg_id for row in chat} | {message.msg_id}
+    try:
+        await asyncio.sleep(_CROSS_SILENCE)
+        try:
+            fresh = _keep(await city.history(need_id=message.need_id), chat)
+        except CapError:
+            fresh = chat
+        sent = _sent(key)
+        wrote = any(row.sender == citizen and row.msg_id not in known for row in fresh)
+        accepted, _ref = _cross_consent(fresh, city.agent_id)
+        if wrote or accepted is not None or sent.cross_sent or _open_offers(fresh, city.agent_id, citizen):
+            _event("booking.cross_silence", message.need_id, state="skip", wrote=str(wrote).lower(),
+                   consent=str(accepted).lower(), cross_sent=str(sent.cross_sent).lower())
+            return
+        _event("booking.cross_silence", message.need_id, state="waiting_list", seconds=int(_CROSS_SILENCE))
+        await _relaxed(city, message, fresh, key, citizen, procedure, _number(fresh), priority)
+    except Exception:  # a background step must never raise into the loop
+        _LOG.exception("booking.cross_silence_failed need_id=%s", (message.need_id or "")[:48])
 
 
 async def _relaxed(
