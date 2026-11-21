@@ -322,6 +322,10 @@ def _cross_consent(chat: list[Message], agent: str) -> tuple[bool | None, str]:
             continue
         if not asked or decision[0] is not None or not row.sender.startswith("citizen:"):
             continue
+        if head == "data.response" and fields.get("purpose") == "cross_asst":
+            # BK-36: the citizen grants the cross-ASST consent as a data.response (000175).
+            decision = (True, fields.get("consent_ref") or f"cx-{row.need_id or row.msg_id}")
+            continue
         if fields.get("purpose") not in (None, "cross_asst") or head in {"confirm", "cancel", "data.response", "need.request"}:
             continue
         consent = fields.get("consent_ref", "")
