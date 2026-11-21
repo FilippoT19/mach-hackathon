@@ -454,7 +454,7 @@ async def main() -> int:
     check("X-27 gp avvisa il nostro booking", len(ref) == 1 and ref[0].startswith("referral ") and "prescription_number=" in ref[0], city.sent)
     check("X-27 niente messaggi al booking di un'altra squadra", not to(city, "agent:other-team-bk"), city.sent)
     check("X-27 nel referral nessun id del cittadino", ref and "citizen:" not in ref[0] and "patient=" not in ref[0], ref)
-    check("X-27 la ricetta al cittadino parte prima del referral", city.sent and [r for r, _ in city.sent].index(CITIZEN) < [r for r, _ in city.sent].index(BK), city.sent)
+    check("G10 referral prima, poi il cittadino lo legge", city.sent and [r for r, _ in city.sent].index(BK) < [r for r, _ in city.sent].index(CITIZEN) and any("Ho già passato io la sua ricetta" in t for t in to(city, CITIZEN)), city.sent)
     brain._PEERS.clear()
     city = FakeCity("agent:gp", peers=[Peer(agent_id="agent:other-team-bk", role="booking_centre")])
     await brain._gp(city, citizen_msg("ho mal di schiena da tre giorni"), [])

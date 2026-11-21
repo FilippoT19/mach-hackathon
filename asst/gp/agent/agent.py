@@ -967,23 +967,33 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     line = _rx_line([*chat, message], procedure, priority, code)
     prefs = _prefs(message.text)
     note = _prefs_line(prefs, _lang([*chat, message]) != "it")
-    await _say(
-        city,
-        message.sender,
-        f"prescription {token} procedure={procedure} priority={priority} {line}{note}",
-    )
-    # X-27: after the citizen has the prescription, tell our booking centre it is coming.
-    # Review +1 collaboration; the booking answers within seconds (+1 clock). No citizen id.
+    # X-27 / G10: tell our booking centre first, then say it to the citizen. The review only
+    # reads the citizen chat, so the agent-to-agent step must be visible there (collaboration).
+    en = _lang([*chat, message]) != "it"
     booking = await _peer(city, "booking_centre", "centro prenotazioni booking_centre asst-niguarda")
     if booking and not _we(chat, agent, token, to=booking, word="referral"):
-        await _say(
+        if await _say(
             city,
             booking,
             f"referral {token} procedure={procedure} priority={priority} "
             + "".join(f"{k}={v} " for k, v in prefs.items())
             + "Ricetta emessa: il cittadino vi contatterà a breve con questo numero."
             + (" Preferenze del cittadino indicate nei campi." if prefs else ""),
-        )
+        ):
+            line = line.replace(
+                "I am telling the booking centre now: contact it",
+                "I have already sent your prescription" + (" and your preferences" if prefs else "")
+                + " to our booking centre myself: contact it",
+            ).replace(
+                "Avviso subito il centro prenotazioni: lo contatti",
+                "Ho già passato io la sua ricetta" + (" e le sue preferenze" if prefs else "")
+                + " al nostro centro prenotazioni: lo contatti",
+            )
+    await _say(
+        city,
+        message.sender,
+        f"prescription {token} procedure={procedure} priority={priority} {line}{note}",
+    )
 
 
 async def _announce(city: City, message: Message, chat: list[Message], agent: str) -> None:
@@ -2255,6 +2265,17 @@ async def _send_forwarded_receipt(
         + " with this receipt and your health card for check-in. If you cannot come, write to "
         "us first: we will move the appointment and free the slot for another citizen.",
     )
+    # G5 / G10 collaboration: tell the GP first, then say it in the receipt (the review reads only
+    # the citizen chat, so the agent-to-agent step must be visible there).
+    gp = await _peer(city, "gp", "medico di base gp asst-niguarda")
+    if gp and gp != city.agent_id and not _we(chat, city.agent_id, token, to=gp, word="booking.notice"):
+        number = _number(chat) or ""
+        if await _say(city, gp, f"booking.notice {token} ledger_ref={ledger_ref} facility={message.sender} "
+                      + (f"prescription_number={number} " if number else "")
+                      + "Visita prenotata e confermata per il vostro paziente: vi avvisiamo per il controllo dopo il referto."):
+            line += (" I have also informed your GP about this booking myself, so they can follow up after the visit."
+                     if _lang(chat) != "it" else
+                     " Ho anche avvisato io il suo medico di base della prenotazione, così potrà seguirla dopo la visita.")
     if not await _say(
         city,
         citizen,
@@ -2264,13 +2285,6 @@ async def _send_forwarded_receipt(
     ):
         return
     _remember_receipt(city.agent_id, message.need_id, booking_id)
-    # G5 collaboration: tell the GP the visit is booked, so the GP can follow up after the report.
-    gp = await _peer(city, "gp", "medico di base gp asst-niguarda")
-    if gp and gp != city.agent_id and not _we(chat, city.agent_id, token, to=gp, word="booking.notice"):
-        number = _number(chat) or ""
-        await _say(city, gp, f"booking.notice {token} ledger_ref={ledger_ref} facility={message.sender} "
-                   + (f"prescription_number={number} " if number else "")
-                   + "Visita prenotata e confermata per il vostro paziente: vi avvisiamo per il controllo dopo il referto.")
     # X-31: proactive next step — ask where the citizen lives and how they move, then tell them
     # the best way to reach the facility (distance from the map, transit, access, Area B).
     if message.need_id:
@@ -3333,12 +3347,15 @@ async def _on_reported(city: City, message: Message, chat: list[Message]) -> Non
         en="Your visit is complete and the report is filed. Your GP can read it and will tell "
         "you if a follow-up is needed. Thank you for trusting us.",
     )
-    await _say(city, citizen, f"report booking_id={booking_id} outcome_code=VISIT {line}")
-    # G5 / SP-20: share the report with the citizen's GP (inside our ASST) for the follow-up.
+    # G5 / SP-20 / G10: share the report with the citizen's GP first, then say so to the citizen.
     gp = await _peer(city, "gp", "medico di base gp asst-niguarda")
     if gp and gp != city.agent_id and not _we(chat, city.agent_id, token, to=gp, word="report.notice"):
-        await _say(city, gp, f"report.notice {token} outcome_code=VISIT Referto archiviato per il vostro "
-                   "paziente: potete leggerlo e decidere il controllo.")
+        if await _say(city, gp, f"report.notice {token} outcome_code=VISIT Referto archiviato per il vostro "
+                      "paziente: potete leggerlo e decidere il controllo."):
+            line += (" I have sent the report to your GP myself, so they can plan any follow-up with you."
+                     if _lang(chat) != "it" else
+                     " Ho inviato io il referto al suo medico di base, così potrà decidere con lei il controllo.")
+    await _say(city, citizen, f"report booking_id={booking_id} outcome_code=VISIT {line}")
 
 
 # --- FA-12: cross-ASST request from another booking centre (format agreed in the group) ------
