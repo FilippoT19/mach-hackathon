@@ -82,7 +82,7 @@ def slots_near() -> str:
 
 
 def slots_three() -> str:
-    days = [("S-1", "2026-11-04T15:00:00Z", "wed"), ("S-2", "2026-11-05T10:00:00Z", "thu"), ("S-3", "2026-11-05T11:00:00Z", "thu")]
+    days = [("S-1", "2026-11-05T09:00:00Z", "wed"), ("S-2", "2026-11-05T10:00:00Z", "thu"), ("S-3", "2026-11-05T11:00:00Z", "thu")]  # FA-23: S-1 >= 12 agenda hours ahead
     doctor = {"wed": "d-s1", "thu": "d-s2"}
     lines = [f"slot_id={s} doctor_id={doctor[d]} facility=agent:spec procedure=VIS-CARD at={at} day={d} free=1" for s, at, d in days]
     return "slots page=1/1\n" + "\n".join(lines)
@@ -448,6 +448,105 @@ async def test_000113(check) -> None:
           and any(l.startswith("booking.slots need_id=N-1") for l in lines)
           and any(l.startswith("booking.offer need_id=N-1") and "waiting_list" in l for l in lines), lines)
     check("OPS-07 nessun testo del cittadino nei log", not any("English-speaking" in l for l in lines), lines)
+
+
+async def test_fa23_consultorio_in_time(check) -> None:
+    """FA-23 (journey N-2026-11-02-8909120002750003): slots too close, hold too late, no booking."""
+    from datetime import datetime, timedelta, timezone
+    FAMX = brain._OUR_AGENTS.get("family_counseling") or "agent:mm18nddkfc5w"
+
+    def gin(sid, at):
+        return f"slot_id={sid} doctor_id=d-c1 facility={FAMX} procedure=CONS-GIN at={at} day=wed free=1"
+
+    # 1. Margin: without urgency nothing under 12 agenda hours; U keeps the short lead.
+    now = datetime(2026, 11, 4, 5, 0, tzinfo=timezone.utc)
+    lines = [gin("s12", "2026-11-04T12:00:00Z"), gin("s1430", "2026-11-04T14:30:00Z"), gin("s18", "2026-11-04T17:30:00Z")]
+    calm = [x["slot_id"] for x in brain.fitting(lines, now=now, priority=None, lang="it", facility=FAMX, procedure="CONS-GIN")]
+    urgent = [x["slot_id"] for x in brain.fitting(lines, now=now, priority="U", lang="it", facility=FAMX, procedure="CONS-GIN")]
+    check("FA-23 senza urgenza: niente slot a meno di 12 ore di agenda", calm == ["s18"], calm)
+    check("FA-23 priorita U: margine corto invariato", "s12" in urgent, urgent)
+
+    # 2. Agenda at the moment of sending: a turn that started 7 minutes after the agenda read
+    # is 7 agenda hours later (live turn, wall clock).
+    wall = datetime.now(timezone.utc)
+    iso = lambda d: d.strftime("%Y-%m-%dT%H:%M:%SZ")
+    anchor = Message(type="chat", sender=LEDGER, msg_id="a1", need_id="N-1", recipient=FAMX,
+                     body={"text": "agenda agenda_now=2026-12-01T05:00:00Z"}, sent_at=iso(wall - timedelta(minutes=7)))
+    turn = Message(type="chat", sender=CITIZEN, msg_id="t1", need_id="N-1", recipient=FAMX,
+                   body={"text": "vorrei un appuntamento"}, sent_at=iso(wall - timedelta(minutes=7)))
+    got = brain._agenda_now([anchor], turn)
+    check("FA-23 agenda contata all'invio (turno lento di 7 minuti = 7 ore)",
+          got is not None and timedelta(hours=6, minutes=50) <= got - datetime(2026, 12, 1, 5, 0, tzinfo=timezone.utc) <= timedelta(hours=7, minutes=10), got)
+
+    # 3. Early hold on the citizen's confirm, before the history read; the normal turn adds no
+    # second hold. Never for a partner offer or a refused slot.
+    brain._SENT.clear()
+    key = "N-1"
+    brain._sent(key).offers.update({"s18", "p1"})
+    brain._sent(key).partner_offers.add("of-p1")
+    c = FakeCity(FAMX)
+    conf = Message(type="chat", sender=CITIZEN, msg_id="c1", need_id=key, recipient=FAMX,
+                   body={"text": "confirm offer_id=of-s18 consent_ref=C-1"})
+    await brain._early_hold(c, conf)
+    check("FA-23 hold subito alla conferma", to(c, LEDGER) == [f"hold slot_id=s18 citizen={CITIZEN} consent_ref=C-1"], c.sent)
+    c2 = FakeCity(FAMX)
+    await brain._early_hold(c2, Message(type="chat", sender=CITIZEN, msg_id="c2", need_id=key, recipient=FAMX,
+                                         body={"text": "confirm offer_id=of-p1 consent_ref=C-1"}))
+    check("FA-23 nessun hold anticipato su un'offerta partner", not c2.sent, c2.sent)
+    base = [
+        (CITIZEN, FAMX, "vorrei una visita al consultorio"),
+        (FAMX, CITIZEN, f"offer offer_id=of-s18 slot_id=s18 doctor_id=d-c1 facility={FAMX} procedure=CONS-GIN"),
+        (CITIZEN, FAMX, "confirm offer_id=of-s18 consent_ref=C-1"),
+    ]
+    chat = [row(a, b, t, i) for i, (a, b, t) in enumerate(base)]
+    tries, seconds = brain._PULL_TRIES, brain._PULL_SECONDS
+    brain._PULL_TRIES, brain._PULL_SECONDS = 2, 0.01
+    c3 = FakeCity(FAMX)
+    await brain._on_confirm(c3, chat[-1], chat, hold_self=True)
+    brain._PULL_TRIES, brain._PULL_SECONDS = tries, seconds
+    check("FA-23 il turno normale non manda un secondo hold", not any(t.startswith("hold ") for t in to(c3, LEDGER)), c3.sent)
+
+    # 4. Whole consultorio path: confirm -> hold -> held -> commit -> committed -> receipt ->
+    # checkin -> checked_in -> answer to the citizen (+2 booked, +1 slot, +2 check-in).
+    class FamCity(FakeCity):
+        def __init__(self):
+            super().__init__(FAMX)
+            self.rows = []
+        def post(self, sender, recipient, text):
+            m = row(sender, recipient, text, len(self.rows))
+            self.rows.append(m)
+            return m
+        async def say(self, to_, text, *, status=None):
+            await asyncio.sleep(0)
+            await super().say(to_, text, status=status)
+            m = self.post(self.agent_id, to_, text)
+            head = brain.first_word(text)
+            if to_ == LEDGER and head == "hold":
+                self.post(LEDGER, self.agent_id, "held hold_id=H-1 fence=1 slot_id=s18 need_id=N-1")
+            elif to_ == LEDGER and head == "commit":
+                self.post(LEDGER, self.agent_id, "committed booking_id=H-1 ledger_ref=L-1 slot_id=s18")
+            elif to_ == LEDGER and head == "checkin":
+                self.post(LEDGER, self.agent_id, "checked_in booking_id=H-1 slot_id=s18 at=2026-11-04T17:30:00Z")
+            return m.msg_id
+        async def history(self, peer=None, *, need_id=None):
+            return list(self.rows)
+        async def turn(self, text):
+            m = self.post(CITIZEN, self.agent_id, text)
+            await brain.handle("family_counseling", self, m, await self.history())
+    brain._SENT.clear()
+    brain._PULL_TRIES, brain._PULL_SECONDS = 3, 0.01
+    fc = FamCity()
+    fc.post(CITIZEN, FAMX, "vorrei una visita al consultorio")
+    fc.post(FAMX, CITIZEN, f"offer offer_id=of-s18 slot_id=s18 doctor_id=d-c1 facility={FAMX} procedure=CONS-GIN agenda_date=2026-11-04T17:30:00Z")
+    await fc.turn("confirm offer_id=of-s18 consent_ref=C-1")
+    await fc.turn("checkin booking_id=H-1 ledger_ref=L-1")
+    brain._PULL_TRIES, brain._PULL_SECONDS = tries, seconds
+    ledger = [t.split()[0] for t in to(fc, LEDGER)]
+    citizen = to(fc, CITIZEN)
+    check("FA-23 percorso completo: hold, commit, checkin sul Ledger", ledger == ["hold", "commit", "checkin"], fc.sent)
+    check("FA-23 percorso completo: ricevuta e conferma del check-in al cittadino",
+          any(t.startswith("booking.receipt booking_id=H-1 ledger_ref=L-1") for t in citizen)
+          and any(t.startswith("checkin booking_id=H-1") for t in citizen), citizen)
 
 
 async def test_p17_never_silent(check) -> None:
@@ -1025,7 +1124,7 @@ async def main() -> int:
     FAMX = "agent:mm18nddkfc5w"
     def gin(sid, at):
         return f"slot_id={sid} doctor_id=d-c1 facility={FAMX} procedure=CONS-GIN at={at} day=wed free=1"
-    world = "slots page=1/1\n" + "\n".join([gin("s1500", "2026-11-04T15:00:00Z"), gin("s1600", "2026-11-04T16:00:00Z"), gin("s1700", "2026-11-04T17:00:00Z")])
+    world = "slots page=1/1\n" + "\n".join([gin("s1500", "2026-11-05T15:00:00Z"), gin("s1600", "2026-11-05T16:00:00Z"), gin("s1700", "2026-11-05T17:00:00Z")])
     offers = "\n".join(f"offer offer_id=of-{x} slot_id={x} doctor_id=d-c1 facility={FAMX} procedure=CONS-GIN" for x in ("s1500", "s1600", "s1700"))
     base = [
         (CITIZEN, FAMX, "vorrei una visita al consultorio"),
@@ -1102,9 +1201,9 @@ async def main() -> int:
         (FAMX, LEDGER, f"hold slot_id=s1500 citizen={CITIZEN} consent_ref=C-1"),
         (LEDGER, FAMX, "refused hold code=EXPIRED detail=slot_s1500_has_passed slot_id=s1500"),
     ]
-    later_world = "slots page=1/1\n" + "\n".join([gin("s1700", "2026-11-04T17:00:00Z"), gin("s0510", "2026-11-05T10:00:00Z"), gin("s0512", "2026-11-05T12:00:00Z")])
+    later_world = "slots page=1/1\n" + "\n".join([gin("s1700", "2026-11-05T17:00:00Z"), gin("s0510", "2026-11-06T10:00:00Z"), gin("s0512", "2026-11-06T12:00:00Z")])
     chat = [row(a2, b2, t2, i) for i, (a2, b2, t2) in enumerate(base)]
-    later = [row(LEDGER, FAMX, "agenda agenda_now=2026-11-04T15:00:00Z", 50), row(LEDGER, FAMX, later_world, 51)]
+    later = [row(LEDGER, FAMX, "agenda agenda_now=2026-11-05T15:00:00Z", 50), row(LEDGER, FAMX, later_world, 51)]
     tries, seconds = brain._PULL_TRIES, brain._PULL_SECONDS
     brain._PULL_TRIES, brain._PULL_SECONDS = 3, 0.05
     brain._SENT.clear()
@@ -1120,8 +1219,8 @@ async def main() -> int:
           and "slot_id=s0510" in out[0], to(c, CITIZEN))
     # FA-22: nothing valid left locally -> first the citizen's consent for another ASST, and no
     # partner is contacted before it.
-    empty_world = "slots page=1/1\n" + gin("s1700", "2026-11-04T17:00:00Z")
-    later = [row(LEDGER, FAMX, "agenda agenda_now=2026-11-04T15:00:00Z", 50), row(LEDGER, FAMX, empty_world, 51)]
+    empty_world = "slots page=1/1\n" + gin("s1700", "2026-11-05T17:00:00Z")
+    later = [row(LEDGER, FAMX, "agenda agenda_now=2026-11-05T15:00:00Z", 50), row(LEDGER, FAMX, empty_world, 51)]
     brain._PULL_TRIES, brain._PULL_SECONDS = 3, 0.05
     brain._SENT.clear()
     c = LedgerCity(FAMX, chat, later)
@@ -1492,6 +1591,7 @@ async def main() -> int:
     await test_000113(check)
     await test_x49(check)
     await test_p17_never_silent(check)
+    await test_fa23_consultorio_in_time(check)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 

@@ -73,7 +73,7 @@ class World:
         elif head == "world":
             fac, doc = FACILITY_OF[f["procedure"]]
             rows = [f"slot_id=S-{i} doctor_id=d-{doc} facility={fac} procedure={f['procedure']} at={at} day=wed free=1"
-                    for i, at in ((1, "2026-11-04T15:00:00Z"), (2, "2026-11-04T16:00:00Z"))]
+                    for i, at in ((1, "2026-11-04T15:00:00Z"), (2, "2026-11-05T10:00:00Z"))]
             reply = "slots page=1/1\n" + "\n".join(rows)
         elif head == "hold":
             reply = f"held hold_id=H-{f['slot_id']} slot_id={f['slot_id']} need_id={need} next=commit"

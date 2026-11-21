@@ -20,7 +20,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
 
@@ -31,6 +31,10 @@ _MAX_PAGE = 20  # BK-38 (P-magesh-8): read the whole local catalogue before goin
 # Four agenda hours is about half a minute of real time at 480x, so a slot is still
 # ahead when the citizen decides. One hour was already past by then.
 _LEAD = timedelta(hours=4)
+# FA-23 (journey 0002750003): confirm -> hold -> Ledger answer takes ~6 real minutes under load
+# (6 agenda hours). A slot 7-9 agenda hours ahead was gone when the hold arrived (EXPIRED).
+# Without urgency the first slot offered is at least 12 agenda hours ahead; U keeps _LEAD.
+_LEAD_CALM = timedelta(hours=12)
 # Doctor key (the last segment of doctor_id) -> languages, gender, days. ``*`` is the ASST's
 # rare language. The Ledger's slot line names the doctor; it does not repeat this table.
 _DOCTORS: dict[str, tuple[frozenset[str], str, frozenset[str]]] = {
@@ -117,6 +121,9 @@ async def main(need: Need, city: City) -> None:
         early = asyncio.get_running_loop().create_task(
             _llm_symptom(city, message.text, emergency_only=_symptom(message) is not None))
         _EARLY_LLM[message.msg_id] = early
+    if (role_of() == "family_counseling" and message.sender.startswith("citizen:")
+            and first_word(text) == "confirm"):
+        await _early_hold(city, message)  # FA-23: lock the slot before the slow history read
     try:
         case = await city.history(need_id=message.need_id)
         await handle(role_of(), city, message, case)

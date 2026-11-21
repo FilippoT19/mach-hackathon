@@ -20,6 +20,25 @@ def _facility_turn(message: Message) -> bool:
     )
 
 
+async def _early_hold(city: City, message: Message) -> None:
+    """FA-23 (journey 0002750003): the hold left 3.5 minutes after the citizen's confirm and the
+    slot had passed (EXPIRED). For a slot this consultorio offered itself, the hold goes to the
+    Ledger before the case history is read; the normal turn then only waits for ``held`` and
+    commits. Not for partner offers (cross-ASST needs its consent) nor for a refused slot."""
+
+    fields = fields_of(message.text)
+    offer_id, consent = fields.get("offer_id", ""), fields.get("consent_ref", "")
+    if not offer_id.startswith("of-") or not consent:
+        return
+    slot = fields.get("slot_id") or offer_id[3:]
+    sent = _sent(message.need_id or message.msg_id)
+    if (slot not in _slot_ids(sent.offers) or offer_id in sent.partner_offers
+            or f"refused:{slot}" in sent.notes or f"hold:{slot}" in sent.notes):
+        return
+    sent.notes.add(f"hold:{slot}")
+    await _ledger_ask(city, message, f"hold slot_id={slot} citizen={message.sender} consent_ref={consent}")
+
+
 async def _family(city: City, message: Message, chat: list[Message]) -> None:
     if _facility_turn(message) or (
         message.sender == LEDGER and _checkin_refused(city.agent_id, message, chat) is not None

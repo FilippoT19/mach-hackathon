@@ -462,6 +462,11 @@ def _agenda_now(chat: list[Message], message: Message) -> datetime | None:
         return None
     now = _when(fields_of(anchor.text).get("agenda_now", ""))
     read_at, turn_at = _when(anchor.sent_at), _when(message.sent_at)
+    # FA-23: a turn can wait minutes (history, Ledger) before it offers: count the agenda at the
+    # moment of sending. Wall clock only for a live turn (a replayed one keeps its own time).
+    wall = datetime.now(timezone.utc)
+    if turn_at is not None and timedelta(0) <= wall - turn_at <= timedelta(minutes=30):
+        turn_at = wall
     if now is not None and read_at is not None and turn_at is not None and turn_at > read_at:
         now += (turn_at - read_at) * _AGENDA_SPEED
     return now
@@ -1840,7 +1845,8 @@ async def _on_confirm(
     if book_here:
         if message.sender.startswith("agent:"):
             _remember_booking_request(agent, message.need_id, slot, message.sender)
-        if not _we(chat, agent, f"slot_id={slot}", to=LEDGER, word="hold"):
+        early = f"hold:{slot}" in _sent(message.need_id or message.msg_id).notes  # FA-23
+        if not early and not _we(chat, agent, f"slot_id={slot}", to=LEDGER, word="hold"):
             parts = ["hold", f"slot_id={slot}"]
             if citizen:
                 parts.append(f"citizen={citizen}")

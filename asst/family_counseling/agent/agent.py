@@ -18,7 +18,7 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
 
@@ -29,6 +29,10 @@ _MAX_PAGE = 20  # BK-38 (P-magesh-8): read the whole local catalogue before goin
 # Four agenda hours is about half a minute of real time at 480x, so a slot is still
 # ahead when the citizen decides. One hour was already past by then.
 _LEAD = timedelta(hours=4)
+# FA-23 (journey 0002750003): confirm -> hold -> Ledger answer takes ~6 real minutes under load
+# (6 agenda hours). A slot 7-9 agenda hours ahead was gone when the hold arrived (EXPIRED).
+# Without urgency the first slot offered is at least 12 agenda hours ahead; U keeps _LEAD.
+_LEAD_CALM = timedelta(hours=12)
 # Doctor key (the last segment of doctor_id) -> languages, gender, days. ``*`` is the ASST's
 # rare language. The Ledger's slot line names the doctor; it does not repeat this table.
 _DOCTORS: dict[str, tuple[frozenset[str], str, frozenset[str]]] = {
@@ -115,6 +119,9 @@ async def main(need: Need, city: City) -> None:
         early = asyncio.get_running_loop().create_task(
             _llm_symptom(city, message.text, emergency_only=_symptom(message) is not None))
         _EARLY_LLM[message.msg_id] = early
+    if (role_of() == "family_counseling" and message.sender.startswith("citizen:")
+            and first_word(text) == "confirm"):
+        await _early_hold(city, message)  # FA-23: lock the slot before the slow history read
     try:
         case = await city.history(need_id=message.need_id)
         await handle(role_of(), city, message, case)
@@ -548,7 +555,7 @@ def fitting(
         horizon = None
     else:
         horizon = now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14))
-    earliest = now + _LEAD
+    earliest = now + (_LEAD if priority == "U" else _LEAD_CALM)  # FA-23
     chosen: list[tuple[int, datetime, dict[str, str]]] = []
     for line in lines:
         slot = fields_of(line)
@@ -5806,6 +5813,11 @@ def _agenda_now(chat: list[Message], message: Message) -> datetime | None:
         return None
     now = _when(fields_of(anchor.text).get("agenda_now", ""))
     read_at, turn_at = _when(anchor.sent_at), _when(message.sent_at)
+    # FA-23: a turn can wait minutes (history, Ledger) before it offers: count the agenda at the
+    # moment of sending. Wall clock only for a live turn (a replayed one keeps its own time).
+    wall = datetime.now(timezone.utc)
+    if turn_at is not None and timedelta(0) <= wall - turn_at <= timedelta(minutes=30):
+        turn_at = wall
     if now is not None and read_at is not None and turn_at is not None and turn_at > read_at:
         now += (turn_at - read_at) * _AGENDA_SPEED
     return now
@@ -7184,7 +7196,8 @@ async def _on_confirm(
     if book_here:
         if message.sender.startswith("agent:"):
             _remember_booking_request(agent, message.need_id, slot, message.sender)
-        if not _we(chat, agent, f"slot_id={slot}", to=LEDGER, word="hold"):
+        early = f"hold:{slot}" in _sent(message.need_id or message.msg_id).notes  # FA-23
+        if not early and not _we(chat, agent, f"slot_id={slot}", to=LEDGER, word="hold"):
             parts = ["hold", f"slot_id={slot}"]
             if citizen:
                 parts.append(f"citizen={citizen}")
@@ -8010,6 +8023,25 @@ def _facility_turn(message: Message) -> bool:
     return (head == "confirm" and message.sender.startswith("citizen:")) or (
         "confirm" in kind and message.sender.startswith("agent:")
     )
+
+
+async def _early_hold(city: City, message: Message) -> None:
+    """FA-23 (journey 0002750003): the hold left 3.5 minutes after the citizen's confirm and the
+    slot had passed (EXPIRED). For a slot this consultorio offered itself, the hold goes to the
+    Ledger before the case history is read; the normal turn then only waits for ``held`` and
+    commits. Not for partner offers (cross-ASST needs its consent) nor for a refused slot."""
+
+    fields = fields_of(message.text)
+    offer_id, consent = fields.get("offer_id", ""), fields.get("consent_ref", "")
+    if not offer_id.startswith("of-") or not consent:
+        return
+    slot = fields.get("slot_id") or offer_id[3:]
+    sent = _sent(message.need_id or message.msg_id)
+    if (slot not in _slot_ids(sent.offers) or offer_id in sent.partner_offers
+            or f"refused:{slot}" in sent.notes or f"hold:{slot}" in sent.notes):
+        return
+    sent.notes.add(f"hold:{slot}")
+    await _ledger_ask(city, message, f"hold slot_id={slot} citizen={message.sender} consent_ref={consent}")
 
 
 async def _family(city: City, message: Message, chat: list[Message]) -> None:
