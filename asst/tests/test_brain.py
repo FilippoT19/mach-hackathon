@@ -529,6 +529,110 @@ async def test_bk59_fa20(check) -> None:
     check("FA-21 held in ritardo: commit sul Ledger", any(r == LEDGER and t.startswith("commit hold_id=H-7") for r, t in city.sent), city.sent)
 
 
+async def test_bk72(check) -> None:
+    """BK-72: a confirm always ends in a word and, when the Ledger answers late, in a receipt."""
+    import time as _time
+    bk, spec = brain._OUR_AGENTS["booking_centre"], brain._OUR_AGENTS["specialist"]
+    rx = "prescription_number-RX-72"
+    hours = [f"2026-11-0{d}T{h:02d}:00:00Z" for d in (3, 4, 5) for h in range(8, 18)]
+    world = "slots page=1/1\n" + "\n".join(
+        f"slot_id=S-{i:02d} doctor_id=asst-niguarda-s1 facility={spec} procedure=VIS-CARD at={at} day={day} free=1"
+        for i, (at, day) in enumerate((at, {"3": "tue", "4": "wed", "5": "thu"}[at[9]]) for at in hours))
+
+    def wipe():
+        for name in ("_SENT", "_HELD_FOR", "_OFFERED_TO", "_ANSWERED", "_ANSWERED_WHERE", "_WHERE_OF", "_RECEIPT_SENT", "_RECEIPTS"):
+            getattr(brain, name).clear()
+        brain._DESK_HOLDS[0] = True
+
+    case = [
+        row(CITIZEN, bk, f"need.request lang=it prescription_number={rx}", 0),
+        row(LEDGER, bk, f"prescription prescription_number={rx} procedure=VIS-CARD priority=D state=issued", 1),
+        row(LEDGER, bk, "agenda agenda_now=2026-11-02T07:00:00Z", 2),
+        row(LEDGER, bk, world, 3),
+    ]
+
+    # (1) citizens who write together do not get the same first offers
+    wipe()
+    first = {}
+    for need in ("N-A", "N-B", "N-C"):
+        city = FakeCity(bk)
+        await brain._advance_alone(city, case[3], case, need, fixed=None, replacing=False)
+        offers = [t for t in to(city, CITIZEN) if t.startswith("offer ")]
+        first[need] = [f["slot_id"] for f in brain._offer_rows(offers[0])] if offers else []
+    check("BK-72 tre casi insieme: la prima offerta non è lo stesso slot per tutti",
+          all(first.values()) and len({slots[0] for slots in first.values()}) == 3, first)
+
+    offer = row(bk, CITIZEN, "\n".join(
+        f"offer offer_id=of-S-{i:02d} slot_id=S-{i:02d} doctor_id=asst-niguarda-s1 facility={spec} procedure=VIS-CARD "
+        f"agenda_date={hours[i]} priority=D prescription_number={rx}" for i in range(3)), 4)
+    confirm = row(CITIZEN, bk, "confirm offer_id=of-S-00 consent_ref=cons-N-1-booking", 5)
+    hold = row(bk, LEDGER, f"hold slot_id=S-00 citizen={CITIZEN} prescription_number={rx} consent_ref=cons-N-1-booking", 6)
+    asked = row(bk, CITIZEN, "data.request purpose=booking fields=address,disability,car Mentre blocco il suo appuntamento", 7)
+
+    # (2) the Ledger does not answer the hold in the wait: the slot is kept back minutes, not 15
+    wipe()
+    city = FakeCity(bk)
+    await brain._desk(city, confirm, [*case, offer, confirm], hold_self=False, fixed=None)
+    entry = brain._HELD_FOR.get("S-00")
+    check("BK-72 hold senza risposta: lo slot resta bloccato pochi minuti, non 15",
+          any(t.startswith("hold slot_id=S-00") for t in to(city, LEDGER)) and entry is not None
+          and brain._held_elsewhere("S-00", "N-OTHER")
+          and _time.monotonic() - entry[1] >= brain._HELD_SECONDS - brain._HELD_UNANSWERED - 1, (city.sent, entry))
+    # the citizen confirms again: a word, no second hold, the offers are not sent again
+    again = row(CITIZEN, bk, "confirm offer_id=of-S-00 consent_ref=cons-N-1-booking", 8)
+    city = FakeCity(bk)
+    await brain._desk(city, again, [*case, offer, confirm, hold, asked, again], hold_self=False, fixed=None)
+    out = to(city, CITIZEN)
+    check("BK-72 conferma ripetuta con hold in attesa: booking.pending, nessun secondo hold, nessuna offerta",
+          len(out) == 1 and out[0].startswith("booking.pending slot_id=S-00") and not to(city, LEDGER), city.sent)
+    # the citizen asks where the case stands: pending, never the same offers again
+    ask = row(CITIZEN, bk, "Buongiorno, ci sono novita?", 9)
+    city = FakeCity(bk)
+    await brain._desk(city, ask, [*case, offer, confirm, hold, asked, ask], hold_self=False, fixed=None)
+    out = to(city, CITIZEN)
+    check("BK-72 il cittadino riscrive con hold in attesa: booking.pending, non di nuovo le offerte",
+          len(out) == 1 and out[0].startswith("booking.pending"), city.sent)
+
+    # (3) a refusal that comes after the wait: slot free again, cancel and other offers, once
+    wipe()
+    brain._HELD_FOR["S-00"] = ("N-1", _time.monotonic())
+    refused = row(LEDGER, bk, "refused hold slot_id=S-00 reason=no_capacity", 10)
+    city = FakeCity(bk)
+    chat = [*case, offer, confirm, hold, asked, refused]
+    await brain._desk(city, refused, chat, hold_self=False, fixed=None)
+    out = to(city, CITIZEN)
+    check("BK-72 refused in ritardo: slot liberato, cancel al cittadino e altre offerte senza quel posto",
+          "S-00" not in brain._HELD_FOR and any(t.startswith("cancel offer_id=of-S-00 reason=no_capacity") for t in out)
+          and any(t.startswith("offer ") and "slot_id=S-00 " not in t for t in out), city.sent)
+    before = len(city.sent)
+    await brain._desk(city, refused, chat, hold_self=False, fixed=None)
+    check("BK-72 lo stesso refused letto due volte: nessun secondo messaggio", len(city.sent) == before, city.sent[before:])
+    wipe()
+    denied = row(LEDGER, bk, "refused hold slot_id=S-00 reason=forbidden_role", 11)
+    city = FakeCity(bk)
+    await brain._desk(city, denied, [*case, offer, confirm, hold, asked, denied], hold_self=False, fixed=None)
+    check("BK-72 refused in ritardo per permessi: BK-57 si spegne (i prossimi confirm vanno alla struttura)",
+          brain._DESK_HOLDS[0] is False, city.sent)
+
+    # (4) held / committed already in the case, no turn worked them: the next citizen message does
+    wipe()
+    held = row(LEDGER, bk, "held hold_id=H-72 slot_id=S-00 fence=3", 12)
+    ask = row(CITIZEN, bk, "Buongiorno, ci sono novita?", 13)
+    city = FakeCity(bk)
+    await brain._desk(city, ask, [*case, offer, confirm, hold, asked, held, ask], hold_self=False, fixed=None)
+    check("BK-72 held nella storia senza commit: il messaggio successivo del cittadino fa partire il commit",
+          any(t.startswith("commit hold_id=H-72 consent_ref=cons-N-1-booking") for t in to(city, LEDGER))
+          and not any(t.startswith("offer ") for t in to(city, CITIZEN)), city.sent)
+    commit = row(bk, LEDGER, "commit hold_id=H-72 consent_ref=cons-N-1-booking fence=3", 14)
+    done = row(LEDGER, bk, "committed booking_id=H-72 hold_id=H-72 slot_id=S-00 ledger_ref=L-72", 15)
+    ask2 = row(CITIZEN, bk, "Mi conferma la prenotazione?", 16)
+    city = FakeCity(bk)
+    await brain._desk(city, ask2, [*case, offer, confirm, hold, asked, held, commit, done, ask2], hold_self=False, fixed=None)
+    check("BK-72 committed nella storia senza ricevuta: il cittadino riceve booking.receipt",
+          any(t.startswith("booking.receipt") and "booking_id=H-72" in t and "ledger_ref=L-72" in t for t in to(city, CITIZEN)), city.sent)
+    wipe()
+
+
 async def test_x49(check) -> None:
     """X-49: the address is asked when the citizen confirms, before the booking.receipt."""
     BKX, HOSP = "agent:bk", "agent:jdj692g4145e"
@@ -2174,6 +2278,7 @@ async def main() -> int:
                 os.environ["CITY_ROLE"] = old_role
 
     await test_gp17(check)
+    await test_bk72(check)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 
