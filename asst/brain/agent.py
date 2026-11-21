@@ -6000,7 +6000,7 @@ def _trace_window(
     message: Message, now: datetime | None, priority: str | None, reply: dict[str, str] | None,
     deadline: datetime | None, lines: list[str], fit: list[dict[str, str]], chosen: list[dict[str, str]],
 ) -> None:
-    """BK-69 (N-...0002600005): 25 B of 25 reached the cross-ASST consent with no local offer and
+    """BK-71 (N-...0002600005): 25 B of 25 reached the cross-ASST consent with no local offer and
     the journeys do not show the Ledger. One line per search: agenda time, deadline and its source
     (a Ledger field or the chat chronology), the names of the prescription fields (no values but
     dates) and why the catalogue slots dropped. Diagnostic only: it changes no decision."""
@@ -7509,7 +7509,7 @@ async def _advance_alone(
         and _within(slot.get("at", ""), deadline) and not _learned_out(slot, learned)
         and not _held_elsewhere(slot.get("slot_id", ""), key)  # BK-63
     ]
-    _trace_window(message, now, priority, reply, deadline, lines, fit, chosen)  # BK-69
+    _trace_window(message, now, priority, reply, deadline, lines, fit, chosen)  # BK-71
     chosen = _best_tier(chosen, _days(chat), _gender(chat))  # BK-60
     _trace(
         "slots", message, procedure=procedure, priority=priority, lang=_lang(chat),

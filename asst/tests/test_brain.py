@@ -2046,8 +2046,8 @@ async def main() -> int:
 
     await test_bk68(check)
 
-    async def test_bk69(check):
-        """BK-69 (N-...0002600005): 25 B of 25 went to the cross-ASST consent with no local offer.
+    async def test_bk71(check):
+        """BK-71 (N-...0002600005): 25 B of 25 went to the cross-ASST consent with no local offer.
         Diagnostic only: one log line tells the deadline, where it came from and why slots dropped."""
         import logging
         bk = brain._OUR_AGENTS["booking_centre"]
@@ -2082,22 +2082,22 @@ async def main() -> int:
                 await brain._advance_alone(city, chat[0], chat, "N-1", fixed=None, replacing=False)
                 win = next((l for l in lines if l.startswith("booking.window need_id=N-1")), "")
                 if label == "ledger":
-                    check("BK-69 log finestra: scadenza dal campo del Ledger, ora di agenda e scadenza scritte",
+                    check("BK-71 log finestra: scadenza dal campo del Ledger, ora di agenda e scadenza scritte",
                           "deadline_from=ledger:issued_at" in win and "now=2026-12-07T00:10" in win
                           and "deadline=2026-12-08T16:00" in win and "rx_keys=issued_at,priority,procedure,state" in win, (win, lines))
-                    check("BK-69 log finestra: catalogo e scarti per motivo (margine, scadenza)",
+                    check("BK-71 log finestra: catalogo e scarti per motivo (margine, scadenza)",
                           "catalog=4" in win and "first=2026-12-07T02:00" in win and "last=2026-12-09T10:30" in win
                           and "early=1" in win and "late=1" in win and "chosen=2" in win, win)
                 else:
-                    check("BK-69 log finestra: senza date del Ledger e senza orari, la scadenza manca (none)",
+                    check("BK-71 log finestra: senza date del Ledger e senza orari, la scadenza manca (none)",
                           "deadline_from=none" in win and "rx_keys=priority,procedure,state" in win, (win, lines))
-                    check("BK-69 il log non cambia le offerte", any("slot_id=M1" in t for t in to(city, CITIZEN)), city.sent)
+                    check("BK-71 il log non cambia le offerte", any("slot_id=M1" in t for t in to(city, CITIZEN)), city.sent)
         finally:
             brain._LOG.removeHandler(grab)
             brain._LOG.setLevel(old_level)
             brain._SENT.clear(); brain._HELD_FOR.clear()
 
-    await test_bk69(check)
+    await test_bk71(check)
     await test_francesco_15(check)
     await test_francesco_16(check)
     await test_francesco_18(check)
