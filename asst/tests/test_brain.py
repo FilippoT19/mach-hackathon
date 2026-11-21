@@ -492,13 +492,18 @@ async def test_bk59_fa20(check) -> None:
         at((LEDGER, "agent:bk", f"agenda agenda_now={NOW}", 4), 2),
         at(("agent:bk", CITIZEN, offer, 5), 3),
     ]
-    for reason, want in (("deadline", "renewal"), ("past", "agenda")):
+    # BK-65 (P-francesco-60): a deadline cancel with a valid prescription is no renewal; the Ledger's
+    # state=expired is.
+    expired = at((LEDGER, "agent:bk", "prescription prescription_number=prescription_number-RX-9 procedure=VIS-CARD priority=B state=expired", 9), 4)
+    for reason, want, extra in (("deadline", "no renewal", []), ("deadline", "renewal", [expired]), ("past", "agenda", [])):
         brain._SENT.clear() if hasattr(brain, "_SENT") else None
         cancel = at((CITIZEN, "agent:bk", f"cancel offer_id=of-S-1 reason={reason}", 6), 4)
-        cancel = dataclasses.replace(cancel, need_id=f"N-59-{reason}")
+        cancel = dataclasses.replace(cancel, need_id=f"N-59-{reason}-{len(extra)}")
         city = FakeCity("agent:bk")
-        await brain._desk(city, cancel, [*base, cancel], hold_self=False, fixed=None)
-        if want == "renewal":
+        await brain._desk(city, cancel, [*base, *extra, cancel], hold_self=False, fixed=None)
+        if want == "no renewal":
+            ok = not any("purpose=prescription_renewal" in t for t in to(city, CITIZEN))
+        elif want == "renewal":
             ok = any("purpose=prescription_renewal" in t for t in to(city, CITIZEN))
         else:
             ok = any(r == LEDGER and t == "agenda" for r, t in city.sent)
