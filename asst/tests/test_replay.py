@@ -268,8 +268,20 @@ class Sim:
                 self.say("Which slot_id?")
             elif f["offer_id"] == self.chosen:
                 self.chosen = None
-        elif head == "consent" and f.get("purpose") == "cross_asst":
+        elif head == "data.request" and f.get("purpose") == "cross_asst":
+            # BK-77: the kit's form of the question. The citizen answers a data.request with a
+            # data.response (as it did in journey 0175); "which" is the citizen of 21/11 that does
+            # not take it and asks, as it does today for the consent form.
             if self.cross == "ref":
+                self.say(f"Yes, I agree. data.response consent_ref=cons-{self.need}-cross_asst purpose=cross_asst")
+            elif self.cross == "data":
+                self.say("data.response purpose=cross_asst")
+            elif self.cross == "no":
+                self.say("No, I prefer to stay in my ASST.")
+            elif self.cross == "which":
+                self.say("Which consent_ref?")
+        elif head == "consent" and f.get("purpose") == "cross_asst":
+            if self.cross in ("ref", "which"):
                 self.say(f"Yes, I agree. consent consent_ref=cons-{self.need}-cross_asst purpose=cross_asst")
             elif self.cross == "data":  # journey 0175
                 self.say("data.response purpose=cross_asst")
@@ -508,7 +520,7 @@ async def r06():
                   taken={sid for sid in local[:30] if sid != keep}, refuse_hold={keep}, cross="data",
                   partners=[Partner("gorla", "agent:gorla0000001", [("s1", at("20", "12:00"))])]).start()
     out = verdict(s, lang="it", max_messages=8, outcome="waiting_list", max_offer_messages=1)
-    asks = [m for m in s.to_citizen() if brain.first_word(m.text) == "consent" and "purpose=cross_asst" in m.text]
+    asks = [m for m in s.to_citizen() if brain.first_word(m.text) in ("consent", "data.request") and "purpose=cross_asst" in m.text]
     out.append(("the cross-ASST consent is asked at most twice", len(asks) <= 2, f"asked {len(asks)} times"))
     bare = [m.text for m in s.to_citizen() if brain.first_word(m.text) == "cancel" and len(m.text.split()) <= 3]
     out.append(("a facility cancel reaches the citizen with a sentence", not bare, f"{bare}"))
@@ -731,7 +743,22 @@ async def r20():
     return s, out
 
 
-REPLAYS = [r18, r19, r20, r01, r02, r03, r04, r05, r06, r07, r08, r09, r10, r11, r12, r13, r14, r15, r16, r17]
+async def r23():
+    """BK-77 (…0003700002, …0001420011, 21/11): the citizen does not take the new form of the cross-ASST question
+    and asks "Which consent_ref?". The second question is the one of today, with the reference: same booking."""
+    agenda = "2026-11-16T15:15:00Z"
+    s = await Sim("N-2026-11-02-8909120003700002", lang="en", procedure="VIS-FIS", agenda=agenda, cross="which",
+                  first="Hello, I need an appointment for my back. English-speaking doctor if possible, please.",
+                  taken=all_local("VIS-FIS", agenda), partners=english_ring()).start()
+    out = verdict(s, lang="en", max_messages=9, outcome="booked", max_offer_messages=1)
+    asks = [brain.first_word(m.text) for m in s.to_citizen() if "purpose=cross_asst" in m.text]
+    out.append(("BK-77 first question as data.request, second as consent with the reference",
+                asks == ["data.request", "consent"]
+                and any("consent_ref=cx-" in m.text for m in s.to_citizen() if brain.first_word(m.text) == "consent"), f"{asks}"))
+    return s, out
+
+
+REPLAYS = [r23, r18, r19, r20, r01, r02, r03, r04, r05, r06, r07, r08, r09, r10, r11, r12, r13, r14, r15, r16, r17]
 
 
 async def main() -> int:

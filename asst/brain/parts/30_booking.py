@@ -870,7 +870,7 @@ def _cross_consent(chat: list[Message], agent: str) -> tuple[bool | None, str]:
     for row in chat:
         fields = fields_of(row.text)
         head = first_word(row.text)
-        if row.sender == agent and head == "consent" and fields.get("purpose") == "cross_asst":
+        if row.sender == agent and _cross_asked(row.text):
             asks += 1
             decision = (None, "")
             continue
@@ -903,8 +903,12 @@ def _cross_consent(chat: list[Message], agent: str) -> tuple[bool | None, str]:
 
 
 def _cross_asks(chat: list[Message], agent: str) -> int:
-    return sum(1 for row in chat if row.sender == agent and first_word(row.text) == "consent"
-               and fields_of(row.text).get("purpose") == "cross_asst")
+    return sum(1 for row in chat if row.sender == agent and _cross_asked(row.text))
+
+
+def _cross_asked(text: str) -> bool:
+    """Our cross-ASST question, in either form (BK-77): ``data.request`` or ``consent``."""
+    return first_word(text) in {"consent", "data.request"} and fields_of(text).get("purpose") == "cross_asst"
 
 
 def _cross_replies(chat: list[Message], agent: str, request_id: str) -> list[Message]:
@@ -1122,7 +1126,17 @@ def _cx_head(chat: list[Message]) -> str:
     # BK-64 (P-magesh-22): with our consent_ref in every question, no citizen answered any more
     # (L4: 7 journeys of 9 without a booking). Before BK-58 they answered "data.response
     # purpose=cross_asst". The reference goes in only after the citizen asked which one.
-    if not any(row.sender.startswith("citizen:") and _WHICH_REF.search(row.text or "") for row in chat):
+    # BK-77 (21/11): 71 journeys got "consent purpose=cross_asst ...?" and no citizen ever gave the
+    # consent (19 "Which consent_ref?", 30 sent the request again, 21 confirmed an older offer).
+    # The kit lists this question as ``data.request`` with purpose ``cross_asst`` and ``fields``
+    # (e19, booking centre -> citizen), and the citizen has answered "data.response
+    # purpose=cross_asst" (BK-36). The FIRST question goes out in that form; any later one keeps
+    # the form below, so a citizen who does not take the new form is where it was before.
+    which = any(row.sender.startswith("citizen:") and _WHICH_REF.search(row.text or "") for row in chat)
+    if not which and not any(not row.sender.startswith("citizen:") and row.sender != LEDGER
+                             and _cross_asked(row.text) for row in chat):
+        return "data.request purpose=cross_asst fields=consent_ref "
+    if not which:
         return "consent purpose=cross_asst "
     need = next((row.need_id for row in chat if row.need_id), "") or "case"
     return f"consent purpose=cross_asst consent_ref=cx-{need} "
@@ -1170,8 +1184,8 @@ async def _cross_asst(
         _trace("cross", message, state="refused")
         return False
     if accepted is None:
-        if sent.cross_asked or _we(
-            chat, city.agent_id, "purpose=cross_asst", to=citizen, word="consent"
+        if sent.cross_asked or any(
+            row.sender == city.agent_id and row.recipient == citizen and _cross_asked(row.text) for row in chat
         ):
             sent.cross_asked = True
             # BK-33 (000113): the citizen wrote (often a need.request) while our consent question
@@ -1740,8 +1754,7 @@ async def _desk_route(
         purpose = fields.get("purpose")
         cross_pending = (
             purpose is None and head not in {"confirm", "cancel", "need.request", "data.response"}
-            and any(row.sender == city.agent_id and first_word(row.text) == "consent"
-                    and fields_of(row.text).get("purpose") == "cross_asst" for row in chat)
+            and any(row.sender == city.agent_id and _cross_asked(row.text) for row in chat)
             and _cross_consent([row for row in chat if row.msg_id != message.msg_id], city.agent_id)[0] is None
         )
         if purpose == "cross_asst" or cross_pending:
