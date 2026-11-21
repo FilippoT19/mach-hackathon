@@ -322,6 +322,50 @@ _PEERS: dict[str, str] = {}
 # X-13: impostors. Other teams' agent ids, copied from the shared list in the mods' group. While
 # it is empty every partner is accepted (cross-ASST keeps working); once filled, only these.
 _TRUSTED_PARTNERS: set[str] = set()
+# MACH2-1 (R17): the official ring, from the city map /v1/scoreboard/map (21/11 01:45, before the
+# impostors), as published in MACH-2.0. Per ASST: hospital, specialist, consultorio, booking, gp.
+_MACH = "2.0"
+_RING_TABLE = {
+    "bicocca": "bb01ggxymm05 sh35cbsy287d nkh372rd16yq ez8cb7j167p2 rng5wcrzvhsj",
+    "brera": "ndrnnjwxttmb fjmvabg58gh0 cj1jfac4ev86 q6s5nm3h5dq5 xbmtvn6jzvyg",
+    "citta studi": "ytprhckwyw4t sc25kab6cgde p5sq1njyjr47 hwfrwj893121 pp83zdrg8vhe",
+    "corvetto": "x0vr9rbwpesr h8425ac7btd8 p0n57t7vtpq0 yzcs4p44ep39 hkrtm1gzjb24",
+    "forlanini": "aycbxayckhrd zeahjp9bp2an yr8hjc5q7n98 eg6p3m77svxv b0pk7g42fcsn",
+    "giambellino": "h6r1v45esk77 hnpe58epeyh1 bzs050xacs1m cdc7x6m21nj6 c32jyk0cyan7",
+    "gorla": "m6py14a1ej77 h6krzxx6es83 yg8debxe3x0p sbdpbpqz5sxe ck9w60ejwnvw",
+    "greco": "xtj1dk9x3qej q18es2d82f8r pxvd2kk2yx5j h3n6kfd18r3g bmrcsmqq6at2",
+    "isola": "d6cxxmh767k3 etpwrfmfa8hm mkfzagfe8jtt sphwpc5tg4p9 cxvqv5qztz70",
+    "lambrate": "nanpr5mgm2py pky3vqyqbepa atp772whjkgd gdrf9b9kxxss c2ewegr2ea3v",
+    "nord": "gpr1zqe343gb zand0f57ec1j ccjzqm7yekwx psxp8bh1feaa wwxaphfb5pfh",
+    "ortica": "vs1bs4485dcn cgj1c2mf1dx0 d0kkschyjrdq geyjmp26tajh ega0tzcy6za8",
+    "precotto": "s1twcdzg3296 f2s88vwd3jnf nf9pqsgzrwm0 ser7es7thgwf n4yjr7kjbmrx",
+    "san siro": "k2nwktpp02xx yk37jqcnc1r5 sdca2w4p9f8z tnzkhsa62kn0 qsbsfjytc3y5",
+    "baggio": "t40mr7xsn2wh t3ktav4yrxvb pd5th2nkb31q jastt2eeekcv ny08j7bvs7jw",
+    "barona": "w2str91zrrbq qg7rvp6ktyne hdnz4xe1c8d2 vdmz874c65kp w9easgp707bn",
+    "bovisa": "gxq3vzgt3h5t tty8erdj6t41 txar5994gbkj vgtmj5nqfkxj h82xpx3rkn9e",
+    "centro": "r8yprrs0e8be dqfw9nh15dn4 pv3a0t3tyqdq y6hxsd766sys jmqwr12vy2j6",
+    "est": "r8njm9a6c7pv gpwmb45gggme hvycshaebezp n8geakhhcprc xjsdqxvj3x59",
+    "lorenteggio": "tmt0bcv0st1f n9bf9y6670hp mcppmrbjvxag qtjne8symjas w2qsptc9qqhg",
+    "navigli": "gezf38x5940y s2tevpn8zkcj drchwbffymha jgy1dj2sw2ew dn90g1skkx0f",
+    "niguarda": "jdj692g4145e jmjfst55vgjz mm18nddkfc5w fn64xfq2jft4 fddgaqmp6kb0",
+    "ovest": "darwa6412gz0 fa0sw3wwn1d4 r7rgp7mdwg8y pewepg7h3c5g bq7e62g3kkz3",
+    "porta romana": "p2hwz5xyjrwz a88btdp00ymw bx7r8th27v1f z6pbm2a7vf36 d6c308wmh6ky",
+    "rogoredo": "fnxy73v47n9g s5sevkc5291w jet0tz755hvf ejfzvz4tdagq hwgn012k70gh",
+    "sud": "p90cbsk3n9e6 n0p2dwznf4mc kx0j48fa0epp p56k8h29kc45 v4y8p7h8gkzw",
+}
+_RING: set[str] = {f"agent:{i}" for ids in _RING_TABLE.values() for i in ids.split()}
+_RING_HOSPITALS: set[str] = {f"agent:{ids.split()[0]}" for ids in _RING_TABLE.values()}
+_TRUSTED_PARTNERS.update(_RING)  # R17 on: outside the ring no slot, no data, no answer
+_ASST_OF: dict[str, str] = {f"agent:{i}": asst for asst, ids in _RING_TABLE.items() for i in ids.split()}
+
+
+def _same_asst(facility: str, sender: str) -> bool:
+    """MACH-2.0 identity check 2: facility= is the sender itself. A booking centre that answers for
+    its own hospital is accepted only inside its ASST of the ring (tests: ring switched off)."""
+
+    if facility == sender or not _TRUSTED_PARTNERS:
+        return True
+    return facility in _TRUSTED_PARTNERS and _ASST_OF.get(facility, "?") == _ASST_OF.get(sender, "!")
 # Ids posted by other ASSTs in the mods' group. Copied into _TRUSTED_PARTNERS when the impostors
 # arrive (switching it on now would reject the teams that have not posted yet).
 _KNOWN_PARTNERS = {
@@ -1119,6 +1163,12 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     agent = city.agent_id
     if message.sender == LEDGER:
         await _announce(city, message, chat, agent)
+        return
+    if (message.sender.startswith("agent:") and not _trusted(message.sender)
+            and first_word(message.text) in {"report.notice", "booking.notice"}):
+        # MACH2-1 (R17) on the gp too: a notice from an agent outside the ring is not noted in the
+        # patient's file (impostor, level 8). One line back, never an instruction followed.
+        await _say(city, message.sender, f"{first_word(message.text)}.ack status=ignored reason=not_listed")
         return
     if first_word(message.text) == "report.notice" and message.sender.startswith("agent:"):
         bid = fields_of(message.text).get("booking_id", "")
@@ -6116,6 +6166,24 @@ def _fit(lines: list[str], tail: str) -> list[str]:
     return kept
 
 
+def _half_day(slot: dict[str, str]) -> str:
+    at = slot.get("at", "")
+    return at[:10] + ("am" if at[11:13] < "13" else "pm")
+
+
+# P-magesh-23 (N-...0330, N-...0331, L8): offers 5 h ahead of the agenda were past when the citizen
+# cancelled 4-5 real minutes later (reason=past, every offer), and confirm -> hold -> commit costs
+# 3-5 minutes more. B/D/P: if no fitting slot is this far ahead, read the next page before offering.
+_LEAD_SAFE = timedelta(hours=12)
+
+
+def _safe_lead(chosen: list[dict[str, str]], now: datetime | None, priority: str | None) -> list[dict[str, str]]:
+    """The slots at least ``_LEAD_SAFE`` ahead of the agenda (order kept); [] if none, or for U."""
+    if priority == "U" or now is None:
+        return list(chosen)
+    return [slot for slot in chosen if (at := _when(slot.get("at", ""))) is not None and at >= now + _LEAD_SAFE]
+
+
 def _diverse(chosen: list[dict[str, str]], count: int) -> list[dict[str, str]]:
     """P-francesco-48: ``count`` offers that differ. The first three by date are often the same day
     and doctor, so one hidden constraint of the citizen ("not that day") drops them all together.
@@ -6126,8 +6194,12 @@ def _diverse(chosen: list[dict[str, str]], count: int) -> list[dict[str, str]]:
     rest = list(chosen)
     while rest and len(picks) < count:
         days = {slot.get("at", "")[:10] for slot in picks}
+        halves = {_half_day(slot) for slot in picks}
         doctors = {slot.get("doctor_id", "") for slot in picks}
-        best = max(rest, key=lambda slot: (slot.get("at", "")[:10] not in days) + (slot.get("doctor_id", "") not in doctors)) if picks else rest[0]
+        # P-magesh-23 (2): a new half-day counts too, so one jump of the agenda (an hour per real
+        # minute) never makes every offer past together.
+        best = max(rest, key=lambda slot: (slot.get("at", "")[:10] not in days) + (slot.get("doctor_id", "") not in doctors)
+                   + (_half_day(slot) not in halves)) if picks else rest[0]
         picks.append(best)
         rest.remove(best)
     return sorted(picks, key=chosen.index)
@@ -6137,11 +6209,28 @@ def _refused_slots(chat: list[Message], agent: str, sent: _Sent) -> set[str]:
     """P-magesh-9: slots whose hold or commit the Ledger refused to us. Never offered again."""
 
     found = {note[8:] for note in sent.notes if note.startswith("refused:")}
-    for row in chat:
-        if row.sender == LEDGER and row.recipient == agent and first_word(row.text) == "refused":
-            slot = fields_of(row.text).get("slot_id", "")
-            if slot and words(row.text) & {"hold", "commit"}:
-                found.add(slot)
+    for index, row in enumerate(chat):
+        if row.sender != LEDGER or row.recipient != agent or first_word(row.text) != "refused":
+            continue
+        kind = words(row.text)
+        if not kind & {"hold", "commit"}:
+            continue
+        fields = fields_of(row.text)
+        slot = fields.get("slot_id", "")
+        if not slot:
+            # FA-23 (N-2026-11-02-890912000256): a STALE_FENCE/EXPIRED refusal of a commit names
+            # only the hold, or nothing. Find the slot from our hold (or our last commit before it),
+            # from history, so another process or a later turn also knows the slot is gone.
+            hold_id = fields.get("hold_id", "")
+            if not hold_id and "commit" in kind:
+                hold_id = next(
+                    (fields_of(prev.text).get("hold_id", "") for prev in reversed(chat[:index])
+                     if prev.sender == agent and prev.recipient == LEDGER and first_word(prev.text) == "commit"),
+                    "",
+                )
+            slot = _hold_slot(chat, agent, hold_id) if hold_id else ""
+        if slot:
+            found.add(slot)
     return found
 
 
@@ -6453,6 +6542,24 @@ async def _ledger_asks(city: City, message: Message, texts: list[str]) -> None:
         await asyncio.gather(*(_ledger_ask(city, message, text) for text in texts))
 
 
+async def _fresh_slots(city: City, message: Message, chat: list[Message], procedure: str) -> list[Message]:
+    """FA-22 (journey 000308): after the Ledger refused a slot, the next offers must come from the
+    agenda and slots of now, not from the list read when the case opened (minutes ago = hours of
+    agenda): ask both again and wait for the new lines. If the Ledger is slow, the old view stays
+    and ``_agenda_now`` still moves the clock forward."""
+
+    if not procedure:
+        return chat
+    seen = {row.msg_id for row in chat}
+    await _ledger_asks(city, message, ["agenda", f"world procedure={procedure} page=1"])
+
+    def ready(rows: list[Message]) -> bool:
+        new = {first_word(row.text) for row in rows if row.sender == LEDGER and row.msg_id not in seen}
+        return {"agenda", "slots"} <= new
+
+    return await _until(city, message.need_id, chat, ready)
+
+
 def _citizen_dropped(chat: list[Message], offer_id: str) -> bool:
     if not offer_id:
         return False
@@ -6511,6 +6618,14 @@ _RARE_LANG_HOSPITAL = {
     "si": ("agent:xtj1dk9x3qej", "Greco", "singalese", "Sinhala"),
     "ti": ("agent:bb01ggxymm05", "Bicocca", "tigrino", "Tigrinya"),
     "bn": ("agent:k2nwktpp02xx", "San Siro", "bengalese", "Bengali"),  # X-52
+    # MACH2-3: the rest of the MACH-2.0 ring table (h3 of the ASST that speaks the language).
+    "tr": ("agent:ytprhckwyw4t", "Città Studi", "turco", "Turkish"),
+    "de": ("agent:aycbxayckhrd", "Forlanini", "tedesco", "German"),
+    "sq": ("agent:m6py14a1ej77", "Gorla", "albanese", "Albanian"),
+    "tl": ("agent:d6cxxmh767k3", "Isola", "tagalog", "Tagalog"),
+    "wo": ("agent:vs1bs4485dcn", "Ortica", "wolof", "Wolof"),
+    "ro": ("agent:s1twcdzg3296", "Precotto", "rumeno", "Romanian"),
+    "fa": ("agent:ndrnnjwxttmb", "Brera", "persiano", "Persian"),
 }
 
 
@@ -6643,6 +6758,10 @@ async def _cross_asst(
         if (not target or target == city.agent_id or _ours(target) or target in sent.cross_peers
                 or any(target == asked_to for asked_to, _ in requests)):
             continue
+        if not _trusted(target):  # MACH2-1 (R17): never ask, nor give criteria, outside the ring
+            continue
+        if len(requests) >= _MACH_ROUND:  # MACH2-2 (R3): at most 12 facilities per round
+            break
         if not isinstance(peer, str):
             role = _peer_value(peer, "role")
             capabilities = _peer_value(peer, "capabilities")
@@ -6650,6 +6769,7 @@ async def _cross_asst(
                 continue
         parts = [
             "need.request",
+            f"mach={_MACH}",  # MACH2-2: we speak 2.0 (the lease goes to whoever declares mach=)
             f"service_type={service_type}",
             f"procedure={procedure}",
             f"request_id={request_id}",
@@ -6672,6 +6792,7 @@ async def _cross_asst(
         limit = _rx_deadline(chat, _prescription_reply(chat, number), priority, number)
         if limit is not None:
             parts.append("deadline=" + limit.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        parts.append(f"lease_s={_MACH_LEASE}")  # R14: our chain is consent + confirm, well under 900 s
         requests.append((target, " ".join(parts)))
     # OPS-11: one need.request per partner, all at once (each say costs seconds under load).
     done = await asyncio.gather(*(_say(city, target, text) for target, text in requests))
@@ -6744,7 +6865,9 @@ _PARTNER_OFFER_FIELDS = ("offer_id", "slot_id", "doctor_id", "facility", "proced
 
 
 def _expected_offer(chat: list[Message], agent: str, message: Message, sent: _Sent) -> bool:
-    if not _TRUSTED_PARTNERS:
+    # P-magesh-24: no "empty list = everyone" shortcut. Our own agents always pass (the sender is
+    # signed and the chat history may be incomplete); anyone else only if we asked them.
+    if _ours(message.sender):
         return True
     request_id = fields_of(message.text).get("request_id", "")
     return message.sender in sent.cross_peers or (
@@ -6755,7 +6878,8 @@ def _expected_offer(chat: list[Message], agent: str, message: Message, sent: _Se
 def _expected_confirm_reply(
     chat: list[Message], agent: str, sender: str, fields: dict[str, str],
 ) -> bool:
-    if not _TRUSTED_PARTNERS:
+    # P-magesh-24: receipts and cancels from an unknown agent are ignored even with an empty list.
+    if _ours(sender):
         return True
     return any(
         row.sender == agent and row.recipient == sender
@@ -6766,6 +6890,8 @@ def _expected_confirm_reply(
 
 
 _PARTNER_BATCH = 3
+_MACH_ROUND = 12  # MACH-2.0 R3
+_MACH_LEASE = 900  # MACH-2.0 R14 default
 _PARTNER_ROUNDS = 3
 _PARTNER_LEAD = timedelta(minutes=30)
 
@@ -6815,12 +6941,21 @@ def _partner_pool(
     for reply in chat:
         if not reply.sender.startswith("agent:") or reply.recipient != agent or _ours(reply.sender):
             continue
-        if first_word(reply.text) != "offer" or not _expected_offer(chat, agent, reply, sent):
+        # MACH2-4 (R20, R8): a cancel can carry the alternatives in the same message.
+        # R17: only ring members are asked (_cross_asst), and only the asked ones get here.
+        if first_word(reply.text) not in {"offer", "cancel"}:
+            continue
+        if not (_expected_offer(chat, agent, reply, sent) or (
+                first_word(reply.text) == "cancel" and _expected_confirm_reply(chat, agent, reply.sender, {}))):
             continue
         for line in reply.text.splitlines():
+            if first_word(line) != "offer":
+                continue
             fields = fields_of(line)
             offer_id = fields.get("offer_id", "")
             if not offer_id or not fields.get("slot_id") or not fields.get("facility") or offer_id in pool:
+                continue
+            if not _same_asst(fields["facility"], reply.sender):  # MACH2-1: facility= is the sender (or its ASST)
                 continue
             if any(mark in offer_id for mark in "<>"):  # a template line, not an offer (Bovisa)
                 continue
@@ -6832,7 +6967,9 @@ def _partner_pool(
             said = fields.get("doctor_gender", "") or (doctor[1] if doctor else "")
             miss = "1" if gender and said and said != gender else "0"  # P-francesco-31: order, not filter
             at = _when(fields.get("agenda_date", "") or fields.get("at", "") or fields.get("expiry", ""))
-            if at is not None and now is not None and at <= now + _PARTNER_LEAD:
+            if at is None:  # MACH2-4 (R7): a slot without a readable date never reaches the citizen
+                continue
+            if now is not None and at <= now + _PARTNER_LEAD:
                 continue
             if at is not None and limit is not None and at > limit:
                 continue
@@ -6855,8 +6992,8 @@ async def _partner_round(
 
     agent = city.agent_id
     sent = _sent(key)
-    if _we(chat, agent, "waiting_list=true", to=citizen, word="offer"):
-        return False
+    if _we(chat, agent, "", to=citizen, word="booking.receipt"):
+        return False  # MACH2-5 (R13): on the waiting list a late offer still goes; booked, never
     done = _cross_offered(chat, agent, citizen, sent)
     if again:
         done -= set(_open_offers(chat, agent, citizen))
@@ -6907,8 +7044,15 @@ async def _partner_offer(city: City, replies: list[Message], chat: list[Message]
     if not citizen:
         return False
     sent = _sent(key)
-    if _cross_offered(chat, city.agent_id, citizen, sent):
+    if _cross_offered(chat, city.agent_id, citizen, sent) and (
+        _open_offers(chat, city.agent_id, citizen)
+        # the batch went out in this process but is not in the history yet: still held
+        or not any(row.sender == city.agent_id and row.recipient == citizen and first_word(row.text) == "offer"
+                   and "cross_asst=true" in row.text.split() for row in chat)
+    ):
         return True  # BK-47: one batch at a time; a late reply only joins the pool
+    # MACH2-5 (R13): the citizen holds no offer any more (all cancelled, or on the waiting list):
+    # a late partner offer goes out in a new message.
     seen = {row.msg_id for row in chat}
     chat = [*chat, *(row for row in replies if row.msg_id not in seen)]
     number = _number(chat)
@@ -7242,6 +7386,7 @@ async def _advance(
     *,
     fixed: str | None,
     replacing: bool,
+    refresh: str = "",
     step: int | None = None,
 ) -> None:
     key = message.need_id or message.msg_id
@@ -7256,6 +7401,10 @@ async def _advance(
                 return
             sent.steps += 1
         sent.pending_page = None
+        if refresh:
+            # FA-22: inside the gate, so a pushed slots turn of this need waits and then finds the
+            # new offers already sent (BK-46) instead of sending a second batch.
+            chat = await _fresh_slots(city, message, chat, refresh)
         await _advance_alone(city, message, chat, key, fixed=fixed, replacing=replacing)
         for note in [n for n in sent.notes if n.startswith("memory:")]:
             # BK-67: this turn answered from memory. After its answer has left, the Ledger is asked
@@ -7571,6 +7720,9 @@ async def _advance_alone(
     ]
     _trace_window(message, now, priority, reply, deadline, lines, fit, chosen)  # BK-71
     chosen = _best_tier(_spread(chosen, key), _days(chat), _gender(chat))  # BK-60, BK-72
+    # P-magesh-23 (1): every fitting slot still goes out (BK-55), but when none is far enough ahead
+    # to survive the agenda jump, the next page is read first (as BK-62 does for one-day offers).
+    near_only = bool(chosen) and not _safe_lead(chosen, now, priority)
     _trace(
         "slots", message, procedure=procedure, priority=priority, lang=_lang(chat),
         gender=_gender(chat), page=f"{page}/{pages}", fitting=len(chosen), taken=len(taken),
@@ -7591,7 +7743,7 @@ async def _advance_alone(
         _trace("stop", message, why="offers_pending")
         return
     if (chosen and not replacing and "widen_stop" not in sent.notes
-            and page < pages and page < _MAX_PAGE and _one_sided(chosen, chat, fixed)
+            and page < pages and page < _MAX_PAGE and (near_only or _one_sided(chosen, chat, fixed))
             and sum(1 for note in sent.notes if note.startswith("widen:")) < _WIDEN_PAGES):
         sent.notes.update({"widen", f"widen:{page + 1}"})
         sent.pending_page = page + 1
@@ -7825,7 +7977,12 @@ async def _on_confirm(
                why="held_elsewhere" if busy else "ledger_refused",
                holder=(_HELD_FOR.get(slot) or ("",))[0][-12:])  # OPS-13
         await _say(city, citizen, f"cancel offer_id={offer_id or 'of-' + slot} reason=no_capacity {line}")
-        await _advance(city, message, chat, fixed="CONS-GIN" if hold_self else None, replacing=True)
+        if hold_self:
+            refresh = "CONS-GIN"
+        else:
+            refresh = (_prescription_reply(chat, _number(chat)) or {}).get("procedure", "")
+        await _advance(city, message, chat, fixed="CONS-GIN" if hold_self else None, replacing=True,
+                       refresh=refresh)
         return
     if book_here:
         if message.sender.startswith("agent:"):
@@ -8918,14 +9075,14 @@ async def _facility(
         if not _trusted(message.sender):  # X-13: unknown agent, no slots and no data
             if not _we(chat, city.agent_id, "", to=message.sender, word="cancel"):
                 rid = fields_of(message.text).get("request_id", "")
-                await _say(city, message.sender, f"cancel reason=unknown_partner request_id={rid}")
+                await _say(city, message.sender, f"cancel reason=not_listed mach={_MACH} request_id={rid}")
             return
         await _partner_request(city, message, chat)  # FA-12
         return
     if message.sender.startswith("agent:") and not _ours(message.sender) and not _trusted(message.sender):
         # X-13: an unknown agent never books here, but it always gets an answer (conformance needs an effect).
         if not _we(chat, city.agent_id, "", to=message.sender, word="cancel"):
-            await _say(city, message.sender, "cancel reason=unknown_partner Non risultate tra le ASST partner: "
+            await _say(city, message.sender, "cancel reason=not_listed Non risultate tra le ASST partner: "
                        "scriveteci con need.request dal vostro centro prenotazioni.")
         return
     if message.sender == LEDGER and head == "held":
@@ -9274,7 +9431,14 @@ async def _on_refused(
         notes = _sent(message.need_id or message.msg_id).notes
         if f"nofence:{hold_id}:{message.msg_id}" in notes:
             return True  # another turn already answered this same refusal
-        if not any(note.startswith(f"nofence:{hold_id}:") for note in notes):
+        # FA-23: also from the history, so a fresh process (restart, other replica) does not send
+        # the commit without fence a second time and leave the citizen without an answer.
+        retried = any(
+            row.sender == agent and row.recipient == LEDGER and first_word(row.text) == "commit"
+            and fields_of(row.text).get("hold_id") == hold_id and "fence" not in fields_of(row.text)
+            for row in chat
+        )
+        if not retried and not any(note.startswith(f"nofence:{hold_id}:") for note in notes):
             _, consent, number = _booking_of(chat, agent, slot)
             consent = consent or next(
                 (fields_of(row.text).get("consent_ref", "") for row in reversed(chat)
@@ -9304,7 +9468,15 @@ async def _on_refused(
         # P-magesh-9: the cancel just sent is not in ``chat`` yet, so the refused slot looked free
         # and went out again with the next offers. Remember it: it is never offered again.
         _sent(message.need_id or message.msg_id).notes.add("refused:" + slot)
-        await _advance(city, message, chat, fixed=None if desk else "CONS-GIN", replacing=True)
+        # FA-22 (journey 000308): the new offers came from the slot list read minutes earlier, so
+        # slots already past went out again (reason=past). Read agenda and slots again first.
+        if desk:
+            reply = _prescription_reply(chat, _number(chat)) or {}
+            procedure = reply.get("procedure", "")
+        else:
+            procedure = "CONS-GIN"
+        await _advance(city, message, chat, fixed=None if desk else "CONS-GIN", replacing=True,
+                       refresh=procedure)
     return False
 
 
@@ -9545,6 +9717,15 @@ async def _on_reported(city: City, message: Message, chat: list[Message]) -> Non
 
 # --- FA-12: cross-ASST request from another booking centre (format agreed in the group) ------
 _PARTNER_DONE: set[str] = set()
+# MACH2-6 (R21): same request_id, same answer. The exact text sent, per (asker, request_id).
+_PARTNER_SAID: OrderedDict[str, str] = OrderedDict()
+
+
+async def _partner_say(city: City, asker: str, request_id: str, text: str) -> None:
+    _PARTNER_SAID[f"{asker}|{request_id}"] = text
+    while len(_PARTNER_SAID) > 500:
+        _PARTNER_SAID.popitem(last=False)
+    await _say(city, asker, text)
 
 
 async def _partner_request(city: City, message: Message, chat: list[Message]) -> None:
@@ -9552,13 +9733,16 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
     fields = fields_of(message.text)
     request_id = fields.get("request_id") or message.need_id or message.msg_id
     if request_id in _PARTNER_DONE:
+        again = _PARTNER_SAID.get(f"{message.sender}|{request_id}")
+        if again:  # MACH2-6 (R21): a repeated request_id gets the same offers, never silence
+            await _say(city, message.sender, again)
         return
     procedure = fields.get("procedure", "")
     priority = fields.get("priority") or None
     agent = city.agent_id
     if not procedure:
         _PARTNER_DONE.add(request_id)
-        await _say(city, message.sender, f"cancel reason=no_availability request_id={request_id} Manca procedure=.")
+        await _partner_say(city, message.sender, request_id, f"cancel reason=bad_request mach={_MACH} request_id={request_id} Manca procedure=.")
         return
     # BK-67 / MACH-1.3 R1: a partner is answered within seconds. Agenda and catalogue the process
     # already has are used at once; the Ledger is asked again (at most once every two minutes)
@@ -9595,14 +9779,14 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
             picks = [slot for slot in picks if (_when(slot.get("at", "")) or first) >= first]
         picks = picks[:_OFFER_MAX]  # BK-55: every fitting slot in one answer
     if not picks:
-        await _say(city, message.sender, f"cancel reason=no_availability request_id={request_id} Al momento non abbiamo posti adatti per {procedure}.")
+        await _partner_say(city, message.sender, request_id, f"cancel reason=no_availability mach={_MACH} request_id={request_id} Al momento non abbiamo posti adatti per {procedure}.")
         return
     lines = [
         f"offer offer_id=of-{s['slot_id']} slot_id={s['slot_id']} doctor_id={s['doctor_id']} facility={agent} "
-        f"procedure={s['procedure']} agenda_date={s['at']} request_id={request_id}"
+        f"procedure={s['procedure']} agenda_date={s['at']} mach={_MACH} request_id={request_id}"
         + (" wheelchair=true" if agent == "agent:jdj692g4145e" else "")  # common format: accessible hospital
         for s in picks
     ]
     tail = ("Ecco i nostri posti liberi. Dopo il consenso cross_asst del cittadino inviateci la conferma "
         "con offer_id, slot_id, citizen, consent_ref e prescription_number: rispondiamo con la ricevuta.")
-    await _say(city, message.sender, "\n".join(_fit(lines, tail) + [tail]))
+    await _partner_say(city, message.sender, request_id, "\n".join(_fit(lines, tail) + [tail]))

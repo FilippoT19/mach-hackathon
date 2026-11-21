@@ -312,6 +312,12 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     if message.sender == LEDGER:
         await _announce(city, message, chat, agent)
         return
+    if (message.sender.startswith("agent:") and not _trusted(message.sender)
+            and first_word(message.text) in {"report.notice", "booking.notice"}):
+        # MACH2-1 (R17) on the gp too: a notice from an agent outside the ring is not noted in the
+        # patient's file (impostor, level 8). One line back, never an instruction followed.
+        await _say(city, message.sender, f"{first_word(message.text)}.ack status=ignored reason=not_listed")
+        return
     if first_word(message.text) == "report.notice" and message.sender.startswith("agent:"):
         bid = fields_of(message.text).get("booking_id", "")
         if not _we(chat, agent, f"booking_id={bid}", to=message.sender, word="report.notice.ack"):

@@ -17,6 +17,8 @@ brain = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(brain)
 brain._PULL_TRIES = 1  # no waiting in tests
 brain._MEMORY_ON = False  # BK-67: the shared Ledger memory is on only inside test_bk67
+RING_CONFIG = set(brain._TRUSTED_PARTNERS)  # MACH2-1: the ring is on in the brain
+brain._TRUSTED_PARTNERS.clear()  # tests use fake partner ids; the ring is switched on per test
 CITIZEN = "citizen:c-1"
 
 
@@ -132,11 +134,11 @@ async def test_x13_impostor(check) -> None:
         msg = row("agent:evil", "agent:jdj692g4145e", "need.request service_type=x procedure=VIS-FIS priority=B request_id=R1", 1)
         city = FakeCity("agent:jdj692g4145e")
         await brain._facility(city, msg, [msg], reports=False, hold_self=False)
-        check("X-13 impostore: cancel unknown_partner", len(city.sent) == 1 and "reason=unknown_partner" in city.sent[0][1], city.sent)
+        check("X-13 impostore: cancel not_listed", len(city.sent) == 1 and "reason=not_listed" in city.sent[0][1], city.sent)
         fake = row("agent:evil", "agent:jdj692g4145e", "confirm offer_id=o1 slot_id=S-1 citizen=citizen:c-1 consent_ref=c", 2)
         city2 = FakeCity("agent:jdj692g4145e")
         await brain._facility(city2, fake, [fake], reports=False, hold_self=False)
-        check("X-13 impostore non blocca posti", all(r != brain.LEDGER for r, _ in city2.sent) and len(city2.sent) == 1 and "unknown_partner" in city2.sent[0][1], city2.sent)
+        check("X-13 impostore non blocca posti", all(r != brain.LEDGER for r, _ in city2.sent) and len(city2.sent) == 1 and "not_listed" in city2.sent[0][1], city2.sent)
     finally:
         brain._TRUSTED_PARTNERS.clear()
 
@@ -1304,6 +1306,92 @@ async def main() -> int:
     await brain._on_confirm(c, chat[-1], chat, hold_self=True)
     check("P-magesh-9 seconda conferma dello slot rifiutato: risposta al cittadino, nessun secondo hold",
           any("non è più disponibile" in t for t in to(c, CITIZEN)) and not any(t.startswith("hold ") for t in to(c, LEDGER)), c.sent)
+    # FA-23 (N-2026-11-02-890912000256, consultorio): the commit is refused STALE_FENCE with only
+    # the hold id (or nothing). The slot must still count as refused, also in a fresh process:
+    # no re-offer of it, and the citizen's repeated confirm gets an answer, not silence.
+    for refusal in ("refused commit code=STALE_FENCE detail=expired hold_id=h-1",
+                    "refused commit code=STALE_FENCE detail=expired"):
+        base = [
+            (CITIZEN, FAMX, "vorrei una visita al consultorio"),
+            (LEDGER, FAMX, f"agenda agenda_now={NOW}"),
+            (LEDGER, FAMX, world),
+            (FAMX, CITIZEN, offers),
+            (CITIZEN, FAMX, "confirm offer_id=of-s1500 consent_ref=C-1"),
+            (FAMX, LEDGER, f"hold slot_id=s1500 citizen={CITIZEN} consent_ref=C-1"),
+            (LEDGER, FAMX, "held hold_id=h-1 slot_id=s1500 fence=3"),
+            (FAMX, LEDGER, "commit hold_id=h-1 consent_ref=C-1 fence=3"),
+            (LEDGER, FAMX, refusal),
+            # BK-62 already sent the commit once more without fence: this is the second refusal.
+            (FAMX, LEDGER, "commit hold_id=h-1 consent_ref=C-1"),
+            (LEDGER, FAMX, refusal),
+        ]
+        chat = [row(a2, b2, t2, i) for i, (a2, b2, t2) in enumerate(base)]
+        brain._SENT.clear()
+        c = FakeCity(FAMX)
+        await brain._on_refused(c, chat[-1], chat, hold_self=True)
+        out = to(c, CITIZEN)
+        again = [t for t in out if t.startswith("offer ")]
+        check(f"FA-23 {refusal[:36]}: nuova offerta senza lo slot rifiutato",
+              len(again) == 1 and "slot_id=s1500" not in again[0], out)
+        check(f"FA-23 {refusal[:36]}: processo nuovo, nessun terzo commit dopo il retry BK-62",
+              not any(t.startswith("commit ") for t in to(c, LEDGER)), c.sent)
+        more = base + [(FAMX, CITIZEN, t) for t in out] + [(CITIZEN, FAMX, "confirm offer_id=of-s1500 consent_ref=C-1")]
+        chat = [row(a2, b2, t2, i) for i, (a2, b2, t2) in enumerate(more)]
+        brain._SENT.clear()  # another process: only the history knows the refusal
+        c = FakeCity(FAMX)
+        await brain._on_confirm(c, chat[-1], chat, hold_self=True)
+        check(f"FA-23 {refusal[:36]}: conferma ripetuta, risposta e nessun hold sul posto morto",
+              any("non è più disponibile" in t for t in to(c, CITIZEN))
+              and not any(t.startswith("hold ") for t in to(c, LEDGER)), c.sent)
+    # FA-22 (journey 000308, consultorio): the Ledger refuses the confirmed slot (expired) minutes
+    # later. The new offers must come from agenda and slots read again, never the old list: no
+    # refused slot, no slot already past (the citizen cancelled them all with reason=past).
+    class LedgerCity(FakeCity):
+        def __init__(self, agent_id, base_rows, later_rows):
+            super().__init__(agent_id)
+            self.base_rows, self.later_rows = base_rows, later_rows
+        async def history(self, peer=None, *, need_id=None):
+            asked = {t.split()[0] for r, t in self.sent if r == LEDGER}
+            return self.base_rows + (self.later_rows if {"agenda", "world"} <= asked else [])
+    base = [
+        (CITIZEN, FAMX, "Consultorio, un appuntamento. Subito, per favore."),
+        (LEDGER, FAMX, f"agenda agenda_now={NOW}"),
+        (LEDGER, FAMX, world),
+        (FAMX, CITIZEN, offers),
+        (CITIZEN, FAMX, "confirm offer_id=of-s1500 consent_ref=C-1"),
+        (FAMX, LEDGER, f"hold slot_id=s1500 citizen={CITIZEN} consent_ref=C-1"),
+        (LEDGER, FAMX, "refused hold code=EXPIRED detail=slot_s1500_has_passed slot_id=s1500"),
+    ]
+    later_world = "slots page=1/1\n" + "\n".join([gin("s1700", "2026-11-04T17:00:00Z"), gin("s0510", "2026-11-05T10:00:00Z"), gin("s0512", "2026-11-05T12:00:00Z")])
+    chat = [row(a2, b2, t2, i) for i, (a2, b2, t2) in enumerate(base)]
+    later = [row(LEDGER, FAMX, "agenda agenda_now=2026-11-04T15:00:00Z", 50), row(LEDGER, FAMX, later_world, 51)]
+    tries, seconds = brain._PULL_TRIES, brain._PULL_SECONDS
+    brain._PULL_TRIES, brain._PULL_SECONDS = 3, 0.05
+    brain._SENT.clear()
+    c = LedgerCity(FAMX, chat, later)
+    await brain._on_refused(c, chat[-1], chat, hold_self=True)
+    brain._PULL_TRIES, brain._PULL_SECONDS = tries, seconds
+    asked = to(c, LEDGER)
+    out = [t for t in to(c, CITIZEN) if t.startswith("offer ")]
+    check("FA-22 dopo il rifiuto rilegge agenda e slot dal Ledger",
+          "agenda" in asked and any(t.startswith("world procedure=CONS-GIN") for t in asked), asked)
+    check("FA-22 una sola nuova offerta, senza slot rifiutati o passati, con quelli di adesso",
+          len(out) == 1 and not any(f"slot_id={x}" in out[0] for x in ("s1500", "s1600", "s1700"))
+          and "slot_id=s0510" in out[0], to(c, CITIZEN))
+    # FA-22: nothing valid left locally -> first the citizen's consent for another ASST, and no
+    # partner is contacted before it.
+    empty_world = "slots page=1/1\n" + gin("s1700", "2026-11-04T17:00:00Z")
+    later = [row(LEDGER, FAMX, "agenda agenda_now=2026-11-04T15:00:00Z", 50), row(LEDGER, FAMX, empty_world, 51)]
+    brain._PULL_TRIES, brain._PULL_SECONDS = 3, 0.05
+    brain._SENT.clear()
+    c = LedgerCity(FAMX, chat, later)
+    c.peers = [Peer(agent_id="agent:partnerfc", role="family_counseling")]
+    await brain._on_refused(c, chat[-1], chat, hold_self=True)
+    brain._PULL_TRIES, brain._PULL_SECONDS = tries, seconds
+    said = to(c, CITIZEN)
+    check("FA-22 nessuno slot valido: prima il consenso cross-ASST al cittadino, nessun partner contattato",
+          any("purpose=cross_asst" in t for t in said) and not any(t.startswith("offer ") for t in said)
+          and not any(r.startswith("agent:") for r, _ in c.sent), c.sent)
     # 26. X-40/41, FA-20, BK-24, CO-20.
     def cm(t, to="agent:x"):
         return Message(type="chat", sender=CITIZEN, msg_id="m40", need_id="N-40", recipient=to, body={"text": t})
@@ -1456,11 +1544,11 @@ async def main() -> int:
         brain._SENT.clear()
         peers = [{"id": who, "role": "facility"} for who in (remote, other)]
         request_id = "request_id=cross-N-1"
-        offer_a = row(remote, booking, f"offer offer_id=O1 slot_id=S1 doctor_id=d-s1 facility={remote} "
+        offer_a = row(remote, booking, f"offer offer_id=O1 slot_id=S1 doctor_id=d-s1 facility={remote} agenda_date=2026-11-05T15:00:00Z "
                       f"doctor_lang=it/fr doctor_gender=m {request_id} wheelchair=true mandateci confirm",
                       8)
-        offer_b = row(other, booking, f"offer offer_id=O2 slot_id=S2 doctor_id=d-s2 facility={other} {request_id}\n"
-                      f"offer offer_id=O3 slot_id=S3 facility={other} doctor_lang=fr {request_id}", 9)
+        offer_b = row(other, booking, f"offer offer_id=O2 slot_id=S2 doctor_id=d-s2 facility={other} agenda_date=2026-11-05T15:00:00Z {request_id}\n"
+                      f"offer offer_id=O3 slot_id=S3 facility={other} doctor_lang=fr agenda_date=2026-11-05T15:00:00Z {request_id}", 9)
 
         class CrossCity(FakeCity):
             async def history(self, peer=None, *, need_id=None):
@@ -1494,12 +1582,23 @@ async def main() -> int:
         cancel = row(other, booking, "cancel offer_id=of-S-NEAR", 6)
         confirm = row(booking, remote, "confirm offer_id=O16 slot_id=S16", 7)
         real = row(remote, booking, "booking.receipt booking_id=B-REAL ledger_ref=L-REAL slot_id=S16", 8)
-        check("P-francesco-16 filtro spento nella configurazione", not brain._TRUSTED_PARTNERS)
+        check("P-francesco-16 + MACH2-1 anello acceso nella configurazione (130 id, i nostri compresi)", len(RING_CONFIG) == 130 and "agent:fn64xfq2jft4" in RING_CONFIG)
         off = FakeCity(booking)
         off_receipt = row(other, booking, "booking.receipt booking_id=B-LEGACY ledger_ref=L-LEGACY", 9)
         await desk_turn(off, off_receipt, [*chat, off_receipt])
-        check("P-francesco-16 must not break: filtro spento mantiene le ricevute senza storico confirm",
-              any(t.startswith("booking.receipt ") for t in to(off, CITIZEN)), off.sent)
+        check("P-magesh-24 filtro vuoto: ricevuta di uno sconosciuto senza nostro confirm ignorata",
+              not to(off, CITIZEN) and to(off, other) == [
+                  "booking.receipt.ack status=ignored reason=unexpected_partner"], off.sent)
+        unknown = FakeCity(booking)
+        for msg in (fake, offer, cancel):
+            await desk_turn(unknown, msg, [*chat, msg])
+        check("P-magesh-24 filtro vuoto: offerta, ricevuta e annullo di uno sconosciuto non arrivano al cittadino",
+              not to(unknown, CITIZEN) and len(to(unknown, other)) == 3, unknown.sent)
+        ours = FakeCity(booking)
+        mine = row("agent:jdj692g4145e", booking, "booking.receipt booking_id=B-OURS ledger_ref=L-OURS", 9)
+        await desk_turn(ours, mine, [*chat, mine])
+        check("P-magesh-24 must not break: ricevuta del nostro ospedale passa anche senza confirm nella storia",
+              any(t.startswith("booking.receipt booking_id=B-OURS") for t in to(ours, CITIZEN)), ours.sent)
         with patch.object(brain, "_TRUSTED_PARTNERS", {"agent:fixture-only"}):
             city = FakeCity(booking)
             for msg in (fake, offer, cancel):
@@ -1510,7 +1609,7 @@ async def main() -> int:
             check("P-francesco-16 must not break: ricevuta dal destinatario del confirm",
                   any(t.startswith("booking.receipt booking_id=B-REAL") for t in to(city, CITIZEN)), city.sent)
             brain._sent("N-1").cross_peers.add(remote)
-            expected = row(remote, booking, f"offer offer_id=O16 slot_id=S16 facility={remote}", 9)
+            expected = row(remote, booking, f"offer offer_id=O16 slot_id=S16 facility={remote} agenda_date=2026-11-05T15:00:00Z", 9)
             await desk_turn(city, expected, [*chat, expected])
             check("P-francesco-16 must not break: offerta dal destinatario del need.request",
                   any(t.startswith("offer offer_id=O16") for t in to(city, CITIZEN)), city.sent)
@@ -1880,6 +1979,39 @@ async def main() -> int:
         await brain._advance_alone(city, chat[0], chat, "N-1", fixed=None, replacing=False)
         check("BK-62 offerte tutte in un giorno: chiede la pagina dopo prima di offrire",
               to(city, LEDGER) == ["world procedure=VIS-FIS page=2"] and not to(city, CITIZEN), city.sent)
+
+        # P-magesh-23 (N-...0330/0331): two days and two doctors, but every slot under 12 agenda
+        # hours: they would be past when the citizen answers. The next page is read first; then
+        # ONE message with every fitting slot (BK-55), the far one included.
+        brain._SENT.clear()
+        near = "slots page=1/2\n" + "\n".join([slot("N1", "h3", "2026-11-03T20:00:00Z", "tue"),
+                                               slot("N2", "h1", "2026-11-04T01:00:00Z", "wed")])
+        far = "slots page=2/2\n" + slot("F1", "h2", "2026-11-04T10:00:00Z", "wed")
+        city = FakeCity("agent:bk")
+        chat = [row(CITIZEN, "agent:bk", f"need.request lang=it prescription_number={rx_number}", 0),
+                row(LEDGER, "agent:bk", f"prescription prescription_number={rx_number} procedure=VIS-FIS priority=D state=issued", 1),
+                row(LEDGER, "agent:bk", "agenda agenda_now=2026-11-03T14:00:00Z", 2), row(LEDGER, "agent:bk", near, 3)]
+        await brain._advance_alone(city, chat[0], chat, "N-1", fixed=None, replacing=False)
+        check("P-magesh-23 posti tutti sotto le 12 h di agenda: legge la pagina dopo prima di offrire",
+              to(city, LEDGER) == ["world procedure=VIS-FIS page=2"] and not to(city, CITIZEN), city.sent)
+        chat.append(row(LEDGER, "agent:bk", far, 4))
+        await brain._advance_alone(city, chat[-1], chat, "N-1", fixed=None, replacing=False)
+        out = to(city, CITIZEN)
+        check("P-magesh-23 must not break: un messaggio con tutti i posti, anche quello a 20 h",
+              len(out) == 1 and all(f"slot_id={s}" in out[0] for s in ("N1", "N2", "F1")), city.sent)
+        brain._SENT.clear()
+        city = FakeCity("agent:bk")
+        urgent = [chat[0], row(LEDGER, "agent:bk", f"prescription prescription_number={rx_number} procedure=VIS-FIS priority=U state=issued", 1),
+                  row(LEDGER, "agent:bk", "agenda agenda_now=2026-11-03T07:00:00Z", 2),
+                  row(LEDGER, "agent:bk", "slots page=1/1\n" + "\n".join([slot("U1", "h3", "2026-11-03T12:00:00Z", "tue"),
+                                                                         slot("U2", "h1", "2026-11-03T15:00:00Z", "tue")]), 3)]
+        await brain._advance_alone(city, urgent[0], urgent, "N-1", fixed=None, replacing=False)
+        check("P-magesh-23 must not break: priorità U offre lo stesso giorno senza margine di 12 h",
+              any("slot_id=U1" in t for t in to(city, CITIZEN)), city.sent)
+        halves = [{"slot_id": i, "doctor_id": "d-h1", "at": at} for i, at in
+                  (("A", "2026-11-03T09:00:00Z"), ("B", "2026-11-03T10:00:00Z"), ("C", "2026-11-03T15:00:00Z"))]
+        check("P-magesh-23 due offerte dello stesso medico e giorno: mattina e pomeriggio, non due mattine",
+              [s["slot_id"] for s in brain._diverse(halves, 2)] == ["A", "C"], brain._diverse(halves, 2))
 
         # (c) the agenda time counts the real minutes since the Ledger wrote the agenda line.
         wrote = datetime.now(timezone.utc) - timedelta(minutes=10)
@@ -2369,6 +2501,91 @@ async def main() -> int:
                 os.environ["CITY_ROLE"] = old_role
 
     await test_gp17(check)
+
+    async def test_mach2(check):
+        """MACH-2.0 (red-agent): ring R17, round of 12 R3, mach/lease tokens, R7, R13, R20, R21."""
+        from unittest.mock import patch
+
+        booking = "agent:fn64xfq2jft4"
+        ring_bk, ring_ho = "agent:cdc7x6m21nj6", "agent:h6r1v45esk77"  # Giambellino
+        brera_ho = "agent:ndrnnjwxttmb"
+        check("MACH2-1 anello: 26 ASST, ospedali e Brera dentro, impostore fuori",
+              len(RING_CONFIG) == 130 and len(brain._RING_HOSPITALS) == 26
+              and brera_ho in RING_CONFIG and "agent:impostore" not in RING_CONFIG, "")
+        with patch.object(brain, "_TRUSTED_PARTNERS", set(RING_CONFIG)):
+            # MACH2-1 on the gp: notices from outside the ring are not noted in the patient's file.
+            gp = "agent:fddgaqmp6kb0"
+            for act in ("report.notice", "booking.notice"):
+                for sender, noted in (("agent:impostore", False), (ring_ho, True), ("agent:jdj692g4145e", True)):
+                    city = FakeCity(gp)
+                    msg = row(sender, gp, f"{act} booking_id=B-GP prescription_number=RX-GP", 1)
+                    await brain.handle("gp", city, msg, [msg])
+                    out = to(city, sender)
+                    check(f"MACH2-1 gp {act} da {'impostore' if not noted else sender}: "
+                          + ("annotato" if noted else "ignorato, reason=not_listed"),
+                          len(out) == 1 and ((f"{act}.ack booking_id=B-GP" in out[0]) if noted
+                                             else out[0] == f"{act}.ack status=ignored reason=not_listed"), city.sent)
+            check("MACH2-1 facility= della stessa ASST accettata, di un'altra no",
+                  brain._same_asst(ring_ho, ring_bk) and not brain._same_asst(brera_ho, ring_bk), "")
+            # R17 + R3 + tokens: the Index lists 20 ring hospitals plus an impostor.
+            peers = [{"id": "agent:impostore", "role": "facility"}] + [
+                {"id": h, "role": "facility"} for h in sorted(brain._RING_HOSPITALS) if h != "agent:jdj692g4145e"]
+            brain._SENT.clear()
+            city = FakeCity(booking, peers=peers)
+            chat = booking_chat(slots_far("1/1"))
+            ask = row(booking, CITIZEN, "consent purpose=cross_asst", 4)
+            yes = row(CITIZEN, booking, "consent purpose=cross_asst consent_ref=C-CROSS", 5)
+            await desk_turn(city, yes, [*chat, ask, yes])
+            asked = [(r, t) for r, t in city.sent if t.startswith("need.request")]
+            check("MACH2-1 nessuna need.request fuori dall'anello",
+                  asked and all(r in RING_CONFIG for r, _ in asked), asked)
+            check("MACH2-2 al massimo 12 strutture per giro", 0 < len(asked) <= 12, len(asked))
+            check("MACH2-2 need.request con mach=2.0 e lease_s=900",
+                  all("mach=2.0" in t.split() and "lease_s=900" in t.split() for _, t in asked), asked)
+            # R7 + identity: an offer without a date and one with a foreign facility= never go out.
+            brain._SENT.clear()
+            sent = brain._sent("N-1")
+            sent.cross_peers.add(ring_ho)
+            good = row(ring_ho, booking, f"offer offer_id=G1 slot_id=G1 facility={ring_ho} agenda_date=2026-11-05T15:00:00Z", 6)
+            nodate = row(ring_ho, booking, f"offer offer_id=G2 slot_id=G2 facility={ring_ho}", 7)
+            forged = row(ring_ho, booking, f"offer offer_id=G3 slot_id=G3 facility={brera_ho} agenda_date=2026-11-05T16:00:00Z", 8)
+            pool = brain._partner_pool([*chat, good, nodate, forged], booking, sent, lang="it", gender=None,
+                                       now=None, limit=None)
+            check("MACH2-4 R7 e facility=: solo l'offerta con data e mittente giusto",
+                  [v["offer_id"] for v in pool] == ["G1"], pool)
+            # R20: the alternatives inside a facility_cancelled message join the pool.
+            confirm = row(booking, ring_ho, f"confirm offer_id=G1 slot_id=G1 facility={ring_ho}", 9)
+            rebook = row(ring_ho, booking, "cancel mach=2.0 reason=facility_cancelled booking_id=B-1 offer_id=G1 request_id=cross-N-1\n"
+                         f"offer offer_id=G4 slot_id=G4 doctor_id=asst-giambellino-h3 facility={ring_ho} agenda_date=2026-11-05T17:00:00Z request_id=cross-N-1\n"
+                         "Il posto è saltato", 10)
+            pool = brain._partner_pool([*chat, confirm, rebook], booking, sent, lang="it", gender=None,
+                                       now=None, limit=None)
+            check("MACH2-4 R20 alternative dentro il cancel nel pool", [v["offer_id"] for v in pool] == ["G4"], pool)
+        # R13: a late offer after the waiting list still reaches the citizen.
+        brain._SENT.clear()
+        remote = "agent:remote"
+        brain._sent("N-1").cross_peers.add(remote)
+        wl = row(booking, CITIZEN, "offer offer_id=wl-N-1 waiting_list=true procedure=VIS-CARD", 6)
+        late = row(remote, booking, f"offer offer_id=L1 slot_id=L1 facility={remote} agenda_date=2026-11-05T15:00:00Z request_id=cross-N-1", 7)
+        city = FakeCity(booking)
+        await desk_turn(city, late, [*booking_chat(slots_far("1/1")), wl, late])
+        check("MACH2-5 R13 offerta tardiva girata anche in lista d'attesa",
+              any(t.startswith("offer offer_id=L1") for t in to(city, CITIZEN)), city.sent)
+        # R21: a repeated request_id gets the same answer, never silence.
+        HO = "agent:jdj692g4145e"
+        brain._PARTNER_DONE.clear(); brain._PARTNER_SAID.clear()
+        slots = ("slots page=1/1\n"
+                 f"slot_id=S-H3 doctor_id=asst-niguarda-h3 facility={HO} procedure=VIS-FIS at=2026-11-05T15:00:00Z day=thu free=1")
+        req = row("agent:partner-bk", HO, "need.request mach=2.0 procedure=VIS-FIS priority=B request_id=R-dup", 3)
+        pre = [row(LEDGER, HO, f"agenda agenda_now={NOW}", 1), row(LEDGER, HO, slots, 2), req]
+        c = FakeCity(HO)
+        await brain._facility(c, req, pre, reports=False, hold_self=False)
+        await brain._facility(c, req, pre, reports=False, hold_self=False)
+        out = to(c, "agent:partner-bk")
+        check("MACH2-6 R21 stesso request_id: stessa risposta due volte, con mach=2.0",
+              len(out) == 2 and out[0] == out[1] and "mach=2.0" in out[0], c.sent)
+
+    await test_mach2(check)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 
