@@ -143,7 +143,14 @@ async def test_x13_impostor(check) -> None:
 async def test_co10_pregnancy(check) -> None:
     for text, flag in (("sono incinta di 7 mesi e ho perdite di sangue", True),
                        ("I'm pregnant and have strong contractions", True),
-                       ("vorrei una visita ginecologica di controllo in gravidanza", False)):
+                       ("vorrei una visita ginecologica di controllo in gravidanza", False),
+                       # P-magesh-16: normal questions in pregnancy are not 112.
+                       ("sono incinta e vorrei fare gli esami del sangue", False),
+                       ("I'm pregnant and need a blood test", False),
+                       ("sono in gravidanza, ho delle perdite bianche, è normale?", False),
+                       ("incinta di 10 settimane, ho un dolore forte alla schiena", False),
+                       ("sono incinta e ho perso le acque", True),
+                       ("pregnant and bleeding a lot", True)):
         msg = Message(type="chat", sender=CITIZEN, msg_id="m-co", need_id="N-co", recipient="agent:mm18nddkfc5w", body={"text": text})
         city = FakeCity("agent:mm18nddkfc5w")
         await brain.handle("family_counseling", city, msg, [])

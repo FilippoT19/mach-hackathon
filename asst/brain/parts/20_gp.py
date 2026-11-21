@@ -19,13 +19,20 @@ def _emergency(message: Message) -> bool:
         return True
     # CO-10 (P-magesh-6): pregnancy + bleeding, strong pain, contractions or waters -> 112.
     pregnant = any(w in lowered for w in ("incinta", "gravidanza", "pregnant", "pregnancy"))
-    danger = any(w in lowered for w in (
-        "sangue", "sanguin", "perdite", "dolore forte", "dolore intenso", "forte dolore", "contrazion",
-        "perso le acque", "rottura delle acque", "liquido", "bleed", "blood", "strong pain",
-        "severe pain", "contraction", "waters broke", "water broke"))
+    # P-magesh-16: danger is a phrase, not a lone word ("esami del sangue" is a normal visit).
+    danger = _RF_PREGNANT.search(lowered) is not None
     return pregnant and danger
 
 
+_RF_PREGNANT = re.compile(
+    r"sanguin\w*|perdit\w* di sangue|perd\w* (?:\w+ )?sangue|sangue (?:dalla vagina|vaginale)"
+    r"|contrazion\w*|perso le acque|rott\w* (?:delle |le )?acque|acque rotte"
+    r"|perd\w* (?:\w+ )?liquido|perdita di liquido"
+    r"|(?:dolor\w*|male)[^.!?]{0,25}\b(?:pancia|addome|addominal\w*|ventre|basso ventre)"
+    r"|(?:pancia|addome|ventre)[^.!?]{0,20}\b(?:dolor\w*|male)"
+    r"|\bbleed\w*|losing blood|\bcontraction\w*|water(?:s)? (?:broke|break\w*)"
+    r"|(?:pain|cramp\w*)[^.!?]{0,20}\b(?:belly|abdom\w*|stomach|tummy)"
+    r"|(?:belly|abdom\w*|stomach|tummy)[^.!?]{0,20}\b(?:pain|hurt\w*|cramp\w*)")
 _RF_CHEST = re.compile(
     r"(?:\b(?:dolor\w*|male|fa(?:nno)? male|stretta|oppression\w*|peso|pressione|bruciore)\b[^.!?]{0,30}\b(?:petto|torac\w*)\b)"
     r"|(?:\b(?:petto|torac\w*)\b[^.!?]{0,20}\b(?:dolor\w*|male|stretta|oppression\w*|peso)\b)"
