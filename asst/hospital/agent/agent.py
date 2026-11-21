@@ -258,6 +258,8 @@ _TRUSTED_PARTNERS: set[str] = set()
 # Ids posted by other ASSTs in the mods' group. Copied into _TRUSTED_PARTNERS when the impostors
 # arrive (switching it on now would reject the teams that have not posted yet).
 _KNOWN_PARTNERS = {
+    # San Siro (Municipio 7), team psq-quelli-veri — h3 bn (X-52)
+    "agent:tnzkhsa62kn0", "agent:qsbsfjytc3y5", "agent:k2nwktpp02xx", "agent:yk37jqcnc1r5", "agent:sdca2w4p9f8z",
     # Lorenteggio (Municipio 9), team RASPBERRY
     "agent:qtjne8symjas", "agent:w2qsptc9qqhg", "agent:tmt0bcv0st1f", "agent:n9bf9y6670hp", "agent:mcppmrbjvxag",
     # Nord (Municipio 2), team agentic-paguri — h3 ur
@@ -280,7 +282,7 @@ _KNOWN_PARTNERS = {
 # Rare language of each ASST's h3 physiatrist (shared table in the mods' group).
 _RARE_LANG_BY_ASST = {"giambellino": "ka", "toros": "ro", "precotto": "ro", "nord": "ur",
                       "corvetto": "fr", "brera": "fa", "niguarda": "vi",
-                      "isola": "tl", "ortica": "wo", "greco": "si", "bicocca": "ti", "lambrate": "ja",
+                      "isola": "tl", "ortica": "wo", "greco": "si", "bicocca": "ti", "lambrate": "ja", "san siro": "bn", "sansiro": "bn",
                       "gorla": "sq", "forlanini": "de"}
 
 
@@ -1745,6 +1747,7 @@ _RARE_LANG_HOSPITAL = {
     "ja": ("agent:nanpr5mgm2py", "Lambrate", "giapponese", "Japanese"),
     "si": ("agent:xtj1dk9x3qej", "Greco", "singalese", "Sinhala"),
     "ti": ("agent:bb01ggxymm05", "Bicocca", "tigrino", "Tigrinya"),
+    "bn": ("agent:k2nwktpp02xx", "San Siro", "bengalese", "Bengali"),  # X-52
 }
 
 
