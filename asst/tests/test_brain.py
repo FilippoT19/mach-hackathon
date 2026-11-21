@@ -20,6 +20,7 @@ brain._MEMORY_ON = False  # BK-67: the shared Ledger memory is on only inside te
 RING_CONFIG = set(brain._TRUSTED_PARTNERS)  # MACH2-1: the ring is on in the brain
 brain._TRUSTED_PARTNERS.clear()  # tests use fake partner ids; the ring is switched on per test
 CITIZEN = "citizen:c-1"
+CROSS_Q = "data.request purpose=cross_asst fields=consent_ref"  # BK-77: the first cross-ASST question
 
 
 class FakeCity:
@@ -772,7 +773,7 @@ async def test_p_magesh_26(check) -> None:
         brain._CROSS_TIMERS.clear()
         city = HistCity(BKX, rows)
         await brain._advance_alone(city, rows[0], rows, "N-1", fixed=None, replacing=False)
-        asked = [t for t in to(city, CITIZEN) if t.startswith("consent purpose=cross_asst")]
+        asked = [t for t in to(city, CITIZEN) if t.startswith(CROSS_Q)]
         city._history = rows + [row(s, r, t, 50 + i) for i, (s, r, t) in enumerate(extra_after_question)]
         await asyncio.gather(*list(brain._CROSS_TIMERS))
         return city, asked
@@ -807,6 +808,63 @@ async def test_p_magesh_26(check) -> None:
         brain._CROSS_SILENCE = old
         brain._SENT.clear()
         brain._CROSS_TIMERS.clear()
+
+
+async def test_bk77(check) -> None:
+    """BK-77 (21/11): 71 journeys got "consent purpose=cross_asst ...?" and no citizen ever gave the
+    consent (19 "Which consent_ref?", 30 sent the request again, 21 confirmed an older offer). The
+    kit lists this question as ``data.request purpose=cross_asst`` with ``fields``: the first
+    question goes out in that form; the second keeps the form of today."""
+    BKX = "agent:bk"
+    RX = "prescription_number-RX-77"
+    base = [
+        (CITIZEN, BKX, f"need.request prescription_number={RX} lang=en service_type=hospital.physiatry Back pain."),
+        (LEDGER, BKX, f"prescription prescription_number={RX} procedure=VIS-FIS priority=B state=issued"),
+        (LEDGER, BKX, f"agenda agenda_now={NOW}"),
+        (LEDGER, BKX, "slots page=1/1\nslot_id=S-FAR doctor_id=asst-niguarda-h2 facility=agent:hos procedure=VIS-FIS at=2026-11-25T09:00:00Z day=wed free=1"),
+    ]
+    rows = [row(s, r, t, i) for i, (s, r, t) in enumerate(base)]
+
+    def fresh():
+        for name in ("_SENT", "_ANSWERED", "_CROSS_TIMERS"):
+            getattr(brain, name).clear()
+
+    def stop():
+        for task in list(brain._CROSS_TIMERS):
+            task.cancel()
+
+    fresh()
+    city = FakeCity(BKX)
+    await brain._advance_alone(city, rows[0], rows, "N-1", fixed=None, replacing=False)
+    stop()
+    out = to(city, CITIZEN)
+    first = next((t for t in out if "purpose=cross_asst" in t), "")
+    check("BK-77 prima domanda cross-ASST nel formato del kit: data.request purpose=cross_asst fields=consent_ref",
+          first.startswith("data.request purpose=cross_asst fields=consent_ref ") and "another ASST" in first
+          and len([t for t in out if "purpose=cross_asst" in t]) == 1, city.sent)
+    asked = row(BKX, CITIZEN, first or "data.request purpose=cross_asst fields=consent_ref May I look?", 10)
+    check("BK-77 la domanda nel nuovo formato conta come domanda fatta",
+          brain._cross_asks([*rows, asked], BKX) == 1 and brain._cross_consent([*rows, asked], BKX)[0] is None, "")
+
+    # the citizen answers the data.request: with a reference, or with the purpose alone (BK-36)
+    for answer, ref in (("data.response purpose=cross_asst consent_ref=cons-N-1-cross_asst", "cons-N-1-cross_asst"),
+                        ("data.response purpose=cross_asst", "cx-N-1")):
+        got = brain._cross_consent([*rows, asked, row(CITIZEN, BKX, answer, 11)], BKX)
+        check(f"BK-77 risposta «{answer[:44]}»: consenso con riferimento {ref}", got == (True, ref), got)
+
+    # the citizen does not understand: the second question is the one of today, with the reference
+    fresh()
+    which = row(CITIZEN, BKX, "Which consent_ref?", 11)
+    city = FakeCity(BKX)
+    await brain._desk(city, which, [*rows, asked, which], hold_self=False, fixed=None)
+    stop()
+    out = to(city, CITIZEN)
+    check("BK-77 «Which consent_ref?»: seconda domanda nella forma di oggi, con il riferimento",
+          len(out) == 1 and out[0].startswith("consent purpose=cross_asst consent_ref=cx-N-1 "), city.sent)
+    # a plain no after the data.request is a refusal: no third question
+    no = row(CITIZEN, BKX, "No, thank you.", 11)
+    check("BK-77 «No, thank you.» dopo la domanda: rifiuto", brain._cross_consent([*rows, asked, no], BKX)[0] is False, "")
+    fresh()
 
 
 async def test_x49(check) -> None:
@@ -1137,7 +1195,7 @@ async def main() -> int:
     # question carries the reference; a word "cancel" inside a sentence is not a cancel.
     first64 = brain._cx_head([citizen_msg("x")])
     check("BK-64 la prima domanda cross-ASST non porta il nostro consent_ref",
-          first64 == "consent purpose=cross_asst " , first64)
+          first64 == CROSS_Q + " ", first64)
     which = row(CITIZEN, BK, "Which consent_ref?", 581)
     ask58 = row(BK, CITIZEN, brain._cx_head([citizen_msg("x"), which]) + "May I ask the ASST Giambellino for you?", 580)
     check("BK-58 dopo 'Which consent_ref?' la domanda porta consent_ref", "consent_ref=cx-" in ask58.text and ask58.text.startswith("consent purpose=cross_asst"), ask58.text)
@@ -1573,7 +1631,7 @@ async def main() -> int:
         # BK-61: every local offer refused and the catalogue is over: the other ASSTs come before
         # the waiting list (the answer set can hold slots there). A refusal gives the waiting list.
         check("BK-61 tutti annullati e catalogo finito: prima la domanda sulle altre ASST",
-              ask.startswith("consent purpose=cross_asst") and not any("waiting_list=true" in t for t in to(city, CITIZEN)), ask)
+              ask.startswith(CROSS_Q) and not any("waiting_list=true" in t for t in to(city, CITIZEN)), ask)
         asked = row(booking, CITIZEN, ask, 9)
         no = row(CITIZEN, booking, "No, preferisco di no.", 10)
         await desk_turn(city, no, [*chat, original, cancel, ack, two, three, asked, no])
@@ -1608,7 +1666,7 @@ async def main() -> int:
             else:
                 # BK-68: nothing local is left. The other ASSTs come before the waiting list (the answer
                 # set is the whole city): the citizen is asked for the cross-ASST consent, once.
-                asked = [t for t in to(city, CITIZEN) if t.startswith("consent ") and "purpose=cross_asst" in t]
+                asked = [t for t in to(city, CITIZEN) if t.startswith(CROSS_Q)]
                 check("P-francesco-14 pagina 2 vuota: consenso cross_asst prima della lista d'attesa (BK-68)",
                       len(asked) == 1 and not any("waiting_list=true" in t for t in to(city, CITIZEN)), city.sent)
 
@@ -1623,7 +1681,7 @@ async def main() -> int:
         cancel = row(CITIZEN, booking, "cancel offer_id=of-S-NEAR reason=deadline", 5)
         await desk_turn(city, cancel, [*chat, original, cancel])
         check("P-francesco-14 pagina presente solo in history: esito nello stesso turno (BK-61: domanda altre ASST)",
-              any(t.startswith("consent purpose=cross_asst") for t in to(city, CITIZEN)), city.sent)
+              any(t.startswith(CROSS_Q) for t in to(city, CITIZEN)), city.sent)
 
     async def test_francesco_15(check):
         brain._SENT.clear()
@@ -2185,6 +2243,7 @@ async def main() -> int:
 
     await test_bk62(check)
     await test_bk72(check)
+    await test_bk77(check)
     await test_ops13(check)
     await test_p_magesh_26(check)
     await test_bk63(check)
@@ -2447,9 +2506,9 @@ async def main() -> int:
         await desk_turn(city, chat[0], chat)
         out = to(city, CITIZEN)
         check("BK-68 pagina mai arrivata: domanda di consenso cross_asst, non lista d'attesa",
-              any(t.startswith("consent ") and "purpose=cross_asst" in t for t in out) and not any("waiting_list=true" in t for t in out), city.sent)
+              any(t.startswith(CROSS_Q) for t in out) and not any("waiting_list=true" in t for t in out), city.sent)
         yes = row(CITIZEN, bk, "Sì, va bene. consent consent_ref=cons-1 purpose=cross_asst", 9)
-        asked = row(bk, CITIZEN, next(t for t in out if t.startswith("consent ")), 8)
+        asked = row(bk, CITIZEN, next(t for t in out if t.startswith(CROSS_Q)), 8)
         asks2 = [row(bk, LEDGER, t, 20 + i) for i, t in enumerate(to(city, LEDGER))]
         city = FakeCity(bk)
         await desk_turn(city, yes, [*chat, *asks2, asked, yes])
