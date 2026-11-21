@@ -996,7 +996,7 @@ def _trace(step: str, message: Message, **fields: object) -> None:
     tail = " ".join(f"{k}={v}" for k, v in fields.items() if v not in (None, ""))
     try:
         _LOG.info(
-            f"booking.{step} need_id={need} {tail}".rstrip(),
+            f"booking.{step} need_id={need} {tail}".rstrip() + f" {_build_tag()}",  # OPS-14
             extra={"need_id": need, "msg_id": (message.msg_id or "")[:64]},
         )
     except Exception:  # a log line must never break a turn

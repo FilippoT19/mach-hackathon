@@ -283,18 +283,23 @@ def _event(event: str, need_id: str | None = None, /, **fields: object) -> None:
     need = (need_id or _TURN_NEED.get())[:64]
     tail = " ".join(f"{k}={str(v)[:80]}" for k, v in fields.items() if v not in (None, ""))
     try:
-        _LOG.info(f"{event} need_id={need} {tail}".rstrip(), extra={"need_id": need})
+        _LOG.info(f"{event} need_id={need} {tail}".rstrip() + f" {_build_tag()}", extra={"need_id": need})  # OPS-14
     except Exception:  # a log line must never break a turn
         pass
 
 
 async def _say(city: City, to: str, text: str) -> bool:
+    receipt = first_word(text) == "booking.receipt"  # OPS-14: did the receipt leave, and from which build
     try:
         await city.say(to, text)
     except CapError as error:
         _event("say.fail", to=_kind(to), act=first_word(text)[:32], error=type(error).__name__,
                detail=str(error).replace("\n", " ")[:80])
+        if receipt:
+            _event("booking.receipt.sent", ok="false", to=_kind(to), booking_id=fields_of(text).get("booking_id"))
         return False
+    if receipt:
+        _event("booking.receipt.sent", ok="true", to=_kind(to), booking_id=fields_of(text).get("booking_id"))
     said = _SAID.get()
     if said is not None:
         said.add(to)
