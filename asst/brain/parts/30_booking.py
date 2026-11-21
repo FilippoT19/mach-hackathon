@@ -300,13 +300,16 @@ def _learned_out(fields: dict[str, str], learned: dict) -> bool:
 
 
 def _best_tier(chosen: list[dict[str, str]], days: frozenset[str] | None, gender: str | None) -> list[dict[str, str]]:
-    """BK-60: the slots that match every preference (days, doctor gender), when there are any.
+    """BK-60: the slots that match every preference (days, doctor gender) come first.
     "Posso solo lunedì o mercoledì": a Tuesday is not a choice to add for variety (P-francesco-48
     spreads days and doctors only inside this tier). With no match, all slots stay, best first."""
 
     best = [slot for slot in chosen
             if (not days or _slot_day(slot) in days) and (not gender or _doctor_gender(slot) in ("", gender))]
-    return best or chosen
+    # BK-60b: order, never filter. A slot outside the said days costs nothing (the citizen picks
+    # the best one), and it is the only way left when an unsaid constraint (gender) rules out
+    # every slot of the said days.
+    return best + [slot for slot in chosen if slot not in best]
 
 
 def _gender_said(chat: list[Message]) -> str | None:
