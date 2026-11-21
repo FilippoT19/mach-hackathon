@@ -5,7 +5,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 
 <!-- aggiungi qui sotto -->
 
-### [ ] P-magesh-19: il cittadino dice al gp un sintomo e al booking un altro: la ricetta non corrisponde e nessuno se ne accorge
+### [~] P-magesh-19: il cittadino dice al gp un sintomo e al booking un altro: la ricetta non corrisponde e nessuno se ne accorge
 - Journey: N-2026-11-02-890912000278, N-2026-11-02-890912000281, N-2026-11-02-890912000286 (L6, ondata W01QQQ); ruoli: booking_centre e gp. Probabile `city_fault`: va segnalato ai mod comunque. Questa proposta serve solo a limitare i danni se non lo riconoscono, o se capita ancora.
 - Cosa fa il cittadino:
   - 278: al gp "Ho mal di schiena da settimane". Al booking "Sento il cuore accelerato. Devo prenotare una visita cardiologica, ho l'impegnativa" (`service_type=specialist_care.cardiology`), con la ricetta VIS-FIS B.
@@ -23,7 +23,7 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 - Test a parole: "dato una ricetta VIS-FIS B e la need.request 'mi fa male il ginocchio', mi aspetto `referral.check ... symptom=SYM-KNEE` al gp e `status` al cittadino; dato il `referral.check`, mi aspetto dal gp `prescribe ... procedure=VIS-FIS priority=D` al Ledger prima della `prescription` al cittadino". Terzo test: "ricetta VIS-FIS B e testo 'mal di schiena': nessun `referral.check`".
 - Priorità secondo te: P2 (3 casi in un'ondata, causati dal modello della città; prima la segnalazione ai mod)
 
-### [ ] P-magesh-18: centro prenotazioni, livello 6: il cittadino rifiuta il sesso del medico (`reason=gender`) e il giorno (`reason=day`) solo nel cancel, e noi rioffriamo lo stesso medico
+### [x] P-magesh-18: centro prenotazioni, livello 6: il cittadino rifiuta il sesso del medico (`reason=gender`) e il giorno (`reason=day`) solo nel cancel, e noi rioffriamo lo stesso medico
 - Journey: N-2026-11-02-890912000304 (L6), N-2026-11-02-8909120002440003 (L6), N-2026-11-02-8909120002280005 (L5), ondata W01QQQ (ruolo: booking_centre). Caso particolare di P-francesco-49 (motivo del cancel ignorato), che non parla del sesso.
 - Cosa fa il cittadino: non dice mai il sesso del medico che vuole (nessun `gender=` nella need.request, niente nel testo). Lo dice solo annullando le nostre offerte:
   - 304: "posso solo lunedì o mercoledì"; riceve 5 offerte, tutte con `asst-niguarda-h1` (donna); le annulla tutte e 5 con `reason=gender`.
