@@ -541,11 +541,19 @@ def _agenda_now(chat: list[Message], message: Message) -> datetime | None:
         return None
     now = _when(fields_of(anchor.text).get("agenda_now", ""))
     read_at, turn_at = _when(anchor.sent_at), _when(message.sent_at)
-    if now is not None and read_at is not None and turn_at is not None and turn_at > read_at:
-        now += (turn_at - read_at) * _AGENDA_SPEED
-    return now
+    if now is None or read_at is None:
+        return now
+    elapsed = turn_at - read_at if turn_at is not None and turn_at > read_at else timedelta(0)
+    # BK-62: the offer leaves minutes after the message that opened the turn (10 real minutes on
+    # 21/11 = 10 agenda hours: two to four offers of five came back reason=past). The real time
+    # since the Ledger wrote the agenda line counts, when our clock and that line agree on it.
+    real = datetime.now(read_at.tzinfo) - read_at
+    if elapsed < real <= _AGENDA_REAL_MAX:
+        elapsed = real
+    return now + elapsed * _AGENDA_SPEED
 
 
+_AGENDA_REAL_MAX = timedelta(minutes=45)  # older than a citizen's whole wait: not this run's clock
 _AGENDA_STALE = timedelta(seconds=120)  # two agenda hours at 60x
 
 
@@ -1575,7 +1583,14 @@ async def _widen_stop(
     await _advance_alone(city, message, chat, key, fixed=fixed, replacing=False)
 
 
-def _one_sided(chosen: list[dict[str, str]], chat: list[Message]) -> bool:
+def _one_sided(chosen: list[dict[str, str]], chat: list[Message], fixed: str | None = None) -> bool:
+    # BK-62 (nine journeys of 21/11, 03:37-03:48): five offers, all on Tuesday 1 December. The
+    # citizens had said "only on some days" without naming them and cancelled with reason=day.
+    # Slots of one calendar day are one-sided too.
+    if len({slot.get("at", "")[:10] for slot in chosen}) == 1:
+        return True
+    if fixed is not None:
+        return False  # the counselling centre has one doctor: only the days can spread
     days = _days(chat)
     if days and not any(_slot_day(slot) in days for slot in chosen):
         return True
@@ -1788,8 +1803,8 @@ async def _advance_alone(
                 await _say(city, citizen, last.text)
         _trace("stop", message, why="offers_pending")
         return
-    if (chosen and not replacing and fixed is None and "widen_stop" not in sent.notes
-            and page < pages and page < _MAX_PAGE and _one_sided(chosen, chat)
+    if (chosen and not replacing and "widen_stop" not in sent.notes
+            and page < pages and page < _MAX_PAGE and _one_sided(chosen, chat, fixed)
             and sum(1 for note in sent.notes if note.startswith("widen:")) < _WIDEN_PAGES):
         sent.notes.update({"widen", f"widen:{page + 1}"})
         sent.pending_page = page + 1

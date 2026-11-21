@@ -5902,11 +5902,19 @@ def _agenda_now(chat: list[Message], message: Message) -> datetime | None:
         return None
     now = _when(fields_of(anchor.text).get("agenda_now", ""))
     read_at, turn_at = _when(anchor.sent_at), _when(message.sent_at)
-    if now is not None and read_at is not None and turn_at is not None and turn_at > read_at:
-        now += (turn_at - read_at) * _AGENDA_SPEED
-    return now
+    if now is None or read_at is None:
+        return now
+    elapsed = turn_at - read_at if turn_at is not None and turn_at > read_at else timedelta(0)
+    # BK-62: the offer leaves minutes after the message that opened the turn (10 real minutes on
+    # 21/11 = 10 agenda hours: two to four offers of five came back reason=past). The real time
+    # since the Ledger wrote the agenda line counts, when our clock and that line agree on it.
+    real = datetime.now(read_at.tzinfo) - read_at
+    if elapsed < real <= _AGENDA_REAL_MAX:
+        elapsed = real
+    return now + elapsed * _AGENDA_SPEED
 
 
+_AGENDA_REAL_MAX = timedelta(minutes=45)  # older than a citizen's whole wait: not this run's clock
 _AGENDA_STALE = timedelta(seconds=120)  # two agenda hours at 60x
 
 
@@ -6936,7 +6944,14 @@ async def _widen_stop(
     await _advance_alone(city, message, chat, key, fixed=fixed, replacing=False)
 
 
-def _one_sided(chosen: list[dict[str, str]], chat: list[Message]) -> bool:
+def _one_sided(chosen: list[dict[str, str]], chat: list[Message], fixed: str | None = None) -> bool:
+    # BK-62 (nine journeys of 21/11, 03:37-03:48): five offers, all on Tuesday 1 December. The
+    # citizens had said "only on some days" without naming them and cancelled with reason=day.
+    # Slots of one calendar day are one-sided too.
+    if len({slot.get("at", "")[:10] for slot in chosen}) == 1:
+        return True
+    if fixed is not None:
+        return False  # the counselling centre has one doctor: only the days can spread
     days = _days(chat)
     if days and not any(_slot_day(slot) in days for slot in chosen):
         return True
@@ -7149,8 +7164,8 @@ async def _advance_alone(
                 await _say(city, citizen, last.text)
         _trace("stop", message, why="offers_pending")
         return
-    if (chosen and not replacing and fixed is None and "widen_stop" not in sent.notes
-            and page < pages and page < _MAX_PAGE and _one_sided(chosen, chat)
+    if (chosen and not replacing and "widen_stop" not in sent.notes
+            and page < pages and page < _MAX_PAGE and _one_sided(chosen, chat, fixed)
             and sum(1 for note in sent.notes if note.startswith("widen:")) < _WIDEN_PAGES):
         sent.notes.update({"widen", f"widen:{page + 1}"})
         sent.pending_page = page + 1
@@ -8492,21 +8507,23 @@ async def _finish_booking(
     if not await _on_held(city, reply, fresh):
         return
     hold_id = fields_of(reply.text)["hold_id"]
-    done = await _await_line(
-        city, message.need_id, fresh, "committed", f"booking_id={hold_id}", op="commit", seconds=_HOLD_WAIT,
-        refusal_matches=lambda row: row.recipient == city.agent_id
-        and fields_of(row.text).get("slot_id", slot) == slot
-        and fields_of(row.text).get("hold_id", hold_id) == hold_id,
-    )
-    if done is None:
-        _LOG.info("care.commit.missing", extra={"need_id": (message.need_id or "")[:48]})
-        return
-    reply, fresh = done
-    if first_word(reply.text) == "committed":
-        await _on_committed(city, reply, fresh)
-        return
-    if first_word(reply.text) == "refused":
-        await _on_refused(city, reply, fresh, hold_self=hold_self, slot=slot, hold_id=hold_id)
+    for _attempt in range(2):  # BK-62: a commit refused for its fence is sent once more
+        done = await _await_line(
+            city, message.need_id, fresh, "committed", f"booking_id={hold_id}", op="commit", seconds=_HOLD_WAIT,
+            refusal_matches=lambda row: row.recipient == city.agent_id
+            and fields_of(row.text).get("slot_id", slot) == slot
+            and fields_of(row.text).get("hold_id", hold_id) == hold_id,
+        )
+        if done is None:
+            _LOG.info("care.commit.missing", extra={"need_id": (message.need_id or "")[:48]})
+            return
+        reply, fresh = done
+        if first_word(reply.text) == "committed":
+            await _on_committed(city, reply, fresh)
+            return
+        if first_word(reply.text) != "refused" or not await _on_refused(
+                city, reply, fresh, hold_self=hold_self, slot=slot, hold_id=hold_id):
+            return
 
 
 async def _on_held(city: City, message: Message, chat: list[Message]) -> bool:
@@ -8636,7 +8653,8 @@ _BOOKING_REFUSALS = {"prescription_expired", "consent_missing", "no_capacity"}
 async def _on_refused(
     city: City, message: Message, chat: list[Message], *, hold_self: bool,
     slot: str = "", hold_id: str = "",
-) -> None:
+) -> bool:
+    """A refused hold or commit. True: the commit was sent again (BK-62), nothing is cancelled."""
     agent = city.agent_id
     fields = fields_of(message.text)
     commit_refused = "commit" in words(message.text)
@@ -8660,6 +8678,27 @@ async def _on_refused(
     reason = (fields.get("reason") or fields.get("code") or "").lower()
     if not re.fullmatch(r"[a-z]+(?:_[a-z0-9]+)*", reason):
         reason = next(iter(words(message.text) & _BOOKING_REFUSALS), "facility_cancelled")
+    if commit_refused and hold_id and "fence" in reason + " " + message.text.lower():
+        # BK-62 (journeys 000149, 000248, 000290): the hold was ours, the commit came back
+        # ``stale_fence`` and the hold expired: three citizens lost a confirmed visit. e19
+        # documents commit without fence: send it once more without, before giving the slot up.
+        notes = _sent(message.need_id or message.msg_id).notes
+        if f"nofence:{hold_id}:{message.msg_id}" in notes:
+            return True  # another turn already answered this same refusal
+        if not any(note.startswith(f"nofence:{hold_id}:") for note in notes):
+            _, consent, number = _booking_of(chat, agent, slot)
+            consent = consent or next(
+                (fields_of(row.text).get("consent_ref", "") for row in reversed(chat)
+                 if row.sender == agent and row.recipient == LEDGER and first_word(row.text) == "commit"
+                 and fields_of(row.text).get("hold_id") == hold_id), "")
+            if consent:
+                notes.add(f"nofence:{hold_id}:{message.msg_id}")
+                parts = ["commit", f"hold_id={hold_id}", f"consent_ref={consent}"]
+                if number:
+                    parts.append(f"prescription_number={number}")
+                if await _say(city, LEDGER, " ".join(parts)):
+                    _LOG.info("bk62.commit_without_fence hold_id=%s", hold_id[:48])
+                    return True
     await _cancel_booking(city, chat, slot, reason=reason, hold_id=hold_id if commit_refused else "")
     desk = agent == _OUR_AGENTS["booking_centre"]  # BK-57: the booking centre now holds our slots
     if desk and any(w in reason or w in message.text.lower() for w in _PERMISSION_WORDS):
@@ -8670,6 +8709,7 @@ async def _on_refused(
         # and went out again with the next offers. Remember it: it is never offered again.
         _sent(message.need_id or message.msg_id).notes.add("refused:" + slot)
         await _advance(city, message, chat, fixed=None if desk else "CONS-GIN", replacing=True)
+    return False
 
 
 _CHECKIN_LIMIT = 3
