@@ -2826,9 +2826,9 @@ async def main() -> int:
         spec, gp, bk = "agent:jmjfst55vgjz", "agent:fddgaqmp6kb0", "agent:fn64xfq2jft4"
 
         class LedgerCity(FakeCity):
-            def __init__(self, rows):
+            def __init__(self, rows, protocol=None):
                 super().__init__(spec, peers=[Peer(agent_id=gp, role="gp"), Peer(agent_id=bk, role="booking_centre")])
-                self.rows = list(rows)
+                self.rows, self.protocol = list(rows), protocol
 
             async def say(self, to, text, *, status=None):
                 mid = await super().say(to, text, status=status)
@@ -2839,6 +2839,9 @@ async def main() -> int:
                 if to == LEDGER and brain.first_word(text) == "prescribe":
                     self.rows.append(row(LEDGER, spec, f"prescribed prescription_number={f['prescription_number']} "
                                          f"procedure={f['procedure']} priority={f['priority']}", 500 + len(self.sent)))
+                if to == LEDGER and brain.first_word(text) == "world":
+                    self.rows.append(row(LEDGER, spec, "slots page=1/1\n" + (self.protocol or
+                                         "slot_id=S-9 doctor_id=d-s1 procedure=CTRL-CARD at=2026-12-01T09:00:00Z"), 700 + len(self.sent)))
                 return mid
 
             async def history(self, peer=None, *, need_id=None):
@@ -2849,20 +2852,23 @@ async def main() -> int:
                 row(spec, CITIZEN, "checkin booking_id=B-11 Check-in registrato", 3),
                 row(spec, CITIZEN, "consent purpose=report_sharing Posso condividere il suo referto?", 4)]
         yes = row(CITIZEN, spec, "consent purpose=report_sharing consent_ref=R-11", 5)
-        for fill, label in (({}, "spento"), ({"VIS-CARD": ("CTRL-CARD", "P")}, "acceso")):
+        row_p = "symptom_code=SYM-HEART-CHECK procedure=CTRL-CARD priority=P red_flags=RF-CHEST-PAIN"
+        for protocol, label in ((None, "spento"), (row_p, "acceso")):
             brain._REPORT_FILED.clear()
             brain._PEERS.pop("gp", None)
             brain._PEERS.pop("booking_centre", None)
             brain._LANG_OF.pop("N-1", None)
-            city = LedgerCity([*base, yes])
-            with patch.object(brain, "_FOLLOW_UP", fill):
+            city = LedgerCity([*base, yes], protocol)
+            with patch.object(brain, "_PULL_SECONDS", 0.01):
                 await brain.handle("specialist_care", city, yes, [*base, yes])
             led = to(city, LEDGER)
-            if not fill:
-                check("SP-11 spento (oggi): nessun prescribe, report come SP-10",
-                      led == ["report booking_id=B-11 outcome_code=VISIT consent_ref=R-11"]
-                      and not to(city, bk), city.sent)
+            if not protocol:
+                check("SP-11b nessuna riga di protocollo CTRL-CARD nel Ledger: chiede world, nessun prescribe",
+                      led[0] == "world procedure=CTRL-CARD" and not any(t.startswith("prescribe") for t in led)
+                      and "report booking_id=B-11 outcome_code=VISIT consent_ref=R-11" in led and not to(city, bk), city.sent)
                 continue
+            check("SP-11b priorità presa dalla riga di protocollo del Ledger (P)",
+                  any(t.startswith("prescribe ") and "priority=P" in t for t in led), led)
             rx = [t for t in led if t.startswith("prescribe ")]
             check("SP-11 acceso: prescribe CTRL-CARD con follow_up_of=<booking_id> prima del report",
                   len(rx) == 1 and "procedure=CTRL-CARD" in rx[0] and "follow_up_of=B-11" in rx[0]
@@ -2887,8 +2893,8 @@ async def main() -> int:
                 return await super().say(to, text, status=status)
 
         brain._REPORT_FILED.clear()
-        city = Refusing([*base, yes])
-        with patch.object(brain, "_FOLLOW_UP", {"VIS-CARD": ("CTRL-CARD", "P")}), patch.object(brain, "_PULL_SECONDS", 0.01):
+        city = Refusing([*base, yes], row_p)
+        with patch.object(brain, "_PULL_SECONDS", 0.01):
             await brain.handle("specialist_care", city, yes, [*base, yes])
         check("SP-11 prescribe rifiutato: referto archiviato senza follow_up_prescription_number",
               "report booking_id=B-11 outcome_code=VISIT consent_ref=R-11" in to(city, LEDGER)

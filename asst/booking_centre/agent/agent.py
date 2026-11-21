@@ -9903,9 +9903,46 @@ async def _on_report_consent(city: City, message: Message, chat: list[Message], 
 # The kit gives the HOW: `prescribe ... follow_up_of=<booking_id>`, then
 # `report ... follow_up_prescription_number=...`. It does NOT give the WHEN or the priority ("lo
 # decide lo specialista quando il percorso lo richiede"; no protocol row for CTRL-CARD). So the
-# flow is ready and OFF: _FOLLOW_UP is empty. Fill it (visit procedure -> follow-up procedure,
-# priority) only from a real journey verdict, the Ledger's `rules` answer or the Token della Sera.
+# manual _FOLLOW_UP stays empty; SP-11b below reads the rule from the Ledger's protocol table.
 _FOLLOW_UP: dict[str, tuple[str, str]] = {}
+
+
+# SP-11b: the rule comes from the city itself. e19: the protocol table (symptom, procedure,
+# priority, red flags) is on the Ledger and `world` reads it; the SDK's Protocol row has
+# symptom_code, procedure, priority, red_flags. After a cardiology visit (VIS-CARD; CTRL-CARD is
+# "cardiology follow-up" in the kit's catalogue) the specialist reads `world procedure=CTRL-CARD`:
+# only a protocol line with procedure=CTRL-CARD and a priority turns the follow-up on, with THAT
+# priority. No such line, or no answer: no follow-up (as before). Nothing is guessed.
+_FOLLOW_UP_OF = {"VIS-CARD": "CTRL-CARD"}
+_PRIORITIES = {"U", "B", "D", "P"}
+
+
+def _protocol_priority(rows: list[Message], procedure: str) -> str | None:
+    for row in rows:
+        if row.sender != LEDGER:
+            continue
+        for line in row.text.splitlines():
+            f = fields_of(line)
+            if f.get("procedure") == procedure and "symptom_code" in f and f.get("priority") in _PRIORITIES:
+                return f["priority"]
+    return None
+
+
+async def _ledger_follow_up(
+    city: City, message: Message, chat: list[Message], visit: str,
+) -> tuple[str, str] | None:
+    follow = _FOLLOW_UP_OF.get(visit)
+    if not follow:
+        return None
+    priority = _protocol_priority(chat, follow)
+    if priority is None:
+        ask = f"world procedure={follow}"
+        if not _we(chat, city.agent_id, ask, to=LEDGER, word="world"):
+            await _say(city, LEDGER, ask)
+        chat = await _until(city, message.need_id, chat, lambda rows: _protocol_priority(rows, follow) is not None)
+        priority = _protocol_priority(chat, follow)
+    _event("facility.follow_up", message.need_id, source="ledger", procedure=follow, priority=priority or "none")
+    return (follow, priority) if priority else None
 
 
 def _visit_procedure(chat: list[Message]) -> str | None:
@@ -9921,8 +9958,11 @@ async def _follow_up_rx(
     city: City, message: Message, chat: list[Message], booking_id: str, citizen: str | None,
 ) -> tuple[str, str, str] | None:
     """SP-11: (number, procedure, priority) of the follow-up the Ledger accepted, or None."""
-    rule = _FOLLOW_UP.get(_visit_procedure(chat) or "")
-    if not rule or not citizen:
+    if not citizen:
+        return None
+    visit = _visit_procedure(chat) or ""
+    rule = _FOLLOW_UP.get(visit) or await _ledger_follow_up(city, message, chat, visit)
+    if not rule:
         return None
     procedure, priority = rule
     number = f"prescription_number-FU-{sha256(f'{citizen}|{booking_id}'.encode()).hexdigest()[:16].upper()}"
@@ -9975,7 +10015,11 @@ async def _file_report(
     if len(_REPORT_FILED) > _SENT_NEEDS:
         _REPORT_FILED.popitem(last=False)
     citizen = citizen or (message.sender if message.sender.startswith("citizen:") else _citizen(chat))
-    follow = await _follow_up_rx(city, message, chat, booking_id, citizen)  # SP-11 (off while _FOLLOW_UP is empty)
+    try:  # SP-11: the follow-up never blocks the report ("Referto mancante" -1)
+        follow = await _follow_up_rx(city, message, chat, booking_id, citizen)
+    except Exception:  # noqa: BLE001
+        _LOG.exception("care.follow_up_failed need_id=%s", (message.need_id or "")[:48])
+        follow = None
     _event("facility.report", message.need_id, booking=booking_id, shared=str(bool(consent_ref)).lower(),
            follow_up=str(bool(follow)).lower())
     await _say(city, LEDGER, f"report {token} outcome_code=VISIT" + (f" consent_ref={consent_ref}" if consent_ref else "")

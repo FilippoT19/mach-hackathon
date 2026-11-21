@@ -70,6 +70,8 @@ class World:
                          f"priority={g['priority']} state=issued")
         elif text.strip() == "agenda":
             reply = f"agenda agenda_now={NOW}"
+        elif head == "world" and f.get("procedure") not in FACILITY_OF:
+            reply = "slots page=1/1"  # SP-11b: no protocol row for this procedure in the simulator
         elif head == "world":
             fac, doc = FACILITY_OF[f["procedure"]]
             rows = [f"slot_id=S-{i} doctor_id=d-{doc} facility={fac} procedure={f['procedure']} at={at} day=wed free=1"
