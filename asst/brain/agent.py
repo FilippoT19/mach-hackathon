@@ -7168,14 +7168,17 @@ async def _advance(
                     await _widen_stop(city, message, chat, key, sent, fixed)
                     break
                 citizen = _citizen(chat)
-                if message.sender.startswith("citizen:") and citizen and "page_lost" not in sent.notes:
-                    # BK-39: the next page never came. Never leave the citizen silent: waiting list
-                    # now. (The page's own push, if it comes, can still bring real offers.)
+                if message.sender.startswith("citizen:") and citizen:
+                    # BK-39: the next page never came. Never leave the citizen silent. BK-68 (seven
+                    # waiting lists of 21/11 05:17-05:20Z while 130-286 slots were acceptable; MACH-1.3
+                    # R2): the answer set is the whole city, so the other ASSTs are asked before the
+                    # waiting list. (The page's own push, if it comes, can still bring real offers.)
+                    # Every citizen turn that still finds the page missing goes on from where the
+                    # case stands (consent asked, partners asked, waiting list): never a dead end.
+                    if "page_lost" not in sent.notes:
+                        _LOG.warning("booking.page_lost need_id=%s page=%s", message.need_id, page)
                     sent.notes.add("page_lost")
-                    _LOG.warning("booking.page_lost need_id=%s page=%s", message.need_id, page)
-                    number = _number(chat)
-                    rx = _prescription_reply(chat, number) or {}
-                    await _relaxed(city, message, chat, key, citizen, fixed or rx.get("procedure"), number, rx.get("priority"))
+                    await _after_local(city, message, chat, key, fixed=fixed, replacing=False)
                 break
             await _advance_alone(city, reply, chat, key, fixed=fixed, replacing=False)
 

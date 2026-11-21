@@ -1224,8 +1224,14 @@ async def main() -> int:
             reply = row(LEDGER, booking, page, 7)
             await desk_turn(city, reply, [*chat, original, cancel, reply])
             offers = [t for t in to(city, CITIZEN)[1:] if t.startswith("offer ")]
-            expected = "slot_id=S-PAGE-2" if available else "offer_id=wl-N-1 waiting_list=true"
-            check(f"P-francesco-14 pagina 2: {expected}", bool(offers) and expected in offers[-1], city.sent)
+            if available:
+                check("P-francesco-14 pagina 2: slot_id=S-PAGE-2", bool(offers) and "slot_id=S-PAGE-2" in offers[-1], city.sent)
+            else:
+                # BK-68: nothing local is left. The other ASSTs come before the waiting list (the answer
+                # set is the whole city): the citizen is asked for the cross-ASST consent, once.
+                asked = [t for t in to(city, CITIZEN) if t.startswith("consent ") and "purpose=cross_asst" in t]
+                check("P-francesco-14 pagina 2 vuota: consenso cross_asst prima della lista d'attesa (BK-68)",
+                      len(asked) == 1 and not any("waiting_list=true" in t for t in to(city, CITIZEN)), city.sent)
 
         class PageCity(FakeCity):
             async def history(self, peer=None, *, need_id=None):
@@ -2005,6 +2011,25 @@ async def main() -> int:
         check("BK-68 struttura: deadline= senza fuso orario rispettato (solo lo slot di lunedì)",
               len(out) == 1 and "slot_id=M1" in out[0] and "slot_id=T1" not in out[0], city.sent)
         brain._PARTNER_DONE.clear()
+        # a catalogue page that never arrives: the other ASSTs before the waiting list, and no dead end
+        brain._SENT.clear()
+        far = "slots page=1/3\n" + slot("X9", "h1", "2026-12-21T10:30:00Z", "mon")
+        chat = [row(CITIZEN, bk, f"need.request lang=it prescription_number={rx_number}", 0),
+                row(LEDGER, bk, f"prescription prescription_number={rx_number} procedure=VIS-FIS priority=B state=issued issued_at=2026-12-04T16:00:00Z", 1),
+                row(LEDGER, bk, "agenda agenda_now=2026-12-07T00:10:00Z", 2), row(LEDGER, bk, far, 3)]
+        city = FakeCity(bk)
+        await desk_turn(city, chat[0], chat)
+        out = to(city, CITIZEN)
+        check("BK-68 pagina mai arrivata: domanda di consenso cross_asst, non lista d'attesa",
+              any(t.startswith("consent ") and "purpose=cross_asst" in t for t in out) and not any("waiting_list=true" in t for t in out), city.sent)
+        yes = row(CITIZEN, bk, "Sì, va bene. consent consent_ref=cons-1 purpose=cross_asst", 9)
+        asked = row(bk, CITIZEN, next(t for t in out if t.startswith("consent ")), 8)
+        asks2 = [row(bk, LEDGER, t, 20 + i) for i, t in enumerate(to(city, LEDGER))]
+        city = FakeCity(bk)
+        await desk_turn(city, yes, [*chat, *asks2, asked, yes])
+        check("BK-68 dopo il sì, senza partner: lista d'attesa nello stesso turno (nessun vicolo cieco)",
+              any("waiting_list=true" in t for t in to(city, CITIZEN)), city.sent)
+        brain._SENT.clear()
 
     await test_bk68(check)
     await test_francesco_15(check)

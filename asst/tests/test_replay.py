@@ -667,7 +667,8 @@ async def r16():
 
 async def r17():
     """000206 (L?, 01:37): 'sto controllando', then the Ledger never sends page 2. BK-39: the citizen
-    gets the waiting list in the same turn, once, and nothing is offered blind."""
+    is never left silent and nothing is offered blind. BK-68: the other ASSTs come before the waiting
+    list (cross-ASST consent first); with no partner in the ring the waiting list follows the yes."""
     agenda = "2026-11-18T15:25:00Z"
     s = await Sim("N-2026-11-02-890912000206", lang="it", procedure="VIS-FIS", agenda=agenda, page_size=2, lost_pages={2},
                   first="Buongiorno, ho mal di schiena da giorni e vorrei prenotare la visita.").start()
