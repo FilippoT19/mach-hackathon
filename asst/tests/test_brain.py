@@ -858,7 +858,13 @@ async def main() -> int:
     fri = [line(f"S-F{h}", "d-s1", f"2026-11-06T0{h}:00:00Z", "fri") for h in (7, 8)]
     city = await run_desk("slots page=1/1\n" + "\n".join(thu + fri))
     got = brain._offer_rows(to(city, CITIZEN)[0]) if to(city, CITIZEN) else []
-    check("P-francesco-48 tre offerte, il posto più vicino resta il primo", len(got) == 3 and got[0]["slot_id"] == "S-T10", got)
+    check("BK-55 tutti i posti adatti in un messaggio, il più vicino resta il primo", len(got) == 7 and got[0]["slot_id"] == "S-T10", got)
+    msg = to(city, CITIZEN)[0] if to(city, CITIZEN) else ""
+    check("BK-55 messaggio sotto i 2000 caratteri", 0 < len(msg) <= 2000, len(msg))
+    many = [line(f"S-M{d:02d}{h}", "d-s2", f"2026-11-{d:02d}T{h}:00:00Z", "thu") for d in (5, 12, 19) for h in (10, 11, 12, 13, 14)]
+    c4 = await run_desk("slots page=1/1\n" + "\n".join(many))
+    m4 = to(c4, CITIZEN)[0] if to(c4, CITIZEN) else ""
+    check("BK-55 con molti posti: un solo messaggio valido (<= 2000)", 0 < len(m4) <= 2000 and len(brain._offer_rows(m4)) >= 3, len(m4))
     check("P-francesco-48 almeno due giorni e due medici", len({g["agenda_day"] for g in got}) >= 2
           and len({g["doctor_id"] for g in got}) >= 2, got)
     # P-francesco-31: the doctor's gender orders the offers, it does not empty them.

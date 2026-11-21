@@ -644,7 +644,7 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
             [line for line in world.splitlines() if "slot_id=" in line],
             now=now, priority=priority, lang=fields.get("lang", "it"),
             gender=fields.get("gender_preference") or fields.get("gender") or None, facility=agent, procedure=procedure,
-        )[:3]
+        )[:_OFFER_MAX]  # BK-55: every fitting slot in one answer
     if not picks:
         await _say(city, message.sender, f"cancel reason=no_availability request_id={request_id} Al momento non abbiamo posti adatti per {procedure}.")
         return
@@ -654,7 +654,6 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
         + (" wheelchair=true" if agent == "agent:jdj692g4145e" else "")  # common format: accessible hospital
         for s in picks
     ]
-    await _say(city, message.sender, "\n".join(lines + [
-        "Ecco i nostri posti liberi. Dopo il consenso cross_asst del cittadino inviateci la conferma "
-        "con offer_id, slot_id, citizen, consent_ref e prescription_number: rispondiamo con la ricevuta."
-    ]))
+    tail = ("Ecco i nostri posti liberi. Dopo il consenso cross_asst del cittadino inviateci la conferma "
+        "con offer_id, slot_id, citizen, consent_ref e prescription_number: rispondiamo con la ricevuta.")
+    await _say(city, message.sender, "\n".join(_fit(lines, tail) + [tail]))
