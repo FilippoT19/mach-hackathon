@@ -784,7 +784,7 @@ def fitting(
     elif priority == "P":
         horizon = None
     else:
-        horizon = _agenda_add(now, timedelta(days=_DEADLINE_DAYS.get(priority or "", 14)))  # BK-68
+        horizon = now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14))  # BK-76: calendar days
     earliest = now + (_LEAD if priority == "U" else _LEAD_BOOK)
     chosen: list[tuple[int, datetime, dict[str, str]]] = []
     for line in lines:
@@ -6303,7 +6303,7 @@ def _before_rx_deadline(slot: dict[str, str], reply: dict[str, str] | None, prio
     for key in _RX_DATE_KEYS:
         issued = _when(reply.get(key, ""))
         if issued is not None:
-            return at <= _agenda_add(issued, timedelta(days=days))  # BK-68: agenda days, no weekend
+            return at <= issued + timedelta(days=days)  # BK-76: calendar days of agenda
     return True
 
 
@@ -6442,10 +6442,15 @@ def _rx_deadline(
             return limit
     if days is None:
         return None
+    # BK-76 (21/11, 65 verdicts): the citizen counts the window in CALENDAR hours of agenda from
+    # the birth of the need. 68 B slots refused with reason=deadline were 78-101 calendar hours
+    # after it (30-53 without the weekend, which BK-68 counted as inside); the 15 confirmed ones
+    # were 22-44. A B of Friday ends on Sunday: a Monday slot is always refused. Only the agenda
+    # CLOCK skips the weekend (``_agenda_add`` for "now" and for the birth), never the window.
     for key in _RX_DATE_KEYS:
         issued = _when((reply or {}).get(key, ""))
         if issued is not None:
-            return _agenda_add(issued, timedelta(days=days))  # BK-68
+            return issued + timedelta(days=days)  # BK-76
     anchor = next((row for row in reversed(chat) if row.sender == LEDGER and first_word(row.text) == "agenda"), None)
     if anchor is None:
         return None
@@ -6464,7 +6469,7 @@ def _rx_deadline(
     # on the agenda than that line says (a negative ``elapsed``), within the life of the memory.
     elapsed = max(-_AGENDA_REAL_MAX, read_at - min(firsts))
     born = _agenda_add(agenda_now, -(elapsed * _AGENDA_SPEED))  # BK-68: the agenda skips the weekend
-    return _agenda_add(born, timedelta(days=days)) - _DEADLINE_MARGIN
+    return born + timedelta(days=days) - _DEADLINE_MARGIN  # BK-76
 
 
 def _agenda_now(chat: list[Message], message: Message) -> datetime | None:
@@ -6520,7 +6525,7 @@ def _search_limit(now: datetime, priority: str | None, deadline: datetime | None
     elif priority == "P":
         horizon = None
     else:
-        horizon = _agenda_add(now, timedelta(days=days if days is not None else 14))  # BK-68
+        horizon = now + timedelta(days=days if days is not None else 14)  # BK-76
     if deadline is not None and (horizon is None or deadline < horizon):
         return deadline
     return horizon
