@@ -2109,6 +2109,54 @@ async def main() -> int:
         brain._SENT.clear(); brain._ASKED_AT.clear()
 
     await test_bk69(check)
+
+    async def test_bk70(check):
+        """BK-70: while the case waits for page 2, another case just received page 2 (process memory).
+        A young page is used at once; an old one is not (its slots may be taken)."""
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        bk = brain._OUR_AGENTS["booking_centre"]
+        iso_ = lambda t: t.isoformat().replace("+00:00", "Z")
+
+        def slot(sid, at, day):
+            return f"slot_id={sid} doctor_id=asst-niguarda-h1 facility={hospital} procedure=VIS-FIS at={at} day={day} free=1"
+
+        p1 = "slots page=1/3\n" + slot("PAST", "2026-12-07T10:30:00Z", "mon")
+        chat = [row(CITIZEN, bk, f"need.request lang=it prescription_number={rx_number}", 0),
+                row(LEDGER, bk, f"prescription prescription_number={rx_number} procedure=VIS-FIS priority=B state=issued issued_at=2026-12-07T15:00:00Z", 1),
+                row(LEDGER, bk, "agenda agenda_now=2026-12-07T19:00:00Z", 2), row(LEDGER, bk, p1, 3)]
+
+        def other_case_page2(age_s):
+            brain._WORLD.clear()
+            brain._remember_ledger([Message(type="chat", sender=LEDGER, msg_id="other-p2", need_id="N-OTHER", recipient=bk,
+                                            body={"text": "slots page=2/3\n" + slot("TUE", "2026-12-08T10:30:00Z", "tue")},
+                                            sent_at=iso_(_dt.now(_tz.utc) - _td(seconds=age_s)))], bk)
+
+        brain._MEMORY_ON = True
+        try:
+            brain._SENT.clear(); brain._ASKED_AT.clear()
+            other_case_page2(30)
+            city = FakeCity(bk)
+            await desk_turn(city, chat[0], chat)
+            out = to(city, CITIZEN)
+            check("BK-70 pagina 2 arrivata 30 s fa a un altro caso: offerta subito, niente cross_asst",
+                  any(t.startswith("offer ") and "slot_id=TUE" in t for t in out)
+                  and not any(t.startswith("consent ") for t in out), city.sent)
+            offer = next((t for t in out if t.startswith("offer ")), "")
+            check("BK-70 l'offerta dalla memoria porta il need del cittadino (nessun dato di altri casi)",
+                  "N-OTHER" not in offer, offer[:200])
+            brain._SENT.clear(); brain._ASKED_AT.clear()
+            other_case_page2(600)
+            city = FakeCity(bk)
+            await desk_turn(city, chat[0], chat)
+            out = to(city, CITIZEN)
+            check("BK-70 pagina in memoria di 10 minuti fa: non usata, status e attesa",
+                  not any(t.startswith("offer ") for t in out) and any(t.startswith("status ") for t in out)
+                  and not any(t.startswith("consent ") for t in out), city.sent)
+        finally:
+            brain._MEMORY_ON = False
+            brain._WORLD.clear(); brain._SENT.clear(); brain._ASKED_AT.clear()
+
+    await test_bk70(check)
     await test_francesco_15(check)
     await test_francesco_16(check)
     await test_francesco_18(check)

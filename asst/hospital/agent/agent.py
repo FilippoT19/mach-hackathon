@@ -5720,6 +5720,42 @@ async def _ask_pages(
     return asks
 
 
+# BK-70: while this case waits for page N, another case of the same visit often receives the same
+# page (one citizen every ~2 minutes per ASST) and it lands in the process memory. A page that young
+# is used at once instead of waiting for our own copy. Kept short: an older page holds more slots
+# already taken (a taken slot is caught by the Ledger's refused hold, BK-57: one lost round, no -2).
+_MEMORY_PAGE_MAX_AGE = 180.0  # real seconds
+
+
+def _case_procedure(chat: list[Message], agent: str) -> str | None:
+    """The procedure of this case's catalogue: our last ``world`` question, else its last page."""
+    for row in reversed(chat):
+        if row.sender == agent and row.recipient == LEDGER and first_word(row.text) == "world":
+            proc = fields_of(row.text).get("procedure")
+            if proc:
+                return proc
+    for row in reversed(chat):
+        if row.sender == LEDGER and first_word(row.text) == "slots":
+            proc = _row_procedure(row.text)
+            if proc:
+                return proc
+    return None
+
+
+def _memory_page(chat: list[Message], agent: str, message: Message, page: int) -> Message | None:
+    """BK-70: catalogue ``page`` from the process memory when it is younger than _MEMORY_PAGE_MAX_AGE,
+    as a row of THIS case (need_id of the turn), so the search reads it as its own."""
+    procedure = _case_procedure(chat, agent)
+    if not _MEMORY_ON or not procedure:
+        return None
+    entry = (_WORLD.get(procedure) or {}).get(page)
+    if entry is None or time.time() - entry[1] > _MEMORY_PAGE_MAX_AGE:
+        return None
+    row = entry[0]
+    return Message(type="chat", sender=LEDGER, msg_id=f"mem-{row.msg_id}", need_id=message.need_id,
+                   recipient=agent, body={"text": row.text}, sent_at=row.sent_at)
+
+
 def _page_waiting(chat: list[Message], agent: str, message: Message, page: int) -> bool:
     """True while our question for catalogue ``page`` is younger than _PAGE_PATIENCE: its answer is
     still on the way. A question with no readable time counts as old (never a dead end)."""
@@ -7247,9 +7283,16 @@ async def _advance(
                 if _try and time.monotonic() - started >= _TURN_SECONDS:
                     break
                 fresh = await _until(
-                    city, message.need_id, chat, lambda rows: _slots_page(rows, city.agent_id, page) is not None,
+                    city, message.need_id, chat, lambda rows: _slots_page(rows, city.agent_id, page) is not None
+                    or _memory_page(rows, city.agent_id, message, page) is not None,  # BK-70
                 )
                 reply = _slots_page(fresh, city.agent_id, page)
+                if reply is None:
+                    reply = _memory_page(fresh, city.agent_id, message, page)
+                    if reply is not None:
+                        # BK-70: another case just read this page; ours is still on its way.
+                        fresh = [*fresh, reply]
+                        _trace("memory", message, page=page, why="page_wait")
                 if reply is not None:
                     break
             chat = fresh
