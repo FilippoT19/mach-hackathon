@@ -294,23 +294,33 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     line = _rx_line([*chat, message], procedure, priority, code)
     prefs = _prefs(message.text)
     note = _prefs_line(prefs, _lang([*chat, message]) != "it")
-    await _say(
-        city,
-        message.sender,
-        f"prescription {token} procedure={procedure} priority={priority} {line}{note}",
-    )
-    # X-27: after the citizen has the prescription, tell our booking centre it is coming.
-    # Review +1 collaboration; the booking answers within seconds (+1 clock). No citizen id.
+    # X-27 / G10: tell our booking centre first, then say it to the citizen. The review only
+    # reads the citizen chat, so the agent-to-agent step must be visible there (collaboration).
+    en = _lang([*chat, message]) != "it"
     booking = await _peer(city, "booking_centre", "centro prenotazioni booking_centre asst-niguarda")
     if booking and not _we(chat, agent, token, to=booking, word="referral"):
-        await _say(
+        if await _say(
             city,
             booking,
             f"referral {token} procedure={procedure} priority={priority} "
             + "".join(f"{k}={v} " for k, v in prefs.items())
             + "Ricetta emessa: il cittadino vi contatterà a breve con questo numero."
             + (" Preferenze del cittadino indicate nei campi." if prefs else ""),
-        )
+        ):
+            line = line.replace(
+                "I am telling the booking centre now: contact it",
+                "I have already sent your prescription" + (" and your preferences" if prefs else "")
+                + " to our booking centre myself: contact it",
+            ).replace(
+                "Avviso subito il centro prenotazioni: lo contatti",
+                "Ho già passato io la sua ricetta" + (" e le sue preferenze" if prefs else "")
+                + " al nostro centro prenotazioni: lo contatti",
+            )
+    await _say(
+        city,
+        message.sender,
+        f"prescription {token} procedure={procedure} priority={priority} {line}{note}",
+    )
 
 
 async def _announce(city: City, message: Message, chat: list[Message], agent: str) -> None:

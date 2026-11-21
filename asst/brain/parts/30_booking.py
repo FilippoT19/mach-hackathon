@@ -1183,6 +1183,17 @@ async def _send_forwarded_receipt(
         + " with this receipt and your health card for check-in. If you cannot come, write to "
         "us first: we will move the appointment and free the slot for another citizen.",
     )
+    # G5 / G10 collaboration: tell the GP first, then say it in the receipt (the review reads only
+    # the citizen chat, so the agent-to-agent step must be visible there).
+    gp = await _peer(city, "gp", "medico di base gp asst-niguarda")
+    if gp and gp != city.agent_id and not _we(chat, city.agent_id, token, to=gp, word="booking.notice"):
+        number = _number(chat) or ""
+        if await _say(city, gp, f"booking.notice {token} ledger_ref={ledger_ref} facility={message.sender} "
+                      + (f"prescription_number={number} " if number else "")
+                      + "Visita prenotata e confermata per il vostro paziente: vi avvisiamo per il controllo dopo il referto."):
+            line += (" I have also informed your GP about this booking myself, so they can follow up after the visit."
+                     if _lang(chat) != "it" else
+                     " Ho anche avvisato io il suo medico di base della prenotazione, così potrà seguirla dopo la visita.")
     if not await _say(
         city,
         citizen,
@@ -1192,13 +1203,6 @@ async def _send_forwarded_receipt(
     ):
         return
     _remember_receipt(city.agent_id, message.need_id, booking_id)
-    # G5 collaboration: tell the GP the visit is booked, so the GP can follow up after the report.
-    gp = await _peer(city, "gp", "medico di base gp asst-niguarda")
-    if gp and gp != city.agent_id and not _we(chat, city.agent_id, token, to=gp, word="booking.notice"):
-        number = _number(chat) or ""
-        await _say(city, gp, f"booking.notice {token} ledger_ref={ledger_ref} facility={message.sender} "
-                   + (f"prescription_number={number} " if number else "")
-                   + "Visita prenotata e confermata per il vostro paziente: vi avvisiamo per il controllo dopo il referto.")
     # X-31: proactive next step — ask where the citizen lives and how they move, then tell them
     # the best way to reach the facility (distance from the map, transit, access, Area B).
     if message.need_id:

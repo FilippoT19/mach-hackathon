@@ -599,12 +599,15 @@ async def _on_reported(city: City, message: Message, chat: list[Message]) -> Non
         en="Your visit is complete and the report is filed. Your GP can read it and will tell "
         "you if a follow-up is needed. Thank you for trusting us.",
     )
-    await _say(city, citizen, f"report booking_id={booking_id} outcome_code=VISIT {line}")
-    # G5 / SP-20: share the report with the citizen's GP (inside our ASST) for the follow-up.
+    # G5 / SP-20 / G10: share the report with the citizen's GP first, then say so to the citizen.
     gp = await _peer(city, "gp", "medico di base gp asst-niguarda")
     if gp and gp != city.agent_id and not _we(chat, city.agent_id, token, to=gp, word="report.notice"):
-        await _say(city, gp, f"report.notice {token} outcome_code=VISIT Referto archiviato per il vostro "
-                   "paziente: potete leggerlo e decidere il controllo.")
+        if await _say(city, gp, f"report.notice {token} outcome_code=VISIT Referto archiviato per il vostro "
+                      "paziente: potete leggerlo e decidere il controllo."):
+            line += (" I have sent the report to your GP myself, so they can plan any follow-up with you."
+                     if _lang(chat) != "it" else
+                     " Ho inviato io il referto al suo medico di base, così potrà decidere con lei il controllo.")
+    await _say(city, citizen, f"report booking_id={booking_id} outcome_code=VISIT {line}")
 
 
 # --- FA-12: cross-ASST request from another booking centre (format agreed in the group) ------
