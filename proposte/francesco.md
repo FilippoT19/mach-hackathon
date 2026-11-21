@@ -7,6 +7,11 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 
 > **Giro 8: quattro problemi verificati su `main` @ `c67e968`** (05:28; online booking 1.0.28, hospital 1.0.9, specialist 1.0.8, family 1.0.9, gp 1.0.17).
 > Verificati con il brain vero (simulazioni fuori dal repository); `seats.py --check`, `test_brain`, `test_journey`, `test_replay` verdi. Nessuna modifica al codice.
+> **Ricontrollo su `main` @ `e53ec39`** (10:00; online booking 1.0.31, hospital 1.0.10, specialist 1.0.9, family 1.0.10, gp 1.0.17), stesse simulazioni:
+> **59 aperto** (rifiuto di permesso → «posto non più disponibile», `_DESK_HOLDS` `30_booking.py:2961`, `40_facility.py:428`);
+> **60 risolto** da BK-65 (ricetta valida + cancel `deadline` → domanda cross-ASST, nessun rinnovo);
+> **61 aperto** (nessun `report_sharing` / `follow_up_of`; `40_facility.py:619-672`);
+> **62 in parte**: BK-67 risponde ai partner dalla memoria (veloce se agenda e catalogo sono già in memoria), ma con memoria vuota la prima risposta arriva ancora dopo ~6 s e al `confirm` di un partner non va ancora nessun ack (`40_facility.py:679+`).
 
 | ID | Problema (in parole semplici) | Prova | Dove (@ `c67e968`) | Come risolverlo (per Claude) | Test a parole | Certezza | Priorità |
 |---|---|---|---|---|---|---|---|
