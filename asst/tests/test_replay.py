@@ -671,7 +671,21 @@ async def r17():
     return s, verdict(s, lang="it", max_messages=3, outcome="waiting_list", max_offer_messages=0)
 
 
-REPLAYS = [r01, r02, r03, r04, r05, r06, r07, r08, r09, r10, r11, r12, r13, r14, r15, r16, r17]
+async def r18():
+    """000124 / 000166 (P-francesco-34): the partners were asked and never answered; the citizen writes
+    again. No second 'I am waiting': the waiting list is the outcome."""
+    agenda = "2026-11-16T12:25:00Z"
+    s = Sim("N-2026-11-02-890912000124", lang="en", procedure="VIS-FIS", agenda=agenda,
+            first="Hello, I have back pain and I need an English-speaking doctor, please.",
+            taken=all_local("VIS-FIS", agenda), partners=[Partner("nord", "agent:gpr1zqe343gb", [], style="silent")])
+    await s.start()
+    s.wait(16)
+    s.say(s.first)
+    await s.run()
+    return s, verdict(s, lang="en", max_messages=5, outcome="waiting_list", max_offer_messages=0)
+
+
+REPLAYS = [r18, r01, r02, r03, r04, r05, r06, r07, r08, r09, r10, r11, r12, r13, r14, r15, r16, r17]
 
 
 async def main() -> int:

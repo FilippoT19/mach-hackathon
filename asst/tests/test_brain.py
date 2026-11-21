@@ -848,6 +848,38 @@ async def main() -> int:
     check("X-34 cancel del cittadino ha risposta (ultimo annullo)", out and out[0].startswith("cancel.ack"), out)
     nxt = [t for r2, t in c3.sent if r2 == LEDGER] + out[1:]
     check("X-34 tutte le offerte annullate: poi cerca altri posti o lista d attesa", nxt, c3.sent)
+    # P-francesco-48: three offers that differ (not the first three by date: same day, same doctor).
+    def line(sid, doc, at, day):
+        return f"slot_id={sid} doctor_id={doc} facility=agent:spec procedure=VIS-CARD at={at} day={day} free=1"
+    thu = [line(f"S-T{h}", "d-s2", f"2026-11-05T{h}:00:00Z", "thu") for h in (10, 11, 12, 13, 14)]
+    fri = [line(f"S-F{h}", "d-s1", f"2026-11-06T0{h}:00:00Z", "fri") for h in (7, 8)]
+    city = await run_desk("slots page=1/1\n" + "\n".join(thu + fri))
+    got = brain._offer_rows(to(city, CITIZEN)[0]) if to(city, CITIZEN) else []
+    check("P-francesco-48 tre offerte, il posto più vicino resta il primo", len(got) == 3 and got[0]["slot_id"] == "S-T10", got)
+    check("P-francesco-48 almeno due giorni e due medici", len({g["agenda_day"] for g in got}) >= 2
+          and len({g["doctor_id"] for g in got}) >= 2, got)
+    # P-francesco-31: the doctor's gender orders the offers, it does not empty them.
+    def gender_case(slots):
+        texts = [
+            (CITIZEN, "agent:bk", "vorrei prenotare prescription_number=prescription_number-RX-1 gender=f"),
+            (LEDGER, "agent:bk", "prescription prescription_number=prescription_number-RX-1 procedure=VIS-CARD priority=B state=issued"),
+            (LEDGER, "agent:bk", f"agenda agenda_now={NOW}"),
+            (LEDGER, "agent:bk", slots),
+        ]
+        return [row(x[0], x[1], x[2], i) for i, x in enumerate(texts)]
+    brain._SENT.clear()
+    chat = gender_case("slots page=1/1\n" + "\n".join(fri))  # only s1, a man
+    c = FakeCity("agent:bk")
+    await brain._advance_alone(c, chat[3], chat, "N-1", fixed=None, replacing=False)
+    out = to(c, CITIZEN)
+    check("P-francesco-31 gender=f e solo medici uomini: offerta, nessun consenso cross",
+          len(out) == 1 and out[0].startswith("offer ") and "S-F7" in out[0] and "cross_asst" not in out[0], c.sent)
+    brain._SENT.clear()
+    chat = gender_case("slots page=1/1\n" + "\n".join(fri + thu[3:]))  # s1 (m) on Friday, s2 (f) on Thursday
+    c = FakeCity("agent:bk")
+    await brain._advance_alone(c, chat[3], chat, "N-1", fixed=None, replacing=False)
+    got = brain._offer_rows(to(c, CITIZEN)[0]) if to(c, CITIZEN) else []
+    check("P-francesco-31 la dottoressa chiesta viene prima", bool(got) and got[0]["doctor_id"] == "d-s2", got)
     # 26. X-40/41, FA-20, BK-24, CO-20.
     def cm(t, to="agent:x"):
         return Message(type="chat", sender=CITIZEN, msg_id="m40", need_id="N-40", recipient=to, body={"text": t})

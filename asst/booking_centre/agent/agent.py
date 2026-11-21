@@ -543,9 +543,9 @@ def fitting(
         day = slot.get("day", "")
         if day and day not in spec[2]:
             continue
-        if gender and spec[1] != gender:
-            continue
-        preferred = 0 if days and day in days else 1
+        # P-francesco-31: the doctor's gender is a preference like the days (S_pref), not a wall.
+        # Discarding the other gender left "no local slot" while S still had some (no_booking -1).
+        preferred = (0 if days and day in days else 1) + (1 if gender and spec[1] != gender else 0)
         chosen.append((preferred, at, slot))
     chosen.sort(key=lambda item: (item[0], item[1], item[2].get("slot_id", "")))
     return [slot for _, _, slot in chosen]
@@ -1405,6 +1405,23 @@ def _local_doctor(procedure: str | None, lang: str) -> bool:
     return keys is None or any(_speaks("d-" + key, lang) for key in keys)
 
 
+def _diverse(chosen: list[dict[str, str]], count: int) -> list[dict[str, str]]:
+    """P-francesco-48: ``count`` offers that differ. The first three by date are often the same day
+    and doctor, so one hidden constraint of the citizen ("not that day") drops them all together.
+    The best slot stays first; each next pick is the earliest one that adds a new day and a new
+    doctor, else a new day or a new doctor. The offers keep the order of ``chosen``."""
+
+    picks: list[dict[str, str]] = []
+    rest = list(chosen)
+    while rest and len(picks) < count:
+        days = {slot.get("at", "")[:10] for slot in picks}
+        doctors = {slot.get("doctor_id", "") for slot in picks}
+        best = max(rest, key=lambda slot: (slot.get("at", "")[:10] not in days) + (slot.get("doctor_id", "") not in doctors)) if picks else rest[0]
+        picks.append(best)
+        rest.remove(best)
+    return sorted(picks, key=chosen.index)
+
+
 def _slot_ids(offers: set[str]) -> set[str]:
     """Slot ids among the offers this process remembers (not the waiting-list offer id)."""
 
@@ -1814,10 +1831,15 @@ async def _cross_asst(
         replied = {row.sender for row in _cross_replies(chat, city.agent_id, request_id)}
         if not _cross_offered(chat, city.agent_id, citizen, sent) and sent.cross_peers - replied:
             _trace("cross", message, state="partner_pending", pending=len(sent.cross_peers - replied))
-            if "search" not in sent.notes:
+            told = "search" in sent.notes or _we(chat, city.agent_id, "", to=citizen, word="booking.search")
+            if not told:
                 sent.notes.add("search")
                 await _say(city, citizen, _search_line(chat))
-            return True
+                return True
+            if not message.sender.startswith("citizen:"):
+                return True
+            # P-francesco-34: the citizen writes again and the partners still have not answered.
+            # No more waiting: the waiting list is the outcome (a late offer can still follow).
         _trace("cross", message, state="exhausted")
         return False
     finder = getattr(city, "find", None)
@@ -2010,8 +2032,7 @@ def _partner_pool(
                 continue
             doctor = _DOCTORS.get(fields.get("doctor_id", "").rsplit("-", 1)[-1])
             said = fields.get("doctor_gender", "") or (doctor[1] if doctor else "")
-            if gender and said and said != gender:
-                continue
+            miss = "1" if gender and said and said != gender else "0"  # P-francesco-31: order, not filter
             at = _when(fields.get("agenda_date", "") or fields.get("at", "") or fields.get("expiry", ""))
             if at is not None and now is not None and at <= now + _PARTNER_LEAD:
                 continue
@@ -2023,8 +2044,9 @@ def _partner_pool(
             if not all(name in values for name in ("offer_id", "slot_id", "facility")):
                 continue
             values["_at"] = at.isoformat() if at is not None else "9999"
+            values["_miss"] = miss
             pool[offer_id] = values
-    return sorted(pool.values(), key=lambda v: (v["_at"], v["offer_id"]))
+    return sorted(pool.values(), key=lambda v: (v["_miss"], v["_at"], v["offer_id"]))
 
 
 async def _partner_round(
@@ -2539,7 +2561,7 @@ async def _advance_alone(
     if chosen:
         # BK-14: every slot in ONE message, one offer per line. The citizen chooses in the turn of
         # the first message that names a place; a later message does not enter that choice.
-        picks = chosen[:3]
+        picks = _diverse(chosen, 3)
         line = None
         if fixed == "CONS-GIN":  # CO-20: the consultorio needs no prescription
             line = (
