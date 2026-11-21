@@ -604,7 +604,7 @@ def _before_rx_deadline(slot: dict[str, str], reply: dict[str, str] | None, prio
     for key in _RX_DATE_KEYS:
         issued = _when(reply.get(key, ""))
         if issued is not None:
-            return at <= _agenda_add(issued, timedelta(days=days))  # BK-68: agenda days, no weekend
+            return at <= issued + timedelta(days=days)  # BK-76: calendar days of agenda
     return True
 
 
@@ -743,10 +743,15 @@ def _rx_deadline(
             return limit
     if days is None:
         return None
+    # BK-76 (21/11, 65 verdicts): the citizen counts the window in CALENDAR hours of agenda from
+    # the birth of the need. 68 B slots refused with reason=deadline were 78-101 calendar hours
+    # after it (30-53 without the weekend, which BK-68 counted as inside); the 15 confirmed ones
+    # were 22-44. A B of Friday ends on Sunday: a Monday slot is always refused. Only the agenda
+    # CLOCK skips the weekend (``_agenda_add`` for "now" and for the birth), never the window.
     for key in _RX_DATE_KEYS:
         issued = _when((reply or {}).get(key, ""))
         if issued is not None:
-            return _agenda_add(issued, timedelta(days=days))  # BK-68
+            return issued + timedelta(days=days)  # BK-76
     anchor = next((row for row in reversed(chat) if row.sender == LEDGER and first_word(row.text) == "agenda"), None)
     if anchor is None:
         return None
@@ -765,7 +770,7 @@ def _rx_deadline(
     # on the agenda than that line says (a negative ``elapsed``), within the life of the memory.
     elapsed = max(-_AGENDA_REAL_MAX, read_at - min(firsts))
     born = _agenda_add(agenda_now, -(elapsed * _AGENDA_SPEED))  # BK-68: the agenda skips the weekend
-    return _agenda_add(born, timedelta(days=days)) - _DEADLINE_MARGIN
+    return born + timedelta(days=days) - _DEADLINE_MARGIN  # BK-76
 
 
 def _agenda_now(chat: list[Message], message: Message) -> datetime | None:
@@ -821,7 +826,7 @@ def _search_limit(now: datetime, priority: str | None, deadline: datetime | None
     elif priority == "P":
         horizon = None
     else:
-        horizon = _agenda_add(now, timedelta(days=days if days is not None else 14))  # BK-68
+        horizon = now + timedelta(days=days if days is not None else 14)  # BK-76
     if deadline is not None and (horizon is None or deadline < horizon):
         return deadline
     return horizon
@@ -1564,7 +1569,8 @@ async def _partner_reply(city: City, message: Message, chat: list[Message], fixe
     if not _expected_offer(chat, city.agent_id, message, sent):
         await _say(city, message.sender, f"{head}.ack status=ignored reason=unexpected_partner")
         return
-    await _say(city, message.sender, f"{head}.ack status=received")
+    if not _early_agent_ack(message):  # OPS-14: main() may have sent it before the history read
+        await _say(city, message.sender, f"{head}.ack status=received")
     async with _need_gate(_GATES, key):
         request_id = f"cross-{key}"
         # Include replies that arrived while the original search held the lock.
@@ -2912,13 +2918,15 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
         return
     async with _receipt_turn(city, message, chat, booking_id) as fresh:
         if fresh is None:
-            await _say(city, message.sender, "booking.receipt.ack status=received")
+            if not _early_agent_ack(message):  # OPS-14
+                await _say(city, message.sender, "booking.receipt.ack status=received")
         elif not _expected_confirm_reply(fresh, city.agent_id, message.sender, fields):
             await _say(city, message.sender, "booking.receipt.ack status=ignored reason=unexpected_partner")
         else:
             # OPS-11: the ack to the facility and the receipt to the citizen go to different
             # parties; the ack does not wait for the GP notice and the route.
-            ack = asyncio.ensure_future(_say(city, message.sender, "booking.receipt.ack status=received"))
+            ack = asyncio.ensure_future(_nothing() if _early_agent_ack(message) else  # OPS-14
+                                        _say(city, message.sender, "booking.receipt.ack status=received"))
             try:
                 await _send_forwarded_receipt(city, message, fresh, booking_id, ledger_ref)
             finally:
@@ -3045,7 +3053,8 @@ async def _partner_cancel(
     if not _expected_confirm_reply(chat, city.agent_id, message.sender, fields):
         await _say(city, message.sender, "cancel.ack status=ignored reason=unexpected_partner")
         return
-    await _say(city, message.sender, "cancel.ack status=received")
+    if not _early_agent_ack(message):  # OPS-14
+        await _say(city, message.sender, "cancel.ack status=received")
     offer_id = fields.get("offer_id", "")
     if offer_id.lower() in {"none", "null", "-"}:
         offer_id = ""  # BK-32: "offer_id=none" from a partner means no offer of ours
