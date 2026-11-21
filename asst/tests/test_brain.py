@@ -839,6 +839,18 @@ async def test_bk75(check) -> None:
           start is False and not any(t.startswith("hold ") for t in to(city, LEDGER))
           and any(t.startswith("confirm ") and "slot_id=S-00" in t and "consent_ref=cons-N-1-booking" in t
                   for t in to(city, spec)), (start, city.sent))
+    # (1b) a second citizen confirms the same slot (…0002600007 and …0001930010, 11:58Z): the booking
+    # centre keeps no phantom hold, so it never answers no_capacity for a slot that is still free.
+    import dataclasses
+    other = dataclasses.replace(row("citizen:c-2", bk, "confirm offer_id=of-S-00 consent_ref=cons-N-2-booking", 40), need_id="N-2")
+    theirs = [dataclasses.replace(r, need_id="N-2", **({"sender": "citizen:c-2"} if r.sender == CITIZEN else {}),
+                                  **({"recipient": "citizen:c-2"} if r.recipient == CITIZEN else {})) for r in case]
+    city2 = FakeCity(bk)
+    await brain._desk(city2, other, [*theirs, other], hold_self=False, fixed=None)
+    check("BK-75 due cittadini, stesso slot: nessun no_capacity dal booking, tutti e due i confirm alla struttura",
+          not any("reason=no_capacity" in t for t in to(city2, "citizen:c-2"))
+          and any(t.startswith("confirm ") and "slot_id=S-00" in t and "citizen=citizen:c-2" in t for t in to(city2, spec))
+          and "S-00" not in brain._HELD_FOR, city2.sent)
     # (2) a hold already on its way (sent by the build before) comes back refused for permissions
     wipe()
     brain._DESK_HOLDS[0] = True
