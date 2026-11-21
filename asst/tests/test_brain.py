@@ -1574,7 +1574,9 @@ async def main() -> int:
         offers = [t for t in to(city, CITIZEN) if t.startswith("offer ")]
         ids = [f["slot_id"] for f in brain._offer_rows(offers[0])] if offers else []
         check("BK-61 pagina 1 con un solo genere: legge pagina 2 e offre tutto in UN messaggio",
-              to(city, LEDGER) == ["world procedure=VIS-FIS page=2"] and len(offers) == 1 and "T3" in ids and "A3" in ids, city.sent)
+              to(city, LEDGER)[:1] == ["world procedure=VIS-FIS page=2"]  # BK-69: page 3 may leave with it
+              and all(t.startswith("world procedure=VIS-FIS page=") for t in to(city, LEDGER))
+              and len(offers) == 1 and "T3" in ids and "A3" in ids, city.sent)
         brain._SENT.clear()
         city = LogCity(bk)  # page 2 never comes: the page-1 offers still go out, no waiting list
         city.log = case("vorrei una visita", p1)
@@ -1717,7 +1719,8 @@ async def main() -> int:
         ask = row(CITIZEN, bk, f"Vorrei una visita need.request lang=it prescription_number={rx_number} service_type=hospital.physiatry", 0)
         await desk_turn(city, ask, [ask])
         check("BK-63 primo giro di Ledger: ricetta, agenda e catalogo insieme",
-              set(to(city, LEDGER)) == {f"prescription prescription_number={rx_number}", "agenda", "world procedure=VIS-FIS page=1"}, city.sent)
+              set(to(city, LEDGER)) == {f"prescription prescription_number={rx_number}", "agenda",
+                                        *(f"world procedure=VIS-FIS page={n}" for n in range(1, 5))}, city.sent)  # BK-69
 
         # (1b) every offer cancelled: the next offers come from the pages already read, no Ledger round.
         brain._SENT.clear()
@@ -2033,11 +2036,24 @@ async def main() -> int:
         city = FakeCity(bk)
         await desk_turn(city, chat[0], chat)
         out = to(city, CITIZEN)
-        check("BK-68 pagina mai arrivata: domanda di consenso cross_asst, non lista d'attesa",
+        # BK-69: a page asked just now is slow, not lost (58-218 s on 21/11): status, no cross-ASST yet
+        check("BK-69 pagina appena chiesta: status, niente consenso cross_asst né lista d'attesa",
+              any(t.startswith("status ") for t in out) and not any(t.startswith("consent ") for t in out)
+              and not any("waiting_list=true" in t for t in out), city.sent)
+        # the citizen writes again 5 minutes later and the page never came: now the other ASSTs
+        t1 = _dt.now(U)
+        old = [Message(type="chat", sender=bk, msg_id=f"q{i}", need_id="N-1", recipient=LEDGER, body={"text": t},
+                       sent_at=iso_(t1 - _td(minutes=5))) for i, t in enumerate(to(city, LEDGER))]
+        again = Message(type="chat", sender=CITIZEN, msg_id="c2", need_id="N-1", recipient=bk,
+                        body={"text": "Ci sono novità?"}, sent_at=iso_(t1))
+        city = FakeCity(bk)
+        await desk_turn(city, again, [*chat, *old, again])
+        out = to(city, CITIZEN)
+        check("BK-68 pagina mai arrivata dopo 5 minuti: domanda di consenso cross_asst, non lista d'attesa",
               any(t.startswith("consent ") and "purpose=cross_asst" in t for t in out) and not any("waiting_list=true" in t for t in out), city.sent)
         yes = row(CITIZEN, bk, "Sì, va bene. consent consent_ref=cons-1 purpose=cross_asst", 9)
         asked = row(bk, CITIZEN, next(t for t in out if t.startswith("consent ")), 8)
-        asks2 = [row(bk, LEDGER, t, 20 + i) for i, t in enumerate(to(city, LEDGER))]
+        asks2 = [*old, *(row(bk, LEDGER, t, 20 + i) for i, t in enumerate(to(city, LEDGER)))]
         city = FakeCity(bk)
         await desk_turn(city, yes, [*chat, *asks2, asked, yes])
         check("BK-68 dopo il sì, senza partner: lista d'attesa nello stesso turno (nessun vicolo cieco)",
@@ -2045,6 +2061,102 @@ async def main() -> int:
         brain._SENT.clear()
 
     await test_bk68(check)
+
+    async def test_bk69(check):
+        """BK-69 (000352, 0003520003): the Ledger answers a catalogue page in 58-218 s. Page 1 had no
+        slot in time, page 2 was 'missing' after ~25 s and the citizen got the cross-ASST question
+        while 174 local slots were free. Pages leave together and a slow page is waited for."""
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        bk = brain._OUR_AGENTS["booking_centre"]
+        U = _tz.utc
+        iso_ = lambda t: t.isoformat().replace("+00:00", "Z")
+
+        def slot(sid, at, day):
+            return f"slot_id={sid} doctor_id=asst-niguarda-h1 facility={hospital} procedure=VIS-FIS at={at} day={day} free=1"
+
+        brain._SENT.clear(); brain._ASKED_AT.clear()
+        p1 = "slots page=1/3\n" + slot("PAST", "2026-12-07T10:30:00Z", "mon")  # Monday evening: page 1 is over
+        chat = [row(CITIZEN, bk, f"need.request lang=it prescription_number={rx_number}", 0),
+                row(LEDGER, bk, f"prescription prescription_number={rx_number} procedure=VIS-FIS priority=B state=issued issued_at=2026-12-07T15:00:00Z", 1),
+                row(LEDGER, bk, "agenda agenda_now=2026-12-07T19:00:00Z", 2), row(LEDGER, bk, p1, 3)]
+        city = FakeCity(bk)
+        await desk_turn(city, chat[0], chat)
+        out, asks = to(city, CITIZEN), to(city, LEDGER)
+        check("BK-69 pagine 2 e 3 chieste insieme al Ledger",
+              asks == ["world procedure=VIS-FIS page=2", "world procedure=VIS-FIS page=3"], asks)
+        check("BK-69 il cittadino ha lo status, nessuna domanda cross_asst",
+              any(t.startswith("status ") for t in out) and not any(t.startswith("consent ") for t in out), out)
+        check("BK-69 le pagine chieste contano come rinnovo della memoria",
+              "world:VIS-FIS" in brain._ASKED_AT, dict(brain._ASKED_AT))
+        # 2 minutes later the push of page 2 opens the next turn: the offers go out
+        sent = [row(bk, LEDGER, t, 10 + i) for i, t in enumerate(asks)] + [row(bk, CITIZEN, t, 20 + i) for i, t in enumerate(out)]
+        p2 = row(LEDGER, bk, "slots page=2/3\n" + slot("TUE", "2026-12-08T10:30:00Z", "tue"), 30)
+        city = FakeCity(bk)
+        await desk_turn(city, p2, [*chat, *sent, p2])
+        out = to(city, CITIZEN)
+        check("BK-69 alla pagina 2 l'offerta locale parte, senza consenso cross_asst",
+              any(t.startswith("offer ") and "slot_id=TUE" in t for t in out)
+              and not any(t.startswith("consent ") for t in out), city.sent)
+        t1 = _dt.now(U)
+        ask = lambda age: Message(type="chat", sender=bk, msg_id="qa", need_id="N-1", recipient=LEDGER,
+                                  body={"text": "world procedure=VIS-FIS page=2"},
+                                  sent_at=None if age is None else iso_(t1 - _td(seconds=age)))
+        turn = Message(type="chat", sender=CITIZEN, msg_id="ct", need_id="N-1", recipient=bk, body={"text": "?"}, sent_at=iso_(t1))
+        check("BK-69 pagina chiesta 100 s fa: si aspetta", brain._page_waiting([ask(100)], bk, turn, 2), "")
+        check("BK-69 pagina chiesta 300 s fa: persa, si va avanti", not brain._page_waiting([ask(300)], bk, turn, 2), "")
+        check("BK-69 domanda senza orario: vale vecchia (mai un vicolo cieco)", not brain._page_waiting([ask(None)], bk, turn, 2), "")
+        check("BK-69 domanda partita in questo turno: si aspetta", brain._page_waiting([], bk, turn, 2), "")
+        brain._SENT.clear(); brain._ASKED_AT.clear()
+
+    await test_bk69(check)
+
+    async def test_bk70(check):
+        """BK-70: while the case waits for page 2, another case just received page 2 (process memory).
+        A young page is used at once; an old one is not (its slots may be taken)."""
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        bk = brain._OUR_AGENTS["booking_centre"]
+        iso_ = lambda t: t.isoformat().replace("+00:00", "Z")
+
+        def slot(sid, at, day):
+            return f"slot_id={sid} doctor_id=asst-niguarda-h1 facility={hospital} procedure=VIS-FIS at={at} day={day} free=1"
+
+        p1 = "slots page=1/3\n" + slot("PAST", "2026-12-07T10:30:00Z", "mon")
+        chat = [row(CITIZEN, bk, f"need.request lang=it prescription_number={rx_number}", 0),
+                row(LEDGER, bk, f"prescription prescription_number={rx_number} procedure=VIS-FIS priority=B state=issued issued_at=2026-12-07T15:00:00Z", 1),
+                row(LEDGER, bk, "agenda agenda_now=2026-12-07T19:00:00Z", 2), row(LEDGER, bk, p1, 3)]
+
+        def other_case_page2(age_s):
+            brain._WORLD.clear()
+            brain._remember_ledger([Message(type="chat", sender=LEDGER, msg_id="other-p2", need_id="N-OTHER", recipient=bk,
+                                            body={"text": "slots page=2/3\n" + slot("TUE", "2026-12-08T10:30:00Z", "tue")},
+                                            sent_at=iso_(_dt.now(_tz.utc) - _td(seconds=age_s)))], bk)
+
+        brain._MEMORY_ON = True
+        try:
+            brain._SENT.clear(); brain._ASKED_AT.clear()
+            other_case_page2(30)
+            city = FakeCity(bk)
+            await desk_turn(city, chat[0], chat)
+            out = to(city, CITIZEN)
+            check("BK-70 pagina 2 arrivata 30 s fa a un altro caso: offerta subito, niente cross_asst",
+                  any(t.startswith("offer ") and "slot_id=TUE" in t for t in out)
+                  and not any(t.startswith("consent ") for t in out), city.sent)
+            offer = next((t for t in out if t.startswith("offer ")), "")
+            check("BK-70 l'offerta dalla memoria porta il need del cittadino (nessun dato di altri casi)",
+                  "N-OTHER" not in offer, offer[:200])
+            brain._SENT.clear(); brain._ASKED_AT.clear()
+            other_case_page2(600)
+            city = FakeCity(bk)
+            await desk_turn(city, chat[0], chat)
+            out = to(city, CITIZEN)
+            check("BK-70 pagina in memoria di 10 minuti fa: non usata, status e attesa",
+                  not any(t.startswith("offer ") for t in out) and any(t.startswith("status ") for t in out)
+                  and not any(t.startswith("consent ") for t in out), city.sent)
+        finally:
+            brain._MEMORY_ON = False
+            brain._WORLD.clear(); brain._SENT.clear(); brain._ASKED_AT.clear()
+
+    await test_bk70(check)
     await test_francesco_15(check)
     await test_francesco_16(check)
     await test_francesco_18(check)

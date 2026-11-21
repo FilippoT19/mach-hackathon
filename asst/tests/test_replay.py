@@ -667,12 +667,15 @@ async def r16():
 
 async def r17():
     """000206 (L?, 01:37): 'sto controllando', then the Ledger never sends page 2. BK-39: the citizen
-    is never left silent and nothing is offered blind. BK-68: the other ASSTs come before the waiting
-    list (cross-ASST consent first); with no partner in the ring the waiting list follows the yes."""
+    is never left silent and nothing is offered blind. BK-69: pages 2-4 leave together, so the pages
+    that do come still give offers in time: the citizen is booked, no cross-ASST question."""
     agenda = "2026-11-18T15:25:00Z"
     s = await Sim("N-2026-11-02-890912000206", lang="it", procedure="VIS-FIS", agenda=agenda, page_size=2, lost_pages={2},
                   first="Buongiorno, ho mal di schiena da giorni e vorrei prenotare la visita.").start()
-    return s, verdict(s, lang="it", max_messages=3, outcome="waiting_list", max_offer_messages=0)
+    out = verdict(s, lang="it", max_messages=4, outcome="booked", max_offer_messages=1)
+    out.append(("BK-69 no cross-ASST question while local pages answer",
+                not any(m.text.startswith("consent ") and "cross_asst" in m.text for m in s.to_citizen()), ""))
+    return s, out
 
 
 async def r18():

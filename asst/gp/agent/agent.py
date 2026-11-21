@@ -5697,6 +5697,80 @@ def _asked(chat: list[Message], agent: str, procedure: str, page: int) -> bool:
     return False
 
 
+# BK-69 (000352, 0003520003; 133 catalogue questions of 21/11 09:37-09:51Z): the Ledger answers a
+# ``world`` page in 58-218 s (median 114 s), and pages asked together come back together. The
+# search asked one page at a time and waited ~25 s for it, so page 2 was always "missing" and the
+# citizen got the cross-ASST question while 174 local slots were free. Now the first question asks
+# several pages at once, and a page asked less than _PAGE_PATIENCE ago is waited for: its push
+# opens the next turn of the case.
+_PAGE_PATIENCE = 240.0  # real seconds: above the slowest answer seen (218 s)
+
+
+async def _ask_pages(
+    city: City, message: Message, chat: list[Message], procedure: str, first: int, last: int,
+    extra: list[str] | None = None,
+) -> list[str]:
+    """Ask the catalogue pages ``first..last`` not asked yet in this case, in one round with ``extra``.
+    The answers also fill the process memory, so the memory refresh does not ask them again."""
+    asks = [*(extra or []), *(f"world procedure={procedure} page={n}" for n in range(first, last + 1)
+                              if not _asked(chat, city.agent_id, procedure, n))]
+    if any(text.startswith("world ") for text in asks):
+        _note_asked(f"world:{procedure}", time.time())
+    await _ledger_asks(city, message, asks)
+    return asks
+
+
+# BK-70: while this case waits for page N, another case of the same visit often receives the same
+# page (one citizen every ~2 minutes per ASST) and it lands in the process memory. A page that young
+# is used at once instead of waiting for our own copy. Kept short: an older page holds more slots
+# already taken (a taken slot is caught by the Ledger's refused hold, BK-57: one lost round, no -2).
+_MEMORY_PAGE_MAX_AGE = 180.0  # real seconds
+
+
+def _case_procedure(chat: list[Message], agent: str) -> str | None:
+    """The procedure of this case's catalogue: our last ``world`` question, else its last page."""
+    for row in reversed(chat):
+        if row.sender == agent and row.recipient == LEDGER and first_word(row.text) == "world":
+            proc = fields_of(row.text).get("procedure")
+            if proc:
+                return proc
+    for row in reversed(chat):
+        if row.sender == LEDGER and first_word(row.text) == "slots":
+            proc = _row_procedure(row.text)
+            if proc:
+                return proc
+    return None
+
+
+def _memory_page(chat: list[Message], agent: str, message: Message, page: int) -> Message | None:
+    """BK-70: catalogue ``page`` from the process memory when it is younger than _MEMORY_PAGE_MAX_AGE,
+    as a row of THIS case (need_id of the turn), so the search reads it as its own."""
+    procedure = _case_procedure(chat, agent)
+    if not _MEMORY_ON or not procedure:
+        return None
+    entry = (_WORLD.get(procedure) or {}).get(page)
+    if entry is None or time.time() - entry[1] > _MEMORY_PAGE_MAX_AGE:
+        return None
+    row = entry[0]
+    return Message(type="chat", sender=LEDGER, msg_id=f"mem-{row.msg_id}", need_id=message.need_id,
+                   recipient=agent, body={"text": row.text}, sent_at=row.sent_at)
+
+
+def _page_waiting(chat: list[Message], agent: str, message: Message, page: int) -> bool:
+    """True while our question for catalogue ``page`` is younger than _PAGE_PATIENCE: its answer is
+    still on the way. A question with no readable time counts as old (never a dead end)."""
+    asks = [row for row in chat if row.sender == agent and row.recipient == LEDGER
+            and first_word(row.text) == "world" and f"page={page}" in row.text.split()]
+    if not asks:
+        return True  # asked in this very turn
+    times = [_when(row.sent_at or "") for row in asks]
+    if any(t is None for t in times):
+        return False
+    first = min(t for t in times if t is not None)
+    now = _when(message.sent_at or "") or datetime.now(first.tzinfo)
+    return (now - first).total_seconds() < _PAGE_PATIENCE
+
+
 def _offered(chat: list[Message], agent: str) -> set[str]:
     found: set[str] = set()
     for row in chat:
@@ -7016,6 +7090,7 @@ async def _still_here(city: City, message: Message, chat: list[Message], *, fixe
         )
     else:
         state = "checking"
+        _sent(message.need_id or message.msg_id).notes.add("wait")  # BK-69: one "checking" line per case
         text = "status " + (
             "I have your request and I am checking the free appointments for you now; I will write "
             "again in a moment."
@@ -7198,15 +7273,26 @@ async def _advance(
                 if _widening(sent):
                     await _widen_stop(city, message, chat, key, sent, fixed)
                     break
+                if _page_waiting(chat, city.agent_id, message, page):
+                    # BK-69: the page is on its way (1-4 minutes); its push opens the next turn.
+                    _trace("stop", message, why="page_wait", page=page)
+                    break
                 await _after_local(city, message, chat, key, fixed=fixed, replacing=sent.replacement_page is not None)
                 break
             for _try in range(4):  # BK-39: the Ledger can take well over 6 s; wait up to ~25 s
                 if _try and time.monotonic() - started >= _TURN_SECONDS:
                     break
                 fresh = await _until(
-                    city, message.need_id, chat, lambda rows: _slots_page(rows, city.agent_id, page) is not None,
+                    city, message.need_id, chat, lambda rows: _slots_page(rows, city.agent_id, page) is not None
+                    or _memory_page(rows, city.agent_id, message, page) is not None,  # BK-70
                 )
                 reply = _slots_page(fresh, city.agent_id, page)
+                if reply is None:
+                    reply = _memory_page(fresh, city.agent_id, message, page)
+                    if reply is not None:
+                        # BK-70: another case just read this page; ours is still on its way.
+                        fresh = [*fresh, reply]
+                        _trace("memory", message, page=page, why="page_wait")
                 if reply is not None:
                     break
             chat = fresh
@@ -7214,6 +7300,11 @@ async def _advance(
                 _trace("stop", message, why="page_missing", page=page)
                 if _widening(sent):
                     await _widen_stop(city, message, chat, key, sent, fixed)
+                    break
+                if _page_waiting(chat, city.agent_id, message, page):
+                    # BK-69: not lost, only slow (58-218 s on 21/11). The citizen has the status
+                    # line; the page's push, or the citizen's next message, goes on from here.
+                    _trace("stop", message, why="page_wait", page=page)
                     break
                 citizen = _citizen(chat)
                 if message.sender.startswith("citizen:") and citizen:
@@ -7341,7 +7432,10 @@ async def _advance_alone(
                 # BK-63: one Ledger round took minutes on 21/11 (request 03:36, prescription
                 # 03:40, slots 03:47). The citizen's request names the service, so the catalogue
                 # is asked in the same round as the prescription instead of the next one.
-                asks.append(f"world procedure={guess} page=1")
+                # BK-69: the first pages together (one Ledger round of 1-4 minutes for all).
+                asks.extend(f"world procedure={guess} page={n}" for n in range(1, _WORLD_PAGES + 1)
+                            if not _asked(chat, agent, guess, n))
+                _note_asked(f"world:{guess}", time.time())
             await _ledger_asks(city, message, asks)  # OPS-11: the questions go out at once
             chat = await _until(
                 city,
@@ -7398,7 +7492,8 @@ async def _advance_alone(
         if now is None and not _exact(chat, agent, "agenda"):
             asks.append("agenda")
         if world is None and not _asked(chat, agent, procedure, 1):
-            asks.append(f"world procedure={procedure} page=1")
+            await _ask_pages(city, message, chat, procedure, 1, _WORLD_PAGES, extra=asks)  # BK-69
+            asks = []
         await _ledger_asks(city, message, asks)  # OPS-11
         chat = await _until(
             city,
@@ -7512,8 +7607,7 @@ async def _advance_alone(
         sent.notes.update({"widen", f"widen:{page + 1}"})
         sent.pending_page = page + 1
         _trace("widen", message, page=page + 1, fitting=len(chosen))
-        if not _asked(chat, agent, procedure, page + 1):
-            await _ledger_ask(city, message, f"world procedure={procedure} page={page + 1}")
+        await _ask_pages(city, message, chat, procedure, page + 1, min(pages, page + _WORLD_PAGES))  # BK-69
         return
     if chosen:
         # BK-14: every slot in ONE message, one offer per line. The citizen chooses in the turn of
@@ -7568,21 +7662,22 @@ async def _advance_alone(
         if replacing:
             sent.replacement_page = page + 1
         sent.pending_page = page + 1
-        if not _asked(chat, agent, procedure, page + 1):
-            await _ledger_ask(city, message, f"world procedure={procedure} page={page + 1}")
-            if page == 1 and "wait" not in sent.notes:
-                # BK-30: a long catalogue takes many Ledger turns; never leave the citizen silent.
-                sent.notes.add("wait")
-                await _say(
-                    city,
-                    citizen,
-                    "status " + (  # P-magesh-15: every citizen message carries its act word
-                    "I have your request and I am checking every free appointment for you now; "
-                    "I will write again in a moment."
-                    if _lang(chat) != "it"
-                    else "Ho la sua richiesta e sto controllando tutti i posti liberi per lei; "
-                    "le riscrivo tra un momento."),
-                )
+        # BK-69: the next pages together; the status no longer depends on asking now (page 2 may
+        # have left with page 1).
+        await _ask_pages(city, message, chat, procedure, page + 1, min(pages, page + _WORLD_PAGES))
+        if page == 1 and "wait" not in sent.notes:
+            # BK-30: a long catalogue takes many Ledger turns; never leave the citizen silent.
+            sent.notes.add("wait")
+            await _say(
+                city,
+                citizen,
+                "status " + (  # P-magesh-15: every citizen message carries its act word
+                "I have your request and I am checking every free appointment for you now; "
+                "I will write again in a moment."
+                if _lang(chat) != "it"
+                else "Ho la sua richiesta e sto controllando tutti i posti liberi per lei; "
+                "le riscrivo tra un momento."),
+            )
         # BK-37: the Ledger's next page may never open a turn. _advance reads it back in this
         # same turn (``pending_page``) and goes on from there.
         return
