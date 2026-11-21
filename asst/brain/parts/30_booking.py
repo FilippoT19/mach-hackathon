@@ -2287,13 +2287,14 @@ async def _on_where(city: City, message: Message, chat: list[Message]) -> None:
     ) + (extra if exact else _zone_words(extra)))
 
 
-async def _nearest_line(city: City, point: tuple[float, float], en: bool, booked: str) -> str:
-    """X-32: the nearest hospital in the whole city (any ASST), from the Index doors."""
+async def _nearest_hospital(city: City, point: tuple[float, float]) -> tuple[str, str, float] | None:
+    """X-32 / X-55: the nearest hospital in the whole city (any ASST), from the Index doors:
+    (agent_id, door label, km)."""
     try:
         peers = await asyncio.wait_for(city.find("ospedale hospital pronto soccorso Milano"), timeout=4.0)
     except Exception:
-        return ""
-    best: tuple[float, str] | None = None
+        return None
+    best: tuple[str, str, float] | None = None
     for peer in peers:
         addr = getattr(peer, "address", None)
         if addr is None or getattr(addr, "lat", None) is None:
@@ -2301,13 +2302,22 @@ async def _nearest_line(city: City, point: tuple[float, float], en: bool, booked
         if "hospital" not in (peer.role or "") and not any("hospital" in c for c in peer.capabilities):
             continue
         d = _km(point, (float(addr.lat), float(addr.lon)))
-        if best is None or d < best[0]:
-            best = (d, str(addr.label))
+        if best is None or d < best[2]:
+            best = (str(peer.agent_id), str(addr.label), d)
+    return best
+
+
+def _nearest_words(best: tuple[str, str, float] | None, en: bool) -> str:
     if best is None:
         return ""
     if en:
-        return f" For any urgent need, the nearest hospital to you is at {best[1]}, about {best[0]:.1f} km away; in an emergency always call 112."
-    return f" Per qualsiasi urgenza, l'ospedale più vicino a lei è in {best[1]}, a circa {best[0]:.1f} km; in emergenza chiami sempre il 112."
+        return f" For any urgent need, the nearest hospital to you is at {best[1]}, about {best[2]:.1f} km away; in an emergency always call 112."
+    return f" Per qualsiasi urgenza, l'ospedale più vicino a lei è in {best[1]}, a circa {best[2]:.1f} km; in emergenza chiami sempre il 112."
+
+
+async def _nearest_line(city: City, point: tuple[float, float], en: bool, booked: str) -> str:
+    """X-32: the nearest hospital in the whole city (any ASST), from the Index doors."""
+    return _nearest_words(await _nearest_hospital(city, point), en)
 
 
 async def _citizen_cancel(
