@@ -19,6 +19,7 @@ without an answer, and exactly one final outcome.
 """
 import asyncio
 import importlib.util
+import os
 import sys
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -27,7 +28,8 @@ from pathlib import Path
 from city_sdk.city import LEDGER, CapError, CivicAddress, Message, Peer
 
 HERE = Path(__file__).resolve().parent.parent
-spec = importlib.util.spec_from_file_location("brain", HERE / "brain" / "agent.py")
+# REPLAY_BRAIN=/path/to/an/older/agent.py shows how that brain fails the same journeys.
+spec = importlib.util.spec_from_file_location("brain", os.environ.get("REPLAY_BRAIN") or HERE / "brain" / "agent.py")
 brain = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(brain)
 brain._PULL_TRIES = 2
