@@ -476,6 +476,40 @@ async def test_p17_never_silent(check) -> None:
         brain._desk_route, brain._EARLY_STATUS = real, early
 
 
+async def test_bk59_fa20(check) -> None:
+    """BK-59: agenda jump at a level change (deadline -> renewal, past -> read the agenda again).
+    FA-21: a held line after the wait still gets its commit."""
+    import dataclasses
+
+    def at(n, minute):
+        return dataclasses.replace(row(*n), sent_at=f"2026-11-21T03:{minute:02d}:00Z")
+    offer = ("offer offer_id=of-S-1 slot_id=S-1 doctor_id=d-s1 facility=agent:spec procedure=VIS-CARD "
+             "agenda_date=2026-11-05T10:00:00Z priority=B prescription_number=prescription_number-RX-9")
+    base = [
+        at(("agent:gp", CITIZEN, "prescription prescription_number=prescription_number-RX-9 procedure=VIS-CARD priority=B", 1), 0),
+        at((CITIZEN, "agent:bk", "need.request prescription_number=prescription_number-RX-9", 2), 2),
+        at((LEDGER, "agent:bk", "prescription prescription_number=prescription_number-RX-9 procedure=VIS-CARD priority=B state=issued", 3), 2),
+        at((LEDGER, "agent:bk", f"agenda agenda_now={NOW}", 4), 2),
+        at(("agent:bk", CITIZEN, offer, 5), 3),
+    ]
+    for reason, want in (("deadline", "renewal"), ("past", "agenda")):
+        brain._SENT.clear() if hasattr(brain, "_SENT") else None
+        cancel = at((CITIZEN, "agent:bk", f"cancel offer_id=of-S-1 reason={reason}", 6), 4)
+        cancel = dataclasses.replace(cancel, need_id=f"N-59-{reason}")
+        city = FakeCity("agent:bk")
+        await brain._desk(city, cancel, [*base, cancel], hold_self=False, fixed=None)
+        if want == "renewal":
+            ok = any("purpose=prescription_renewal" in t for t in to(city, CITIZEN))
+        else:
+            ok = any(r == LEDGER and t == "agenda" for r, t in city.sent)
+        check(f"BK-59 cancel reason={reason}: {want}", ok, city.sent)
+    hold = at(("agent:bk", LEDGER, "hold slot_id=S-7 citizen=citizen:c-1 consent_ref=c-7", 7), 5)
+    held = at((LEDGER, "agent:bk", "held hold_id=H-7 slot_id=S-7", 8), 6)
+    city = FakeCity("agent:bk")
+    await brain._desk(city, held, [*base, hold, held], hold_self=False, fixed=None)
+    check("FA-21 held in ritardo: commit sul Ledger", any(r == LEDGER and t.startswith("commit hold_id=H-7") for r, t in city.sent), city.sent)
+
+
 async def test_x49(check) -> None:
     """X-49: the address is asked when the citizen confirms, before the booking.receipt."""
     BKX, HOSP = "agent:bk", "agent:jdj692g4145e"
@@ -1399,7 +1433,53 @@ async def main() -> int:
                                                      "procedure=VIS-CARD priority=P prescription_number="),
                   out)
 
+    async def test_bk59(check):
+        """BK-60 (journey N-2026-11-02-890912000304): "solo lunedì o mercoledì", then five offers
+        with the same doctor all cancelled reason=gender."""
+        brain._SENT.clear()
+        now = "2026-11-02T07:00:00Z"  # a Monday; priority D = five days
+        def slot(sid, doc, at, day):
+            return f"slot_id={sid} doctor_id=asst-niguarda-{doc} facility={hospital} procedure=VIS-FIS at={at} day={day} free=1"
+        slots = "slots page=1/1\n" + "\n".join([
+            slot("A1", "h1", "2026-11-02T15:00:00Z", "mon"), slot("A2", "h1", "2026-11-02T16:00:00Z", "mon"),
+            slot("A3", "h1", "2026-11-03T10:00:00Z", "tue"), slot("A4", "h1", "2026-11-04T10:00:00Z", "wed"),
+            slot("C1", "h3", "2026-11-03T11:00:00Z", "tue"), slot("B2", "h2", "2026-11-05T10:00:00Z", "thu"),
+        ])
+        chat = [
+            row(CITIZEN, booking, "Ho un dolore al ginocchio. Vorrei prenotare una visita, posso solo lunedì o "
+                f"mercoledì. need.request lang=it prescription_number={rx_number}", 0),
+            row(LEDGER, booking, f"prescription prescription_number={rx_number} procedure=VIS-FIS priority=D state=issued", 1),
+            row(LEDGER, booking, f"agenda agenda_now={now}", 2),
+            row(LEDGER, booking, slots, 3),
+        ]
+        city = FakeCity(booking)
+        await desk_turn(city, chat[0], chat)
+        first = [t for t in to(city, CITIZEN) if t.startswith("offer ")]
+        days = {brain.fields_of(line)["agenda_day"] for line in first[0].splitlines() if "offer_id=" in line} if first else set()
+        check("BK-60 solo lunedì o mercoledì: nessun martedì o giovedì aggiunto per varietà",
+              len(first) == 1 and days == {"mon", "wed"}, first)
+        if not first:
+            return
+        sent = row(booking, CITIZEN, first[0], 4)
+        rows = [r for r in brain._offer_rows(first[0])]
+        cancels = [row(CITIZEN, booking, f"Per il ginocchio quel giorno non posso. cancel offer_id={r['offer_id']} reason=gender", 5 + i)
+                   for i, r in enumerate(rows)]
+        history = [*chat, sent, *cancels]
+        check("BK-60 cancel reason=gender su una dottoressa -> medico uomo", brain._gender(history) == "m", brain._gender(history))
+        for cancel in cancels:
+            await desk_turn(city, cancel, history)
+        again = [t for t in to(city, CITIZEN) if t.startswith("offer ")][1:]
+        doctors = {brain.fields_of(line)["doctor_id"] for line in again[0].splitlines() if "offer_id=" in line} if again else set()
+        check("BK-60 nuove offerte solo con medici uomini (h2/h3), mai più h1",
+              len(again) == 1 and doctors and all(not d.endswith("-h1") for d in doctors), city.sent)
+        # Days: a later exclusion narrows the stated days; a cancel reason=day drops that day.
+        narrow = [row(CITIZEN, booking, "posso solo lunedì o mercoledì", 1), row(CITIZEN, booking, "non posso il lunedì", 2)]
+        check("BK-60 'solo lun/mer' poi 'non posso il lunedì' -> mercoledì", brain._days(narrow) == frozenset({"wed"}), brain._days(narrow))
+        day_cancel = [chat[0], sent, row(CITIZEN, booking, f"cancel offer_id={rows[0]['offer_id']} reason=day", 9)]
+        check("BK-60 cancel reason=day toglie quel giorno", brain._days(day_cancel) == frozenset({"wed"}), brain._days(day_cancel))
+
     await test_francesco_14(check)
+    await test_bk59(check)
     await test_francesco_15(check)
     await test_francesco_16(check)
     await test_francesco_18(check)
@@ -1411,6 +1491,7 @@ async def main() -> int:
     await test_000113(check)
     await test_x49(check)
     await test_p17_never_silent(check)
+    await test_bk59_fa20(check)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 
