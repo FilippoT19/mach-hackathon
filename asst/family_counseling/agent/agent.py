@@ -152,6 +152,13 @@ async def main(need: Need, city: City) -> None:
     # custody.ack check waits ~5 s, and a slow remote history read made the turn miss it.
     text = (message.text or "").strip()
     _TURN_NEED.set((message.need_id or message.msg_id or "-")[:64])  # OPS-13
+    role = role_of()
+    # BK-78 (P-magesh-28): ~6 real minutes per answer. This line says whether the time passes
+    # before our code (delivery queue) or inside it: seconds from sent_at to the start of the turn.
+    sent_at = _when(getattr(message, "sent_at", "") or "")
+    _event("booking.turn" if role == "booking_centre" else f"{role or 'agent'}.turn",
+           lag_s=int((datetime.now(sent_at.tzinfo) - sent_at).total_seconds()) if sent_at else None,
+           sender=_kind(message.sender), act=first_word(text)[:32])
     if message.sender == LEDGER:
         # OPS-13 (BK-72): what the Ledger answered, and how late, was the missing fact.
         got = fields_of(text)
@@ -163,6 +170,8 @@ async def main(need: Need, city: City) -> None:
             and "=" not in text and text != "__error__"):
         _LOG.info("ops08.skip sender=%s", message.sender[:40])
         return
+    if role == "booking_centre":
+        _recovery_start(city, message)  # BK-78: once per process, in the background
     # GP-17 (wave W01QQQ, L1): "forte dolore al petto" got the 112 after 278 s or never: the
     # turn waited for the history read (minutes under load) and the Index. The judge counts only
     # `escalate.emergency` (emergency.no_escalation -2). A red flag in the citizen's own text
@@ -6808,19 +6817,34 @@ async def _cross_asst(
             # was still open. Never silence: ask again, once per citizen message, in their language.
             if message.sender.startswith("citizen:") and message.msg_id not in sent.reasked:
                 sent.reasked.add(message.msg_id)
-                await _say(city, citizen, _cx_head(chat) + (
+                tail = _cross_with_list(city, message, chat, key, citizen, procedure, priority)  # BK-78
+                if await _say(city, citizen, _cx_head(chat) + (
                     "I have your request. There is no suitable appointment in your ASST. "
                     if _lang(chat) != "it" else
                     "Ho la sua richiesta. Nella sua ASST non ci sono posti adatti. "
-                ) + _cross_question(chat, procedure))
-                _trace("cross", message, state="consent_reasked", lang=_lang(chat))
+                ) + _cross_question(chat, procedure) + tail) and tail:
+                    sent.offers.add(f"wl-{message.need_id or message.msg_id}")
+                    sent.notes.add("wl_in_question")
+                _trace("cross", message, state="consent_reasked", lang=_lang(chat), waiting_list=bool(tail))
             else:
                 _trace("cross", message, state="consent_pending")
             return True
-        if await _say(city, citizen, _cx_head(chat) + _cross_question(chat, procedure)):
-            sent.cross_asked = True
-            _cross_timer(city, message, key, citizen, procedure, priority, chat)  # P-magesh-26
-        _trace("cross", message, state="consent_asked", lang=_lang(chat))
+        # BK-78: one question per case until the citizen writes again. The mark goes on before
+        # the send, so a second turn of the same case running now (referral, Ledger page) asks
+        # nothing; the citizen message that opened this turn never gets the re-ask either.
+        sent.cross_asked = True
+        sent.reasked.add(message.msg_id)
+        tail = _cross_with_list(city, message, chat, key, citizen, procedure, priority)
+        if await _say(city, citizen, _cx_head(chat) + _cross_question(chat, procedure) + tail):
+            if tail:
+                sent.offers.add(f"wl-{message.need_id or message.msg_id}")
+                sent.notes.add("wl_in_question")
+            else:
+                _cross_timer(city, message, key, citizen, procedure, priority, chat)  # P-magesh-26
+        else:
+            sent.cross_asked = False
+            sent.reasked.discard(message.msg_id)
+        _trace("cross", message, state="consent_asked", lang=_lang(chat), waiting_list=bool(tail))
         return True
     request_id = f"cross-{message.need_id or message.msg_id}"
     asked = {row.recipient for row in chat if row.sender == city.agent_id and first_word(row.text) == "need.request"
@@ -7321,6 +7345,20 @@ async def _still_here(city: City, message: Message, chat: list[Message], *, fixe
             )
             text = "\n".join(_fit(list(again.values()), tail) + [tail])
             _sent(message.need_id or message.msg_id).notes.add("again")  # BK-22: the route does not resend too
+    elif _we(chat, agent, "waiting_list=true", to=citizen, word="offer") and not any(
+        row.sender == citizen and "cancel" in words(row.text) and fields_of(row.text).get("offer_id", "").startswith("wl-")
+        for row in chat
+    ):
+        # BK-78: the waiting list went out with the cross-ASST question; a later "no" (or any
+        # message) is told where the case stands, not "I am checking the free appointments".
+        state = "waiting_list"
+        text = "status " + (
+            "You are on the waiting list. If another ASST sends me an appointment for you, I will "
+            "write to you at once. If your symptoms change, contact your GP."
+            if en else
+            "È in lista d'attesa. Se un'altra ASST mi manda un posto per lei, le scrivo subito. "
+            "Se il disturbo cambia, contatti il suo medico di base."
+        )
     elif fixed is None and _number(chat) is None and not any(
         "prescription_number=" in row.text for row in chat if row.sender != agent
     ):
@@ -8002,7 +8040,8 @@ async def _cross_silence(
         sent = _sent(key)
         wrote = any(row.sender == citizen and row.msg_id not in known for row in fresh)
         accepted, _ref = _cross_consent(fresh, city.agent_id)
-        if wrote or accepted is not None or sent.cross_sent or _open_offers(fresh, city.agent_id, citizen):
+        if (wrote or accepted is not None or sent.cross_sent or _open_offers(fresh, city.agent_id, citizen)
+                or _wl_sent(city, message, fresh, key, citizen)):  # BK-78: the list went with the question
             _event("booking.cross_silence", message.need_id, state="skip", wrote=str(wrote).lower(),
                    consent=str(accepted).lower(), cross_sent=str(sent.cross_sent).lower())
             return
@@ -8010,6 +8049,95 @@ async def _cross_silence(
         await _relaxed(city, message, fresh, key, citizen, procedure, _number(fresh), priority)
     except Exception:  # a background step must never raise into the loop
         _LOG.exception("booking.cross_silence_failed need_id=%s", (message.need_id or "")[:48])
+
+
+# BK-78 (P-magesh-28 A): a deploy during a wave kills the turns in flight, and the brain runs only
+# when a message arrives: a citizen's cancel or confirm stayed without answer until the verdict.
+# The first message this process handles starts ONE recovery round in the background: for the
+# recent cases whose latest citizen message has no row of ours after it, that message is handled
+# once as if it had just arrived. Never twice per process, never the case of the current message,
+# never a case another turn of this process already touched.
+_RECOVERY_DONE = False
+_RECOVERY_MAX = 20
+_RECOVERY_TASKS: set["asyncio.Task[None]"] = set()
+_RECOVERY_SEEN: set[str] = set()  # needs that had a turn in this process
+
+
+def _recovery_start(city: City, message: Message) -> None:
+    global _RECOVERY_DONE
+    if message.need_id:
+        if len(_RECOVERY_SEEN) > 4 * _SENT_NEEDS:
+            _RECOVERY_SEEN.clear()
+        _RECOVERY_SEEN.add(message.need_id)
+    if _RECOVERY_DONE:
+        return
+    _RECOVERY_DONE = True
+    try:
+        task = asyncio.get_running_loop().create_task(_recover(city, message.need_id or ""))
+    except RuntimeError:
+        return
+    _RECOVERY_TASKS.add(task)
+    task.add_done_callback(_RECOVERY_TASKS.discard)
+
+
+def _recovery_pick(rows: list[Message], agent: str, skip: str) -> list[Message]:
+    """The latest citizen message of each recent case with nothing of ours after it, newest first."""
+    last: dict[str, Message] = {}
+    answered: set[str] = set()
+    for row in rows:  # oldest first
+        need = row.need_id or ""
+        if not need or need == skip:
+            continue
+        if row.sender.startswith("citizen:") and row.recipient in (agent, ""):
+            last[need] = row
+            answered.discard(need)
+        elif row.sender == agent and need in last:
+            answered.add(need)
+    picked: list[tuple[datetime, Message]] = []
+    for need, row in last.items():
+        at = _when(getattr(row, "sent_at", "") or "")
+        if need in answered or need in _RECOVERY_SEEN or row.msg_id in _ANSWERED or at is None:
+            continue
+        if not timedelta(0) <= datetime.now(at.tzinfo) - at <= _AGENDA_REAL_MAX:
+            continue
+        picked.append((at, row))
+    picked.sort(key=lambda item: item[0], reverse=True)
+    return [row for _, row in picked[:_RECOVERY_MAX]]
+
+
+async def _recover(city: City, skip: str) -> None:
+    try:
+        try:
+            rows = await asyncio.wait_for(city.history(), timeout=20.0)
+        except (CapError, asyncio.TimeoutError):
+            _event("booking.recover", state="history_failed")
+            return
+        todo = _recovery_pick(list(rows or []), city.agent_id, skip)
+        _event("booking.recover", state="start", cases=len(todo))
+        for inbound in todo:
+            need = inbound.need_id or ""
+            token = _TURN_NEED.set(need[:64])
+            try:
+                try:
+                    case = await asyncio.wait_for(city.history(need_id=need), timeout=10.0)
+                except (CapError, asyncio.TimeoutError):
+                    continue
+                case = _keep(list(case or []), [inbound])
+                # read again: a turn of this process or our row in the fresh case means it is answered
+                again = _recovery_pick(case, city.agent_id, skip)
+                if not again or need in _RECOVERY_SEEN:
+                    continue
+                inbound = again[0]
+                _RECOVERY_SEEN.add(need)
+                _remember_ledger(case, city.agent_id)
+                _event("booking.recover", state="replay", act=first_word(inbound.text)[:32])
+                await handle("booking_centre", city, inbound, case)
+            except Exception:  # one case never stops the others
+                _LOG.exception("booking.recover_failed need_id=%s", need[:48])
+            finally:
+                _TURN_NEED.reset(token)
+    except Exception:  # a background step must never raise into the loop
+        _LOG.exception("booking.recover_failed")
 
 
 async def _relaxed(
@@ -8024,9 +8152,17 @@ async def _relaxed(
 ) -> None:
     offer_id = f"wl-{message.need_id or message.msg_id}"
     sent = _sent(key)
-    if offer_id in sent.offers or _we(chat, city.agent_id, f"offer_id={offer_id}", to=citizen, word="offer"):
+    # BK-78: a waiting list that went out only inside the cross-ASST question is sent once more
+    # as its own offer when it becomes the outcome (refusal, partners with nothing): a reader of
+    # the act word sees "consent" there, not "offer". Same offer_id: never a second list.
+    ours = [row for row in chat if row.sender == city.agent_id and row.recipient == citizen
+            and f"offer_id={offer_id}" in row.text.split()]
+    alone = "wl_alone" in sent.notes or any(first_word(row.text) == "offer" for row in ours)
+    if alone or (_wl_sent(city, message, chat, key, citizen) and "wl_in_question" not in sent.notes
+                 and not any(first_word(row.text) == "consent" for row in ours)):
         _trace("waiting_list", message, state="already_sent")
         return
+    sent.notes.add("wl_alone")
     line = (
         "You are on the waiting list. If you need an earlier appointment, write to us again. "
         "If your symptoms change, contact your GP."
@@ -8034,16 +8170,47 @@ async def _relaxed(
         "È in lista d'attesa. Se le serve un appuntamento prima, ci riscriva. "
         "Se il disturbo cambia, contatti il suo medico di base."
     )
-    parts = ["offer", f"offer_id={offer_id}", "waiting_list=true"]
+    if await _say(city, citizen, _wl_line(message, procedure, number, priority, line)):
+        sent.offers.add(offer_id)
+        _trace("offer", message, kind="waiting_list", procedure=procedure, priority=priority, lang=_lang(chat))
+    else:
+        sent.notes.discard("wl_alone")
+
+
+def _wl_sent(city: City, message: Message, chat: list[Message], key: str, citizen: str) -> bool:
+    offer_id = f"wl-{message.need_id or message.msg_id}"
+    return offer_id in _sent(key).offers or _we(chat, city.agent_id, f"offer_id={offer_id}", to=citizen, word="offer")
+
+
+def _wl_line(message: Message, procedure: str | None, number: str | None, priority: str | None, line: str) -> str:
+    """BK-10: the waiting-list offer line (also inside the cross-ASST question, BK-78)."""
+    parts = ["offer", f"offer_id=wl-{message.need_id or message.msg_id}", "waiting_list=true"]
     if procedure:
         parts.append(f"procedure={procedure}")
     if priority:
         parts.append(f"priority={priority}")
     if number:
         parts.append(f"prescription_number={number}")
-    if await _say(city, citizen, " ".join(parts) + f" {line}"):
-        sent.offers.add(offer_id)
-        _trace("offer", message, kind="waiting_list", procedure=procedure, priority=priority, lang=_lang(chat))
+    return " ".join(parts) + f" {line}"
+
+
+def _cross_with_list(
+    city: City, message: Message, chat: list[Message], key: str, citizen: str, procedure: str,
+    priority: str | None,
+) -> str:
+    """BK-78 (P-magesh-28 C): the waiting list goes out with the cross-ASST question, so a citizen
+    who never answers (or a deploy that kills the BK-73 timer) still ends on the waiting list.
+    Empty when the waiting list already went out. Partner offers can still replace it."""
+    if _wl_sent(city, message, chat, key, citizen):
+        return ""
+    line = (
+        "Meanwhile I am putting you on the waiting list; if you say yes, I will also search the "
+        "other ASSTs and send you the appointments I find. If your symptoms change, contact your GP."
+        if _lang(chat) != "it" else
+        "Intanto la metto in lista d'attesa; se mi dice sì, cerco anche nelle altre ASST e le mando "
+        "i posti che trovo. Se il disturbo cambia, contatti il suo medico di base."
+    )
+    return "\n" + _wl_line(message, procedure, _number(chat), priority, line)
 
 
 async def _on_confirm(

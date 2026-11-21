@@ -802,19 +802,21 @@ async def test_p_magesh_26(check) -> None:
     brain._CROSS_SILENCE = 0.01
     try:
         city, asked = await run([])
-        lists = [t for t in to(city, CITIZEN) if t.startswith("offer offer_id=wl-N-1 waiting_list=true")]
+        # BK-78: the waiting list travels inside the consent question (a line of that message).
+        lists = [t for t in to(city, CITIZEN)
+                 if any(l.startswith("offer offer_id=wl-N-1 waiting_list=true") for l in t.splitlines())]
         check("P-magesh-26 domanda di consenso cross-ASST mandata", len(asked) == 1, city.sent)
         check("P-magesh-26 silenzio: una sola lista d'attesa, in inglese, con procedura e priorità",
               len(lists) == 1 and "procedure=VIS-FIS" in lists[0] and "priority=B" in lists[0]
               and "waiting list" in lists[0], city.sent)
 
         city, _ = await run([(CITIZEN, BKX, "consent purpose=cross_asst consent_ref=cons-N-1-cross_asst")])
-        check("P-magesh-26 consenso arrivato in tempo: nessuna lista d'attesa dal timer",
-              not any("waiting_list=true" in t for t in to(city, CITIZEN)), city.sent)
+        check("P-magesh-26 consenso arrivato in tempo: nessuna seconda lista d'attesa dal timer (BK-78)",
+              sum("waiting_list=true" in t for t in to(city, CITIZEN)) == 1, city.sent)
 
         city, _ = await run([(CITIZEN, BKX, "Hello? Are you there?")])
-        check("P-magesh-26 il cittadino ha scritto: il timer non fa niente (decide il suo turno)",
-              not any("waiting_list=true" in t for t in to(city, CITIZEN)), city.sent)
+        check("P-magesh-26 il cittadino ha scritto: il timer non fa niente (decide il suo turno; BK-78)",
+              sum("waiting_list=true" in t for t in to(city, CITIZEN)) == 1, city.sent)
 
         brain._SENT.clear()
         brain._CROSS_TIMERS.clear()
@@ -828,6 +830,192 @@ async def test_p_magesh_26(check) -> None:
         brain._CROSS_SILENCE = old
         brain._SENT.clear()
         brain._CROSS_TIMERS.clear()
+
+
+async def test_bk78(check) -> None:
+    """BK-78 (P-magesh-28): (C) consent question + waiting list in one message, one question per
+    case; (A) a lag line at the start of each turn and one recovery round after a restart."""
+    import logging
+    import os
+    import re as _re
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    BKX = "agent:bk"
+    RX = "prescription_number-RX-178"
+
+    def base(lang):
+        texts = [
+            (CITIZEN, BKX, f"need.request prescription_number={RX} lang={lang} service_type=hospital.physiatry Back pain."),
+            (LEDGER, BKX, f"prescription prescription_number={RX} procedure=VIS-FIS priority=B state=issued"),
+            (LEDGER, BKX, f"agenda agenda_now={NOW}"),
+            (LEDGER, BKX, "slots page=1/1\nslot_id=S-FAR doctor_id=asst-niguarda-h2 facility=agent:hos procedure=VIS-FIS at=2026-11-25T09:00:00Z day=wed free=1"),
+        ]
+        return [row(s, r, t, i) for i, (s, r, t) in enumerate(texts)]
+
+    class HistCity(FakeCity):
+        def __init__(self, agent_id, history, pause=0.0):
+            super().__init__(agent_id)
+            self._history = history
+            self._pause = pause
+
+        async def say(self, to, text, *, status=None):
+            if self._pause:
+                await asyncio.sleep(self._pause)
+            return await super().say(to, text, status=status)
+
+        async def history(self, peer=None, *, need_id=None):
+            return [*self._history, *[row(BKX, to_, text, 100 + n) for n, (to_, text) in enumerate(self.sent)]]
+
+    old = brain._CROSS_SILENCE
+    brain._CROSS_SILENCE = 0.01
+    try:
+        for lang, yes in (("en", "if you say yes, I will also search"), ("it", "se mi dice sì")):
+            brain._SENT.clear()
+            brain._CROSS_TIMERS.clear()
+            rows = base(lang)
+            city = HistCity(BKX, rows)
+            await brain._advance_alone(city, rows[0], rows, "N-1", fixed=None, replacing=False)
+            out = to(city, CITIZEN)
+            lines = out[0].splitlines() if out else []
+            check(f"BK-78 ({lang}) un solo messaggio: domanda cross-ASST e lista d'attesa insieme",
+                  len(out) == 1 and lines[0].startswith("consent purpose=cross_asst")
+                  and any(l.startswith(f"offer offer_id=wl-N-1 waiting_list=true procedure=VIS-FIS priority=B prescription_number={RX}")
+                          for l in lines), city.sent)
+            check(f"BK-78 ({lang}) la frase chiede chiaramente il sì", bool(out) and yes in out[0], out)
+            await asyncio.gather(*list(brain._CROSS_TIMERS))
+            check(f"BK-78 ({lang}) il timer BK-73 non manda una seconda lista",
+                  sum("waiting_list=true" in t for t in to(city, CITIZEN)) == 1, city.sent)
+            # a later turn opened by the Ledger (no word from the citizen): no second question
+            page = row(LEDGER, BKX, "agenda agenda_now=2026-11-04T09:30:00Z", 30)
+            hist = [*rows, *[row(BKX, t_, x, 100 + n) for n, (t_, x) in enumerate(city.sent)], page]
+            brain._SENT.clear()  # also after a restart: the history says the question went out
+            before = len(to(city, CITIZEN))
+            await brain._desk(city, page, hist, hold_self=False, fixed=None)
+            check(f"BK-78 ({lang}) turno dal Ledger: nessuna seconda domanda di consenso",
+                  not any("purpose=cross_asst" in t for t in to(city, CITIZEN)[before:]), city.sent)
+
+        # a citizen line with nothing left to do is told it is on the waiting list, not "checking"
+        hello = row(CITIZEN, BKX, "ok, grazie", 32)
+        status_city = FakeCity(BKX)
+        await brain._still_here(status_city, hello, [*hist, hello], fixed=None)
+        check("BK-78 stato dopo la lista nella domanda: 'in lista d'attesa'",
+              any(t.startswith("status ") and "lista d'attesa" in t for t in to(status_city, CITIZEN)), status_city.sent)
+
+        # two turns of the same case at the same time (referral + Ledger page): one question
+        brain._SENT.clear()
+        brain._CROSS_TIMERS.clear()
+        rows = base("en")
+        city = HistCity(BKX, rows, pause=0.02)
+        page = row(LEDGER, BKX, "agenda agenda_now=2026-11-04T09:00:30Z", 31)
+        await asyncio.gather(
+            brain._advance_alone(city, rows[0], rows, "N-1", fixed=None, replacing=False),
+            brain._advance_alone(city, page, [*rows, page], "N-1", fixed=None, replacing=False))
+        check("BK-78 due turni insieme sullo stesso caso: una sola domanda di consenso",
+              sum("purpose=cross_asst" in t for t in to(city, CITIZEN)) == 1, city.sent)
+    finally:
+        brain._CROSS_SILENCE = old
+        brain._SENT.clear()
+        brain._CROSS_TIMERS.clear()
+
+    # (A1) the lag between sent_at and the start of the turn
+    lines: list[str] = []
+
+    class Grab(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+
+    def iso(t):
+        return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    grab = Grab()
+    brain._LOG.addHandler(grab)
+    old_level = brain._LOG.level
+    brain._LOG.setLevel(logging.INFO)
+    old_role = os.environ.get("CITY_ROLE")
+    os.environ["CITY_ROLE"] = "booking_centre"
+    now = _dt.now(_tz.utc)
+    try:
+        brain._RECOVERY_DONE = True  # (A1) only: no recovery round here
+        city = FakeCity(BKX)
+        city.inbound = Message(type="chat", sender=CITIZEN, msg_id="lag1", need_id="N-LAG", recipient=BKX,
+                               body={"text": "ciao"}, sent_at=iso(now - _td(seconds=360)))
+        try:
+            await brain.main(type("N", (), {"is_emergency": False})(), city)
+        except Exception:
+            pass
+        got = next((l for l in lines if l.startswith("booking.turn")), "")
+        lag = _re.search(r"lag_s=(\d+)", got)
+        check("BK-78 riga booking.turn con lag_s=360 e need_id", bool(lag) and 359 <= int(lag.group(1)) <= 362
+              and "need_id=N-LAG" in got, lines)
+
+        # (A2) one recovery round after a restart
+        C2, C4, C5 = "citizen:c-2", "citizen:c-4", "citizen:c-5"
+
+        def m(sender, recipient, text, n, need, ago):
+            return Message(type="chat", sender=sender, msg_id=f"r{n}", need_id=need, recipient=recipient,
+                           body={"text": text}, sent_at=iso(now - _td(minutes=ago)))
+
+        offer = ("offer offer_id=of-X slot_id=X doctor_id=asst-niguarda-h1 facility=agent:hos procedure=VIS-FIS "
+                 "agenda_date=2026-11-05T10:00:00Z priority=B")
+
+        def world(answered):
+            rows = [
+                m(C2, BKX, f"need.request prescription_number={RX} lang=it", 1, "N-2", 12),
+                m(BKX, C2, offer, 2, "N-2", 10),
+                m(C2, BKX, "cancel offer_id=of-X reason=deadline", 3, "N-2", 2),
+                m(C4, BKX, "need.request prescription_number=prescription_number-RX-4", 4, "N-4", 3),
+                m(BKX, C4, "status Sto controllando i posti liberi.", 5, "N-4", 2),
+                m(C5, BKX, "need.request prescription_number=prescription_number-RX-5", 6, "N-5", 120),
+                m(CITIZEN, BKX, "need.request prescription_number=prescription_number-RX-3", 7, "N-3", 4),
+            ]
+            if answered:
+                rows.append(m(BKX, C2, "cancel.ack offer_id=of-X Capito, ho ritirato quell'offerta.", 8, "N-2", 1))
+            return rows
+
+        class RecCity(FakeCity):
+            def __init__(self, agent_id, rows):
+                super().__init__(agent_id)
+                self._rows = rows
+                self.calls = 0
+
+            async def history(self, peer=None, *, need_id=None):
+                self.calls += need_id is None
+                return [r for r in self._rows if need_id is None or r.need_id == need_id]
+
+        for answered in (False, True):
+            brain._RECOVERY_DONE = False
+            brain._SENT.clear()
+            brain._ANSWERED.clear()
+            city = RecCity(BKX, world(answered))
+            city.inbound = m(CITIZEN, BKX, "ciao, ci siete?", 9, "N-3", 0)
+            try:
+                await brain.main(type("N", (), {"is_emergency": False})(), city)
+            except Exception:
+                pass
+            await asyncio.gather(*list(getattr(brain, "_RECOVERY_TASKS", ())), return_exceptions=True)
+            city.inbound = m(C4, BKX, "grazie", 10, "N-6", 0)
+            try:
+                await brain.main(type("N", (), {"is_emergency": False})(), city)
+            except Exception:
+                pass
+            await asyncio.gather(*list(getattr(brain, "_RECOVERY_TASKS", ())), return_exceptions=True)
+            acks = [t for t in to(city, C2) if t.startswith("cancel.ack offer_id=of-X")]
+            if not answered:
+                check("BK-78 riavvio: il cancel rimasto senza risposta riceve un solo cancel.ack",
+                      len(acks) == 1, city.sent)
+                check("BK-78 riavvio: un solo giro di recupero per processo", city.calls == 1, city.calls)
+            else:
+                check("BK-78 riavvio: il nostro ack è già nella storia -> nessun messaggio", not to(city, C2), city.sent)
+            check(f"BK-78 riavvio: chi ha già avuto risposta e chi è troppo vecchio non riceve niente (answered={answered})",
+                  not to(city, C5) and not any(t.startswith("status Sto") for t in to(city, C4)), city.sent)
+    finally:
+        brain._RECOVERY_DONE = True
+        brain._SENT.clear()
+        brain._LOG.removeHandler(grab)
+        brain._LOG.setLevel(old_level)
+        if old_role is None:
+            os.environ.pop("CITY_ROLE", None)
+        else:
+            os.environ["CITY_ROLE"] = old_role
 
 
 async def test_x49(check) -> None:
@@ -1593,16 +1781,23 @@ async def main() -> int:
         ask = to(city, CITIZEN)[-1]
         # BK-61: every local offer refused and the catalogue is over: the other ASSTs come before
         # the waiting list (the answer set can hold slots there). A refusal gives the waiting list.
+        # BK-78: the waiting list goes out only inside that same question message.
         check("BK-61 tutti annullati e catalogo finito: prima la domanda sulle altre ASST",
-              ask.startswith("consent purpose=cross_asst") and not any("waiting_list=true" in t for t in to(city, CITIZEN)), ask)
+              ask.startswith("consent purpose=cross_asst") and all(
+                  t.startswith("consent purpose=cross_asst") for t in to(city, CITIZEN) if "waiting_list=true" in t), ask)
         asked = row(booking, CITIZEN, ask, 9)
         no = row(CITIZEN, booking, "No, preferisco di no.", 10)
         await desk_turn(city, no, [*chat, original, cancel, ack, two, three, asked, no])
         wait = to(city, CITIZEN)[-1]
+        check("BK-78 la lista d'attesa è già dentro la domanda cross-ASST",
+              any(l.startswith("offer offer_id=wl-N-1 waiting_list=true procedure=VIS-CARD priority=B ")
+                  for l in ask.splitlines()), ask)
+        # BK-78: after the "no" the same waiting list (same offer_id) comes once as its own offer.
         check("P-francesco-14 tutti annullati e catalogo finito: lista d'attesa è un'offerta",
               wait.startswith("offer offer_id=wl-N-1 waiting_list=true procedure=VIS-CARD priority=B "), wait)
-        check("P-francesco-14 una sola lista d'attesa", sum("waiting_list=true" in t for t in to(city, CITIZEN)) == 1,
-              to(city, CITIZEN))
+        check("P-francesco-14 una sola lista d'attesa (un solo offer_id, una sola offerta a sé)",
+              {f.get("offer_id") for t in to(city, CITIZEN) for f in brain._offer_rows(t) if f.get("waiting_list") == "true"} == {"wl-N-1"}
+              and sum(t.startswith("offer offer_id=wl-") for t in to(city, CITIZEN)) == 1, to(city, CITIZEN))
 
         for available in (True, False):
             brain._SENT.clear()
@@ -1630,8 +1825,9 @@ async def main() -> int:
                 # BK-68: nothing local is left. The other ASSTs come before the waiting list (the answer
                 # set is the whole city): the citizen is asked for the cross-ASST consent, once.
                 asked = [t for t in to(city, CITIZEN) if t.startswith("consent ") and "purpose=cross_asst" in t]
-                check("P-francesco-14 pagina 2 vuota: consenso cross_asst prima della lista d'attesa (BK-68)",
-                      len(asked) == 1 and not any("waiting_list=true" in t for t in to(city, CITIZEN)), city.sent)
+                check("P-francesco-14 pagina 2 vuota: consenso cross_asst prima della lista d'attesa (BK-68, BK-78)",
+                      len(asked) == 1 and all(t.startswith("consent ") for t in to(city, CITIZEN)
+                                              if "waiting_list=true" in t), city.sent)
 
         class PageCity(FakeCity):
             async def history(self, peer=None, *, need_id=None):
@@ -2208,6 +2404,7 @@ async def main() -> int:
     await test_bk72(check)
     await test_ops13(check)
     await test_p_magesh_26(check)
+    await test_bk78(check)
     await test_p_magesh_1(check)
     await test_bk63(check)
 
@@ -2468,15 +2665,18 @@ async def main() -> int:
         city = FakeCity(bk)
         await desk_turn(city, chat[0], chat)
         out = to(city, CITIZEN)
-        check("BK-68 pagina mai arrivata: domanda di consenso cross_asst, non lista d'attesa",
-              any(t.startswith("consent ") and "purpose=cross_asst" in t for t in out) and not any("waiting_list=true" in t for t in out), city.sent)
+        # BK-78: the waiting list may travel only inside the consent question.
+        check("BK-68 pagina mai arrivata: domanda di consenso cross_asst, non lista d'attesa da sola",
+              any(t.startswith("consent ") and "purpose=cross_asst" in t for t in out)
+              and all(t.startswith("consent ") for t in out if "waiting_list=true" in t), city.sent)
         yes = row(CITIZEN, bk, "Sì, va bene. consent consent_ref=cons-1 purpose=cross_asst", 9)
         asked = row(bk, CITIZEN, next(t for t in out if t.startswith("consent ")), 8)
         asks2 = [row(bk, LEDGER, t, 20 + i) for i, t in enumerate(to(city, LEDGER))]
         city = FakeCity(bk)
         await desk_turn(city, yes, [*chat, *asks2, asked, yes])
+        # BK-78: the list went inside the question; now it comes as its own offer, same offer_id.
         check("BK-68 dopo il sì, senza partner: lista d'attesa nello stesso turno (nessun vicolo cieco)",
-              any("waiting_list=true" in t for t in to(city, CITIZEN)), city.sent)
+              any(t.startswith("offer offer_id=wl-N-1 waiting_list=true") for t in to(city, CITIZEN)), city.sent)
         brain._SENT.clear()
 
     await test_bk68(check)
