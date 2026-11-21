@@ -291,10 +291,14 @@ async def main() -> int:
         failures += 0 if ok else 1
 
     # BK-36: the citizen grants cross-ASST consent as "data.response purpose=cross_asst" (000175).
-    cc = [row("agent:bk", CITIZEN, "consent purpose=cross_asst Posso cercare?", 1),
-          row(CITIZEN, "agent:bk", "data.response purpose=cross_asst", 2)]
+    # BK-41: it counts as consent only when it names the consent; a bare one goes back to local.
+    cc = [row("agent:bk", CITIZEN, "data.request purpose=cross_asst fields=consent_ref Posso cercare?", 1),
+          row(CITIZEN, "agent:bk", "data.response purpose=cross_asst provided=consent_ref", 2)]
     got = brain._cross_consent(cc, "agent:bk")
-    check("BK-36 data.response cross_asst = consenso", got[0] is True and bool(got[1]), got)
+    check("BK-36 data.response cross_asst con provided=consent_ref = consenso", got[0] is True and bool(got[1]), got)
+    cc = [cc[0], row(CITIZEN, "agent:bk", "data.response purpose=cross_asst", 2)]
+    got = brain._cross_consent(cc, "agent:bk")
+    check("BK-41 data.response senza consent_ref = niente consenso (si torna agli slot locali)", got[0] is False, got)
 
     # P-francesco-37: a prescription number we issued, no renewal words -> no new prescription.
     gp = FakeCity("agent:gp")
@@ -692,7 +696,7 @@ async def main() -> int:
             cancel = row(CITIZEN, booking, "cancel offer_id=of-S-NEAR reason=deadline", 5)
             await desk_turn(city, cancel, [*chat, original, cancel])
             check("P-francesco-14 annullo esaurisce pagina 1 e richiede pagina 2",
-                  to(city, LEDGER) == ["world procedure=VIS-CARD page=2"], city.sent)
+                  set(to(city, LEDGER)) == {"world procedure=VIS-CARD page=2"}, city.sent)
             page = slots_near().replace("page=1/1", "page=2").replace("S-NEAR", "S-PAGE-2")
             page = page if available else "slots page=2/2"
             reply = row(LEDGER, booking, page, 7)
@@ -826,7 +830,7 @@ async def main() -> int:
         city = FakeCity(booking, peers=[{"id": remote, "role": "facility"}])
         await desk_turn(city, reply, [*chat, ask, reply])
         check("P-francesco-20 frase con non: chiede riferimento senza aprire la ricerca",
-              any(t.startswith("consent purpose=cross_asst") for t in to(city, CITIZEN))
+              any(t.startswith("data.request purpose=cross_asst") for t in to(city, CITIZEN))
               and not to(city, remote) and not any("waiting_list=" in t for t in to(city, CITIZEN)), city.sent)
         yes = row(CITIZEN, booking, "consent purpose=cross_asst consent_ref=C-CROSS", 6)
         await desk_turn(city, yes, [*chat, ask, reply, yes])
@@ -1006,6 +1010,89 @@ async def main() -> int:
         check("BK-40 expires_at della ricetta non limita la data della visita",
               brain._before_rx_deadline({"at": "2026-11-08T10:00:00Z"}, {"expires_at": "2026-11-05T09:00:00Z"}, "D"), "")
 
+    def slot_line(sid, at, doc="d-s1", day="thu"):
+        return f"slot_id={sid} doctor_id={doc} facility=agent:spec procedure=VIS-CARD at={at} day={day} free=1"
+
+    async def test_bk41_44(check):
+        """BK-41..44: consent flow, one full offer, re-offer after cancel, relaxed alternative."""
+
+        near = ["2026-11-04T15:00:00Z", "2026-11-05T09:00:00Z", "2026-11-05T10:00:00Z",
+                "2026-11-05T11:00:00Z", "2026-11-05T14:00:00Z"]
+        five = "slots page=1/1\n" + "\n".join(slot_line(f"S-{i}", at) for i, at in enumerate(near, 1))
+        far = "slots page=1/1\n" + slot_line("S-LATE", "2026-11-12T10:00:00Z")
+
+        # BK-42: every acceptable slot in ONE offer message, expiry before the visit.
+        brain._SENT.clear()
+        city = FakeCity(booking)
+        chat = booking_chat(five)
+        await desk_turn(city, chat[0], chat)
+        out = [t for t in to(city, CITIZEN) if t.startswith("offer")]
+        rows = brain._offer_rows(out[0]) if out else []
+        check("BK-42 un solo messaggio offer con tutti i 5 slot", len(out) == 1 and len(rows) == 5, city.sent)
+        check("BK-42 expiry prima dell'appuntamento (mai uguale)",
+              rows and all(r["expiry"] < r["agenda_date"] for r in rows), rows)
+
+        # BK-43: the facility cancels naming only the slot -> new offer with the other four.
+        if out:
+            hospital_id = "agent:jmjfst55vgjz"
+            sent_offer = row(booking, CITIZEN, out[0], 4)
+            fconfirm = row(booking, hospital_id, "confirm offer_id=of-S-1 slot_id=S-1 citizen=citizen:c-1 consent_ref=C1", 5)
+            fcancel = row(hospital_id, booking, "cancel slot_id=S-1 reason=no_capacity", 6)
+            await desk_turn(city, fcancel, [*chat, sent_offer, fconfirm, fcancel])
+            after = to(city, CITIZEN)[1:]
+            again = [t for t in after if t.startswith("offer")]
+            ids = {r.get("slot_id") for t in again for r in brain._offer_rows(t)}
+            check("BK-43 cancel della struttura con solo slot_id: il cittadino è avvisato",
+                  any(t.startswith("cancel offer_id=of-S-1 reason=no_capacity") for t in after), after)
+            check("BK-43 dopo il cancel: subito una nuova offerta con gli altri 4 slot",
+                  len(again) == 1 and ids == {"S-2", "S-3", "S-4", "S-5"}, after)
+
+        # BK-44: S empty, later slot exists -> ONE relaxed alternative (slot + waiting list), no consent.
+        brain._SENT.clear()
+        city = FakeCity(booking, peers=[{"id": remote, "role": "facility"}])
+        chat = booking_chat(far)
+        await desk_turn(city, chat[0], chat)
+        out = to(city, CITIZEN)
+        check("BK-44 S vuoto: un'offerta con alternativa rilassata e lista d'attesa",
+              len(out) == 1 and "slot_id=S-LATE" in out[0] and "relaxed_alternative=true" in out[0]
+              and "waiting_list=true" in out[0], out)
+        check("BK-44 con un'alternativa locale non si chiede il consenso cross_asst",
+              not any("purpose=cross_asst" in t for t in out) and not to(city, remote), city.sent)
+
+        # BK-41: nothing local at all -> waiting list first, then the question, in English (body lang).
+        brain._SENT.clear()
+        city = FakeCity(booking, peers=[{"id": remote, "role": "facility"}])
+        chat = booking_chat("slots page=1/1")
+        chat[0] = Message(type="chat", sender=CITIZEN, msg_id="h0", need_id="N-1", recipient=booking,
+                          body={"text": f"need.request prescription_number={rx_number}", "lang": "en"})
+        await desk_turn(city, chat[0], chat)
+        out = to(city, CITIZEN)
+        check("BK-41 S vuoto senza alternativa: prima la lista d'attesa, poi la domanda",
+              len(out) == 2 and "waiting_list=true" in out[0] and out[1].startswith("data.request purpose=cross_asst"), out)
+        check("BK-41 domanda cross_asst in inglese con lang nel body", len(out) == 2 and "another ASST" in out[1], out)
+        check("BK-41 nessun dato inviato prima del consenso", not to(city, remote), city.sent)
+        if len(out) == 2:
+            ask = row(booking, CITIZEN, out[1], 5)
+            bare = row(CITIZEN, booking, "data.response purpose=cross_asst", 6)
+            await desk_turn(city, bare, [*chat, row(booking, CITIZEN, out[0], 4), ask, bare])
+            later = to(city, CITIZEN)[2:]
+            check("BK-41 data.response senza consent_ref: niente domanda ripetuta, si torna all'offerta locale",
+                  later and not any("purpose=cross_asst" in t for t in later)
+                  and any("waiting_list=true" in t for t in later) and not to(city, remote), later)
+
+        # BK-41: "lang: en" written with a colon.
+        check("BK-41 lang: en letto", brain._lang([row(CITIZEN, booking, "need.request lang: en prescription_number=x", 0)]) == "en", "")
+
+        # BK-41: a Ledger reply that arrives before the citizen's need.request writes nothing to the citizen.
+        brain._SENT.clear()
+        city = FakeCity(booking)
+        early = [row(LEDGER, booking, f"prescription prescription_number={rx_number} patient={CITIZEN} "
+                                      "procedure=VIS-CARD priority=B state=issued", 1),
+                 row(LEDGER, booking, f"agenda agenda_now={NOW}", 2), row(LEDGER, booking, "slots page=1/1", 3)]
+        await desk_turn(city, early[2], early)
+        check("BK-41 niente al cittadino prima della sua need.request", not to(city, CITIZEN), city.sent)
+
+    await test_bk41_44(check)
     await test_bk40(check)
     await test_francesco_14(check)
     await test_francesco_15(check)

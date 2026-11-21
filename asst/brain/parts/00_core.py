@@ -18,7 +18,7 @@ import re
 from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
 
