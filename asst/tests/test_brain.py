@@ -17,6 +17,7 @@ brain = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(brain)
 brain._PULL_TRIES = 1  # no waiting in tests
 brain._MEMORY_ON = False  # BK-67: the shared Ledger memory is on only inside test_bk67
+DESK_HOLDS_AT_START = brain._DESK_HOLDS[0]  # BK-75: read before any test switches BK-57 on
 RING_CONFIG = set(brain._TRUSTED_PARTNERS)  # MACH2-1: the ring is on in the brain
 brain._TRUSTED_PARTNERS.clear()  # tests use fake partner ids; the ring is switched on per test
 CITIZEN = "citizen:c-1"
@@ -786,6 +787,58 @@ async def test_p_magesh_26(check) -> None:
         brain._CROSS_TIMERS.clear()
 
 
+async def test_bk75(check) -> None:
+    """BK-75 (21/11, 11:15-11:35Z: ...0003640002, ...0003490005, ...0002590007, ...000402, ...0002980006): the
+    Ledger refuses every hold of the booking centre with reason=grant_permission_denied (e19: a
+    booking-centre grant cannot hold or commit). The citizen lost the chosen slot and minutes."""
+    bk, spec = brain._OUR_AGENTS["booking_centre"], brain._OUR_AGENTS["specialist"]
+    rx = "prescription_number-RX-74"
+
+    def wipe():
+        for name in ("_SENT", "_HELD_FOR", "_ANSWERED", "_ANSWERED_WHERE", "_WHERE_OF", "_RECEIPT_SENT", "_RECEIPTS"):
+            getattr(brain, name).clear()
+
+    case = [
+        row(CITIZEN, bk, f"need.request lang=it prescription_number={rx}", 0),
+        row(LEDGER, bk, f"prescription prescription_number={rx} procedure=VIS-CARD priority=D state=issued", 1),
+        row(LEDGER, bk, "agenda agenda_now=2026-11-02T07:00:00Z", 2),
+        row(bk, CITIZEN, "\n".join(
+            f"offer offer_id=of-S-0{i} slot_id=S-0{i} doctor_id=asst-niguarda-s1 facility={spec} procedure=VIS-CARD "
+            f"agenda_date=2026-11-04T{9 + i:02d}:00:00Z priority=D prescription_number={rx}" for i in range(3)), 3),
+    ]
+    confirm = row(CITIZEN, bk, "confirm offer_id=of-S-00 consent_ref=cons-N-1-booking", 4)
+    # (1) as the process starts: the confirm of a slot of our own specialist goes to the specialist
+    wipe()
+    start = brain._DESK_HOLDS[0] = DESK_HOLDS_AT_START
+    city = FakeCity(bk)
+    await brain._desk(city, confirm, [*case, confirm], hold_self=False, fixed=None)
+    check("BK-75 all'avvio il booking non fa hold: il confirm va subito alla struttura",
+          start is False and not any(t.startswith("hold ") for t in to(city, LEDGER))
+          and any(t.startswith("confirm ") and "slot_id=S-00" in t and "consent_ref=cons-N-1-booking" in t
+                  for t in to(city, spec)), (start, city.sent))
+    # (2) a hold already on its way (sent by the build before) comes back refused for permissions
+    wipe()
+    brain._DESK_HOLDS[0] = True
+    brain._HELD_FOR["S-00"] = ("N-1", 0.0)
+    hold = row(bk, LEDGER, f"hold slot_id=S-00 citizen={CITIZEN} prescription_number={rx} consent_ref=cons-N-1-booking", 5)
+    asked = row(bk, CITIZEN, "data.request purpose=booking fields=address,disability,car Mentre blocco il suo appuntamento", 6)
+    denied = row(LEDGER, bk, "refused hold slot_id=S-00 reason=grant_permission_denied", 7)
+    city = FakeCity(bk)
+    chat = [*case, confirm, hold, asked, denied]
+    await brain._desk(city, denied, chat, hold_self=False, fixed=None)
+    out = to(city, CITIZEN)
+    check("BK-75 hold rifiutato per permessi: nessun cancel al cittadino, il confirm passa alla struttura",
+          not any(t.startswith("cancel ") for t in out) and not any(t.startswith("offer ") for t in out)
+          and any(t.startswith("confirm ") and "slot_id=S-00" in t and "consent_ref=cons-N-1-booking" in t
+                  and f"citizen={CITIZEN}" in t for t in to(city, spec))
+          and brain._DESK_HOLDS[0] is False and "S-00" not in brain._HELD_FOR, city.sent)
+    before = len(city.sent)
+    await brain._desk(city, denied, chat, hold_self=False, fixed=None)
+    check("BK-75 lo stesso rifiuto letto due volte: un solo confirm alla struttura", len(city.sent) == before, city.sent[before:])
+    brain._DESK_HOLDS[0] = False
+    wipe()
+
+
 async def test_x49(check) -> None:
     """X-49: the address is asked when the citizen confirms, before the booking.receipt."""
     BKX, HOSP = "agent:bk", "agent:jdj692g4145e"
@@ -800,6 +853,7 @@ async def test_x49(check) -> None:
         brain._WHERE_OF.clear()
         brain._RECEIPT_SENT.clear()
         brain._RECEIPTS.clear()
+        brain._DESK_HOLDS[0] = True  # BK-75: BK-57 is off when the process starts; this test is its path
 
     for lang, word in (("it", "Mentre blocco"), ("en", "While I lock")):
         fresh()
@@ -2162,6 +2216,7 @@ async def main() -> int:
 
     await test_bk62(check)
     await test_bk72(check)
+    await test_bk75(check)
     await test_ops13(check)
     await test_p_magesh_26(check)
     await test_bk63(check)
