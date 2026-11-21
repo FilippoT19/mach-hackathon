@@ -5,6 +5,24 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 
 <!-- aggiungi qui sotto -->
 
+### [ ] P-magesh-18: centro prenotazioni, livello 6: il cittadino rifiuta il sesso del medico (`reason=gender`) e il giorno (`reason=day`) solo nel cancel, e noi rioffriamo lo stesso medico
+- Journey: N-2026-11-02-890912000304 (L6), N-2026-11-02-8909120002440003 (L6), N-2026-11-02-8909120002280005 (L5), ondata W01QQQ (ruolo: booking_centre). Caso particolare di P-francesco-49 (motivo del cancel ignorato), che non parla del sesso.
+- Cosa fa il cittadino: non dice mai il sesso del medico che vuole (nessun `gender=` nella need.request, niente nel testo). Lo dice solo annullando le nostre offerte:
+  - 304: "posso solo lunedì o mercoledì"; riceve 5 offerte, tutte con `asst-niguarda-h1` (donna); le annulla tutte e 5 con `reason=gender`.
+  - 0002440003: riceve h1 mar 10:30, h3 mar 10:30, h1 mar 12:00; annulla h1 `reason=gender`, h3 `reason=day`, h1 `reason=gender`.
+  - 0228: 4 offerte, tutte h1 lunedì, tutte annullate `reason=gender`.
+- Cosa risponde oggi il nostro agente: niente dopo i cancel (era il silenzio di P-magesh-17, già risolto). Ma anche con P-17 online, `_gender` (`30_booking.py:219`) legge solo `gender=`/`gender_preference=` scritti dal cittadino, e il motivo del cancel non entra in `fitting`. Il giro dopo offre quindi altri posti di h1 (304: h1 ha ancora lunedì e mercoledì), arrivano nuovi `reason=gender`, e dopo 2 giri locali (BK-29) va in lista d'attesa.
+- Review / punti persi: `citizen.booking_centre.wrong_outcome` −1 `no_booking` in tutti e tre, con `answer_set` non vuoto (0002440003: size 130). Fatto `offer_claim ok=true`, quindi le offerte erano vere ma fuori da `S`. Gp +2 in tutti e tre.
+- Cosa dovrebbe fare:
+  1. Dai cancel del cittadino sulle nostre offerte ricavare i vincoli: `reason=gender` → il sesso del medico di quell'offerta (`doctor_gender` se c'è, altrimenti la tabella `_DOCTORS`) è **escluso**; `reason=day` → l'`agenda_day` di quell'offerta è **escluso**.
+  2. Nel giro di sostituzione, scartare gli slot con medico del sesso escluso o in un giorno escluso. Qui serve un filtro, non un ordinamento: il cittadino ha detto che quello slot è fuori da `S`. P-francesco-31 resta valido per il `gender=` scritto, che è solo una preferenza.
+  3. Se un solo sesso è escluso, l'altro diventa il `gender` del caso: ordina gli slot, va nella need.request cross-ASST (`gender=` e `gender_preference=`, X-47) e ordina le offerte dei partner.
+  4. Il tetto di 2 giri (BK-29) non deve chiudere con la lista d'attesa se il secondo giro ha nuovi vincoli e restano slot compatibili (come in P-francesco-49).
+  - Esiti attesi: 304 (lun/mer, no donna) → h2 mercoledì (uomo, wed/thu/fri). 0002440003 (no donna, no martedì) → h2 mer/gio/ven o h3 giovedì. 0228 → h2 o h3. Se non resta nessuno slot locale, si passa al cross-ASST o alla lista d'attesa (0, non −1).
+- Test a parole: "dato un caso con offerte h1 tutte annullate `reason=gender` e la pagina slot con h1 e h2 di mercoledì, mi aspetto un solo messaggio `offer` con solo h2". Secondo test: "dato un cancel `reason=day` su un'offerta di martedì, nel giro dopo nessuno slot di martedì".
+- Nota a parte (gp, da non correggere nel codice): in 278, 281 e 286 (L6) il cittadino dice al gp "mal di schiena" (VIS-FIS B) e poi al booking parla di ginocchio (281, 286) o di cuore/cardiologia (278). Il giudice dà al gp `wrong_priority`/`wrong_procedure` −1. Il gp non può saperlo dal testo: sembra un errore del modello del cittadino (`city_fault`). Da segnalare ai mod dalla console, non da correggere.
+- Priorità secondo te: P1 (3 su 9 falliti del livello 6, −1 ognuno, e il caso torna dopo 15 minuti)
+
 ### [x] P-magesh-17: centro prenotazioni muto dopo le 03:00 UTC (deploy in pausa): nessuna risposta alla need.request e ai cancel
 - Journey: N-2026-11-02-8909120001310003 (L3), N-2026-11-02-8909120002280005 (L5), N-2026-11-02-890912000278 (L6), ondata W01QQQ — ruolo: booking_centre
 - Cosa fa il cittadino:
