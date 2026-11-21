@@ -356,11 +356,28 @@ def _refused_slots(chat: list[Message], agent: str, sent: _Sent) -> set[str]:
     """P-magesh-9: slots whose hold or commit the Ledger refused to us. Never offered again."""
 
     found = {note[8:] for note in sent.notes if note.startswith("refused:")}
-    for row in chat:
-        if row.sender == LEDGER and row.recipient == agent and first_word(row.text) == "refused":
-            slot = fields_of(row.text).get("slot_id", "")
-            if slot and words(row.text) & {"hold", "commit"}:
-                found.add(slot)
+    for index, row in enumerate(chat):
+        if row.sender != LEDGER or row.recipient != agent or first_word(row.text) != "refused":
+            continue
+        kind = words(row.text)
+        if not kind & {"hold", "commit"}:
+            continue
+        fields = fields_of(row.text)
+        slot = fields.get("slot_id", "")
+        if not slot:
+            # FA-21 (N-2026-11-02-890912000256): a STALE_FENCE/EXPIRED refusal of a commit names
+            # only the hold, or nothing. Find the slot from our hold (or our last commit before it),
+            # from history, so another process or a later turn also knows the slot is gone.
+            hold_id = fields.get("hold_id", "")
+            if not hold_id and "commit" in kind:
+                hold_id = next(
+                    (fields_of(prev.text).get("hold_id", "") for prev in reversed(chat[:index])
+                     if prev.sender == agent and prev.recipient == LEDGER and first_word(prev.text) == "commit"),
+                    "",
+                )
+            slot = _hold_slot(chat, agent, hold_id) if hold_id else ""
+        if slot:
+            found.add(slot)
     return found
 
 

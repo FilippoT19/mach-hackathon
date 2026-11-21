@@ -1004,6 +1004,38 @@ async def main() -> int:
     await brain._on_confirm(c, chat[-1], chat, hold_self=True)
     check("P-magesh-9 seconda conferma dello slot rifiutato: risposta al cittadino, nessun secondo hold",
           any("non è più disponibile" in t for t in to(c, CITIZEN)) and not any(t.startswith("hold ") for t in to(c, LEDGER)), c.sent)
+    # FA-21 (N-2026-11-02-890912000256, consultorio): the commit is refused STALE_FENCE with only
+    # the hold id (or nothing). The slot must still count as refused, also in a fresh process:
+    # no re-offer of it, and the citizen's repeated confirm gets an answer, not silence.
+    for refusal in ("refused commit code=STALE_FENCE detail=expired hold_id=h-1",
+                    "refused commit code=STALE_FENCE detail=expired"):
+        base = [
+            (CITIZEN, FAMX, "vorrei una visita al consultorio"),
+            (LEDGER, FAMX, f"agenda agenda_now={NOW}"),
+            (LEDGER, FAMX, world),
+            (FAMX, CITIZEN, offers),
+            (CITIZEN, FAMX, "confirm offer_id=of-s1500 consent_ref=C-1"),
+            (FAMX, LEDGER, f"hold slot_id=s1500 citizen={CITIZEN} consent_ref=C-1"),
+            (LEDGER, FAMX, "held hold_id=h-1 slot_id=s1500 fence=3"),
+            (FAMX, LEDGER, "commit hold_id=h-1 consent_ref=C-1 fence=3"),
+            (LEDGER, FAMX, refusal),
+        ]
+        chat = [row(a2, b2, t2, i) for i, (a2, b2, t2) in enumerate(base)]
+        brain._SENT.clear()
+        c = FakeCity(FAMX)
+        await brain._on_refused(c, chat[-1], chat, hold_self=True)
+        out = to(c, CITIZEN)
+        again = [t for t in out if t.startswith("offer ")]
+        check(f"FA-21 {refusal[:36]}: nuova offerta senza lo slot rifiutato",
+              len(again) == 1 and "slot_id=s1500" not in again[0], out)
+        more = base + [(FAMX, CITIZEN, t) for t in out] + [(CITIZEN, FAMX, "confirm offer_id=of-s1500 consent_ref=C-1")]
+        chat = [row(a2, b2, t2, i) for i, (a2, b2, t2) in enumerate(more)]
+        brain._SENT.clear()  # another process: only the history knows the refusal
+        c = FakeCity(FAMX)
+        await brain._on_confirm(c, chat[-1], chat, hold_self=True)
+        check(f"FA-21 {refusal[:36]}: conferma ripetuta, risposta e nessun hold sul posto morto",
+              any("non è più disponibile" in t for t in to(c, CITIZEN))
+              and not any(t.startswith("hold ") for t in to(c, LEDGER)), c.sent)
     # 26. X-40/41, FA-20, BK-24, CO-20.
     def cm(t, to="agent:x"):
         return Message(type="chat", sender=CITIZEN, msg_id="m40", need_id="N-40", recipient=to, body={"text": t})
