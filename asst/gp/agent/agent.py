@@ -2055,6 +2055,13 @@ async def _advance_alone(
                     else "Ho la sua richiesta e sto controllando tutti i posti liberi per lei; "
                     "le riscrivo tra un momento.",
                 )
+        # BK-37: the Ledger's next page may never open a turn (the push is dropped), so the
+        # citizen waited for ever after "I am checking". Read it back now and go on in this turn.
+        nxt = page + 1
+        if _slots_page(chat, agent, nxt) is None:
+            chat = await _until(city, message.need_id, chat, lambda rows: _slots_page(rows, agent, nxt) is not None)
+        if _slots_page(chat, agent, nxt) is not None and _page(_latest_slots(chat) or "")[0] == nxt:
+            await _advance_alone(city, message, chat, key, fixed=fixed, replacing=replacing)
         return
     # Search another ASST only after the complete local catalogue has been exhausted.
     if replacing:
