@@ -28,9 +28,12 @@ from city_sdk.city import LEDGER, CapError, City, Message, Need, OutOfScope, cli
 
 ROLES = ("booking_centre", "gp", "hospital", "specialist_care", "family_counseling")
 _MAX_PAGE = 20  # BK-38 (P-magesh-8): read the whole local catalogue before going cross-ASST
-# Four agenda hours is about half a minute of real time at 480x, so a slot is still
-# ahead when the citizen decides. One hour was already past by then.
+# The agenda runs 60x (e19: 16 agenda hours = 16 real minutes), so four agenda hours are four
+# real minutes: the time the citizen and the Ledger need to confirm and hold a slot.
 _LEAD = timedelta(hours=4)
+# MACH-1.2 (3): one hop agent -> citizen -> agent takes ~3 real minutes = 3 agenda hours tonight;
+# a slot nearer than this is past when the citizen confirms (reason=past). U keeps _LEAD (same day).
+_LEAD_BOOK = timedelta(hours=5)
 # Doctor key (the last segment of doctor_id) -> languages, gender, days. ``*`` is the ASST's
 # rare language. The Ledger's slot line names the doctor; it does not repeat this table.
 _DOCTORS: dict[str, tuple[frozenset[str], str, frozenset[str]]] = {
@@ -61,7 +64,9 @@ _RED_FLAGS = (
 )
 _DEADLINE_DAYS = {"B": 2, "D": 5}
 _EMERGENCY_NEEDS: set[str] = set()
+_EARLY_ACK: dict[str, "asyncio.Task[bool]"] = {}  # BK-61: msg_id -> cancel.ack sent before the history read
 _EARLY_LLM: dict[str, "asyncio.Task[str | None]"] = {}  # OPS-09: msg_id -> symptom check started early
+_EARLY_112: set[str] = set()  # GP-17: needs whose 112 left before the history read
 _RED_FLAGS_MORE = ("sanguinamento abbondante", "heavy bleeding", "non riesco a respirare", "can't breathe", "cannot breathe", "svenut", "fainted")
 _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
 _LOG = logging.getLogger("care")
@@ -102,6 +107,9 @@ async def main(need: Need, city: City) -> None:
     # it in words and goes on with the journey (red flag first).
     if getattr(need, "is_emergency", False) is True and message.sender.startswith("citizen:"):
         _EMERGENCY_NEEDS.add(message.need_id or message.msg_id)
+        if len(_EMERGENCY_NEEDS) > 4 * _SENT_NEEDS:  # BK-61: bounded memory
+            _EMERGENCY_NEEDS.clear()
+            _EMERGENCY_NEEDS.add(message.need_id or message.msg_id)
     # OPS-08: a message from another agent with no key=value token is not part of any MACH
     # exchange (the deploy conformance probe "visit" is one). End the turn at once: the Relay's
     # custody.ack check waits ~5 s, and a slow remote history read made the turn miss it.
@@ -110,6 +118,20 @@ async def main(need: Need, city: City) -> None:
             and "=" not in text and text != "__error__"):
         _LOG.info("ops08.skip sender=%s", message.sender[:40])
         return
+    # GP-17 (wave W01QQQ, L1): "forte dolore al petto" got the 112 after 278 s or never: the
+    # turn waited for the history read (minutes under load) and the Index. The judge counts only
+    # `escalate.emergency` (emergency.no_escalation -2). A red flag in the citizen's own text
+    # needs nothing else: the 112 leaves now, once per need; the turn then adds the rest.
+    if message.sender.startswith("citizen:") and text and first_word(text) != "data.response" and _emergency(message):
+        key = message.need_id or message.msg_id
+        if key not in _EARLY_112:
+            if len(_EARLY_112) > 4 * _SENT_NEEDS:
+                _EARLY_112.clear()
+            _EARLY_112.add(key)
+            hospital = _OUR_AGENTS.get("hospital", "")
+            await _say(city, message.sender, _escalate_text(
+                message, _lang([message]) != "it",
+                told=None if not hospital or hospital == city.agent_id else False))
     # OPS-09: the GP's symptom check (city.llm, up to 4 s) needs only the citizen's text, so it
     # runs while the case history is read instead of after it. _gp() takes the result.
     early = None
@@ -117,12 +139,23 @@ async def main(need: Need, city: City) -> None:
         early = asyncio.get_running_loop().create_task(
             _llm_symptom(city, message.text, emergency_only=_symptom(message) is not None))
         _EARLY_LLM[message.msg_id] = early
+    # BK-61 (journey 000304): five cancels got no answer in five minutes, each turn was waiting
+    # for its history read. The cancel.ack needs only the citizen's text: it leaves at once.
+    early_ack = None
+    if role_of() == "booking_centre" and _early_cancel(message):
+        early_ack = asyncio.get_running_loop().create_task(_say(city, message.sender, _cancel_ack_text(
+            fields_of(message.text).get("offer_id", ""), _lang([message]) != "it")))
+        _EARLY_ACK[message.msg_id] = early_ack
     try:
+        _remember_ledger([message], city.agent_id)  # BK-67: a Ledger push is kept before anything else
         case = await city.history(need_id=message.need_id)
+        _remember_ledger(case, city.agent_id)
         await handle(role_of(), city, message, case)
     finally:
         if early is not None and _EARLY_LLM.pop(message.msg_id, None) is not None:
             early.cancel()
+        if early_ack is not None and _EARLY_ACK.pop(message.msg_id, None) is not None:
+            await early_ack  # the turn took another road: the ack still reaches the citizen
 
 
 def _asks_address(message: Message) -> bool:

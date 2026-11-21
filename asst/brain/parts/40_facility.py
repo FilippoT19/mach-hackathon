@@ -197,6 +197,11 @@ def _our_commit(chat: list[Message], agent: str, hold_id: str) -> bool:
     return False
 
 
+# FA-21 (0308): under load the held line came after the 12 s wait, so no commit left and the hold
+# expired 10 minutes later. A hold lives minutes: wait for its line up to this many seconds.
+_HOLD_WAIT = 30.0
+
+
 async def _finish_booking(
     city: City, message: Message, chat: list[Message], slot: str, *, hold_self: bool,
     before: "asyncio.Future | None" = None,
@@ -207,7 +212,7 @@ async def _finish_booking(
     address question). It runs while the held line is read and ends before the next message."""
 
     found = await _await_line(
-        city, message.need_id, chat, "held", f"slot_id={slot}", op="hold",
+        city, message.need_id, chat, "held", f"slot_id={slot}", op="hold", seconds=_HOLD_WAIT,
         refusal_matches=lambda row: row.recipient == city.agent_id
         and fields_of(row.text).get("slot_id", slot) == slot,
     )
@@ -223,21 +228,23 @@ async def _finish_booking(
     if not await _on_held(city, reply, fresh):
         return
     hold_id = fields_of(reply.text)["hold_id"]
-    done = await _await_line(
-        city, message.need_id, fresh, "committed", f"booking_id={hold_id}", op="commit",
-        refusal_matches=lambda row: row.recipient == city.agent_id
-        and fields_of(row.text).get("slot_id", slot) == slot
-        and fields_of(row.text).get("hold_id", hold_id) == hold_id,
-    )
-    if done is None:
-        _LOG.info("care.commit.missing", extra={"need_id": (message.need_id or "")[:48]})
-        return
-    reply, fresh = done
-    if first_word(reply.text) == "committed":
-        await _on_committed(city, reply, fresh)
-        return
-    if first_word(reply.text) == "refused":
-        await _on_refused(city, reply, fresh, hold_self=hold_self, slot=slot, hold_id=hold_id)
+    for _attempt in range(2):  # BK-62: a commit refused for its fence is sent once more
+        done = await _await_line(
+            city, message.need_id, fresh, "committed", f"booking_id={hold_id}", op="commit", seconds=_HOLD_WAIT,
+            refusal_matches=lambda row: row.recipient == city.agent_id
+            and fields_of(row.text).get("slot_id", slot) == slot
+            and fields_of(row.text).get("hold_id", hold_id) == hold_id,
+        )
+        if done is None:
+            _LOG.info("care.commit.missing", extra={"need_id": (message.need_id or "")[:48]})
+            return
+        reply, fresh = done
+        if first_word(reply.text) == "committed":
+            await _on_committed(city, reply, fresh)
+            return
+        if first_word(reply.text) != "refused" or not await _on_refused(
+                city, reply, fresh, hold_self=hold_self, slot=slot, hold_id=hold_id):
+            return
 
 
 async def _on_held(city: City, message: Message, chat: list[Message]) -> bool:
@@ -290,6 +297,7 @@ async def _on_committed(city: City, message: Message, chat: list[Message]) -> No
     if not booking_id or not ledger_ref:
         return
     agent = city.agent_id
+    _HELD_FOR.pop(fields.get("slot_id", ""), None)  # BK-63: booked; the catalogue no longer lists it
     async with _receipt_turn(city, message, chat, booking_id) as fresh:
         if fresh is None:
             return
@@ -316,6 +324,16 @@ async def _on_committed(city: City, message: Message, chat: list[Message]) -> No
                 return
             sender = next(iter(centres), "")
         target = sender or _citizen(fresh)
+        if (target and target.startswith("citizen:") and agent == _OUR_AGENTS["booking_centre"]
+                and not _we(fresh, agent, token, to=target, word="booking.receipt")):
+            # BK-61: the booking centre held this slot itself (BK-57). The citizen gets the same
+            # receipt as when the facility books: sentence, GP notice, route, what to bring.
+            facility = _BOOKED_AT.get(message.need_id or "") or next(
+                (f.get("facility", "") for row in fresh if row.sender == agent and first_word(row.text) == "offer"
+                 for f in _offer_rows(row.text) if slot and f.get("slot_id") == slot), "")
+            if facility:
+                await _send_forwarded_receipt(city, message, fresh, booking_id, ledger_ref, facility=facility, zone_route=False)
+                return
         if target and await _say(city, target, f"booking.receipt {token} ledger_ref={ledger_ref}"):
             _remember_receipt(agent, message.need_id, booking_id)
 
@@ -357,7 +375,8 @@ _BOOKING_REFUSALS = {"prescription_expired", "consent_missing", "no_capacity"}
 async def _on_refused(
     city: City, message: Message, chat: list[Message], *, hold_self: bool,
     slot: str = "", hold_id: str = "",
-) -> None:
+) -> bool:
+    """A refused hold or commit. True: the commit was sent again (BK-62), nothing is cancelled."""
     agent = city.agent_id
     fields = fields_of(message.text)
     commit_refused = "commit" in words(message.text)
@@ -381,6 +400,30 @@ async def _on_refused(
     reason = (fields.get("reason") or fields.get("code") or "").lower()
     if not re.fullmatch(r"[a-z]+(?:_[a-z0-9]+)*", reason):
         reason = next(iter(words(message.text) & _BOOKING_REFUSALS), "facility_cancelled")
+    if commit_refused and hold_id and "fence" in reason + " " + message.text.lower():
+        # BK-62 (journeys 000149, 000248, 000290): the hold was ours, the commit came back
+        # ``stale_fence`` and the hold expired: three citizens lost a confirmed visit. e19
+        # documents commit without fence: send it once more without, before giving the slot up.
+        notes = _sent(message.need_id or message.msg_id).notes
+        if f"nofence:{hold_id}:{message.msg_id}" in notes:
+            return True  # another turn already answered this same refusal
+        if not any(note.startswith(f"nofence:{hold_id}:") for note in notes):
+            _, consent, number = _booking_of(chat, agent, slot)
+            consent = consent or next(
+                (fields_of(row.text).get("consent_ref", "") for row in reversed(chat)
+                 if row.sender == agent and row.recipient == LEDGER and first_word(row.text) == "commit"
+                 and fields_of(row.text).get("hold_id") == hold_id), "")
+            if consent:
+                notes.add(f"nofence:{hold_id}:{message.msg_id}")
+                parts = ["commit", f"hold_id={hold_id}", f"consent_ref={consent}"]
+                if number:
+                    parts.append(f"prescription_number={number}")
+                if await _say(city, LEDGER, " ".join(parts)):
+                    _LOG.info("bk62.commit_without_fence hold_id=%s", hold_id[:48])
+                    return True
+    held = _HELD_FOR.get(slot)
+    if held and held[0] == (message.need_id or message.msg_id):
+        _HELD_FOR.pop(slot, None)  # BK-63: our hold is gone, the slot is not ours to keep back
     await _cancel_booking(city, chat, slot, reason=reason, hold_id=hold_id if commit_refused else "")
     desk = agent == _OUR_AGENTS["booking_centre"]  # BK-57: the booking centre now holds our slots
     if desk and any(w in reason or w in message.text.lower() for w in _PERMISSION_WORDS):
@@ -399,6 +442,7 @@ async def _on_refused(
             procedure = "CONS-GIN"
         await _advance(city, message, chat, fixed=None if desk else "CONS-GIN", replacing=True,
                        refresh=procedure)
+    return False
 
 
 _CHECKIN_LIMIT = 3
@@ -653,13 +697,23 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
         _PARTNER_DONE.add(request_id)
         await _say(city, message.sender, f"cancel reason=no_availability request_id={request_id} Manca procedure=.")
         return
-    if not _exact(chat, agent, "agenda"):
-        await _say(city, LEDGER, "agenda")
-    await _say(city, LEDGER, f"world procedure={procedure} facility={agent} page=1")
-    chat = await _until(city, message.need_id, chat, lambda rows: _has_agenda(rows) and _latest_slots(rows) is not None)
+    # BK-67 / MACH-1.3 R1: a partner is answered within seconds. Agenda and catalogue the process
+    # already has are used at once; the Ledger is asked again (at most once every two minutes)
+    # only to keep them fresh, and nobody waits for that answer.
+    chat = _with_memory(chat, procedure)
+    known = _has_agenda(chat) and _latest_slots(chat) is not None
+    now_real = time.time()
+    if not known or now_real - _ASKED_AT.get(f"facility:{procedure}", 0.0) >= _REFRESH_EVERY:
+        _note_asked(f"facility:{procedure}", now_real)
+        if not _exact(chat, agent, "agenda"):
+            await _say(city, LEDGER, "agenda")
+        await _say(city, LEDGER, f"world procedure={procedure} facility={agent} page=1")
+    if not known:
+        chat = await _until(city, message.need_id, chat, lambda rows: _has_agenda(rows) and _latest_slots(rows) is not None)
     agenda = _ledger(chat, "agenda")
     now = _when("" if agenda is None else agenda.get("agenda_now", ""))
-    world = _latest_slots(chat)
+    now = _agenda_now(chat, message) or now  # BK-67: a remembered agenda line is minutes (agenda hours) old
+    world = "\n".join(_all_slot_lines(chat, agent)) if known else _latest_slots(chat)
     _PARTNER_DONE.add(request_id)
     picks = []
     if now is not None and world is not None:
@@ -667,7 +721,16 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
             [line for line in world.splitlines() if "slot_id=" in line],
             now=now, priority=priority, lang=fields.get("lang", "it"),
             gender=fields.get("gender_preference") or fields.get("gender") or None, facility=agent, procedure=procedure,
-        )[:_OFFER_MAX]  # BK-55: every fitting slot in one answer
+        )
+        # MACH-1.2 (2): never a slot after the asker's deadline. BK-68 / MACH-1.3 R4: the asker's
+        # times may come without a time zone, and ``after`` (or ``earliest``) opens the window.
+        limit = _when_agenda(fields.get("deadline", ""))
+        if limit is not None:
+            picks = [slot for slot in picks if (_when(slot.get("at", "")) or limit) <= limit]
+        first = _when_agenda(fields.get("after", "") or fields.get("earliest", ""))
+        if first is not None:
+            picks = [slot for slot in picks if (_when(slot.get("at", "")) or first) >= first]
+        picks = picks[:_OFFER_MAX]  # BK-55: every fitting slot in one answer
     if not picks:
         await _say(city, message.sender, f"cancel reason=no_availability request_id={request_id} Al momento non abbiamo posti adatti per {procedure}.")
         return

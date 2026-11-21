@@ -140,7 +140,7 @@ def fresh_world(tag: str, *, local_slots: bool = True) -> BenchWorld:
 
 
 REQUEST = ("Buongiorno, vorrei prenotare la visita need.request lang=it "
-           "prescription_number=prescription_number-RX-B1")
+           "prescription_number=prescription_number-RX-B1 service_type=hospital.physiatry")
 
 
 async def scenarios() -> list[tuple[str, float, list, list[str]]]:
