@@ -2565,6 +2565,91 @@ async def main() -> int:
 
     await test_gp17(check)
 
+    async def test_sp10(check):
+        """SP-10 (e19 "Consenso al referto dello specialista", facility.md point 4)."""
+        from unittest.mock import patch
+
+        spec, ho, gp = "agent:jmjfst55vgjz", "agent:jdj692g4145e", "agent:fddgaqmp6kb0"
+
+        class LedgerCity(FakeCity):
+            """The Ledger answers `report` with `reported` in the case history (as the city does)."""
+
+            def __init__(self, agent_id, chat):
+                super().__init__(agent_id, peers=[Peer(agent_id=gp, role="gp", service="gp", district=5, capabilities=("gp",))])
+                self.rows = list(chat)
+
+            async def say(self, to, text, *, status=None):
+                mid = await super().say(to, text, status=status)
+                self.rows.append(row(self.agent_id, to, text, 100 + len(self.sent)))
+                if to == LEDGER and brain.first_word(text) == "report":
+                    bid = brain.fields_of(text)["booking_id"]
+                    self.rows.append(row(LEDGER, self.agent_id, f"reported booking_id={bid} outcome_code=VISIT", 200 + len(self.sent)))
+                return mid
+
+            async def history(self, peer=None, *, need_id=None):
+                return list(self.rows)
+
+        brain._PEERS.pop("gp", None)
+        brain._LANG_OF.pop("N-1", None)  # an earlier test left this need in English
+        brain._REPORT_FILED.clear()
+        arrive = row(CITIZEN, spec, "checkin booking_id=B-SP Buongiorno, sono arrivato per la visita del cuore", -1)
+        attempt = row(spec, LEDGER, f"checkin booking_id=B-SP citizen={CITIZEN}", 0)
+        checked = row(LEDGER, spec, "checked_in booking_id=B-SP", 1)
+        city = LedgerCity(spec, [arrive, attempt, checked])
+        with patch.object(brain, "_REPORT_SILENCE", 3600.0):
+            await brain.handle("specialist_care", city, checked, [arrive, attempt, checked])
+        out = to(city, CITIZEN)
+        check("SP-10 dopo il check-in: consent purpose=report_sharing al cittadino, nessun report ancora",
+              any(t.startswith("consent purpose=report_sharing Posso condividere il suo referto?") for t in out)
+              and not to(city, LEDGER), city.sent)
+        asked = list(city.rows)
+
+        # (a) consent with consent_ref -> report with that consent_ref, then report.notice to the GP.
+        yes = row(CITIZEN, spec, "consent purpose=report_sharing consent_ref=R-SP", 10)
+        await brain.handle("specialist_care", city, yes, [*asked, yes])
+        check("SP-10 consenso: report al Ledger con il consent_ref del cittadino",
+              to(city, LEDGER) == ["report booking_id=B-SP outcome_code=VISIT consent_ref=R-SP"], city.sent)
+        check("SP-10 consenso: referto condiviso con il gp (report.notice) e report al cittadino",
+              any(t.startswith("report.notice booking_id=B-SP") for t in to(city, gp))
+              and any(t.startswith("report booking_id=B-SP outcome_code=VISIT") for t in to(city, CITIZEN)), city.sent)
+
+        # (b) a no in plain words (no consent_ref) -> filed, not shared: no report.notice.
+        brain._REPORT_FILED.clear()
+        city = LedgerCity(spec, asked)
+        no = row(CITIZEN, spec, "No grazie, preferisco di no", 10)
+        await brain.handle("specialist_care", city, no, [*asked, no])
+        told = [t for t in to(city, CITIZEN) if t.startswith("report booking_id=B-SP")]
+        check("SP-10 rifiuto a parole: report senza consent_ref, nessun report.notice al gp",
+              to(city, LEDGER) == ["report booking_id=B-SP outcome_code=VISIT"] and not to(city, gp), city.sent)
+        check("SP-10 rifiuto: il cittadino sa che il referto è archiviato e non condiviso",
+              len(told) == 1 and "non lo condivido" in told[0], told)
+
+        # (c) silence -> after _REPORT_SILENCE the report is filed, not shared ("Referto mancante" -1).
+        brain._REPORT_FILED.clear()
+        city = LedgerCity(spec, [arrive, attempt, checked])
+        with patch.object(brain, "_REPORT_SILENCE", 0.01):
+            await brain.handle("specialist_care", city, checked, [arrive, attempt, checked])
+            await asyncio.sleep(0.2)
+        check("SP-10 silenza del cittadino: referto archiviato comunque, senza consent_ref",
+              to(city, LEDGER) == ["report booking_id=B-SP outcome_code=VISIT"] and not to(city, gp), city.sent)
+
+        # (d) a consent_ref for another purpose is not consent to share the report.
+        brain._REPORT_FILED.clear()
+        city = LedgerCity(spec, asked)
+        other = row(CITIZEN, spec, "consent purpose=booking consent_ref=cons-N-1-booking", 10)
+        await brain.handle("specialist_care", city, other, [*asked, other])
+        check("SP-10 consent_ref di un altro scopo: referto non condiviso",
+              to(city, LEDGER) == ["report booking_id=B-SP outcome_code=VISIT"] and not to(city, gp), city.sent)
+
+        # (e) the hospital files no report and asks no report consent.
+        city = LedgerCity(ho, [])
+        h_checked = row(LEDGER, ho, "checked_in booking_id=B-HO", 1)
+        await brain.handle("hospital", city, h_checked, [h_checked])
+        check("SP-10 must not break: l'ospedale non chiede il consenso al referto",
+              not any("report_sharing" in t for _, t in city.sent) and not to(city, LEDGER), city.sent)
+
+    await test_sp10(check)
+
     async def test_mach2(check):
         """MACH-2.0 (red-agent): ring R17, round of 12 R3, mach/lease tokens, R7, R13, R20, R21."""
         from unittest.mock import patch

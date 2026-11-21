@@ -104,6 +104,10 @@ class World:
         elif head == "data.request":
             self.queue.append(self.post(self.citizen, msg.sender, "data.response address=Via_Ornato_10 lat=45.519 "
                                         "lon=9.19 disability=none car=false", msg.need_id))
+        elif head == "consent" and f.get("purpose") == "report_sharing":
+            # e19: the citizen answers with a consent whose text carries consent_ref=<id>.
+            self.queue.append(self.post(self.citizen, msg.sender, f"consent purpose=report_sharing "
+                                        f"consent_ref=rs-{msg.need_id}", msg.need_id))
         elif head == "booking.receipt" and self.facility:
             self.queue.append(self.post(self.citizen, self.facility, f"checkin booking_id={f['booking_id']}", msg.need_id))
 
@@ -183,6 +187,15 @@ def checks(w: World) -> list[tuple[str, bool, str]]:
                 and "ledger_ref=" in m.text for m in log), ""))
     route = [m for m in log if m.sender == BK and m.recipient == cz and " km " in m.text]
     out.append(("X-31 route message arrives", bool(route), ""))
+    if any(m.sender == SPEC and m.recipient == cz for m in log):
+        # SP-10: the specialist asks report_sharing, files the report with the citizen's consent_ref.
+        out.append(("SP-10 specialist asks consent purpose=report_sharing", any(
+            m.sender == SPEC and m.recipient == cz and m.text.startswith("consent purpose=report_sharing")
+            for m in log), ""))
+        out.append(("SP-10 report filed with consent_ref and sent to the citizen", any(
+            m.sender == SPEC and m.recipient == LEDGER and m.text.startswith("report ") and "consent_ref=" in m.text
+            for m in log) and any(m.sender == SPEC and m.recipient == cz and m.text.startswith("report ")
+                                   for m in log), ""))
     out.append(("no simulator errors / crashes", not w.errors, "; ".join(w.errors)))
     return out
 
