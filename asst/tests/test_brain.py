@@ -722,6 +722,68 @@ async def test_ops13(check) -> None:
         brain._DESK_HOLDS[0] = True
 
 
+async def test_p_magesh_26(check) -> None:
+    """P-magesh-26 (N-...0001240009): consent question, then silence -> waiting list on its own."""
+    BKX = "agent:bk"
+    RX = "prescription_number-RX-126"
+    base = [
+        (CITIZEN, BKX, f"need.request prescription_number={RX} lang=en service_type=hospital.physiatry Back pain."),
+        (LEDGER, BKX, f"prescription prescription_number={RX} procedure=VIS-FIS priority=B state=issued"),
+        (LEDGER, BKX, f"agenda agenda_now={NOW}"),
+        (LEDGER, BKX, "slots page=1/1\nslot_id=S-FAR doctor_id=asst-niguarda-h2 facility=agent:hos procedure=VIS-FIS at=2026-11-25T09:00:00Z day=wed free=1"),
+    ]
+    rows = [row(s, r, t, i) for i, (s, r, t) in enumerate(base)]
+
+    class HistCity(FakeCity):
+        def __init__(self, agent_id, history):
+            super().__init__(agent_id)
+            self._history = history
+
+        async def history(self, peer=None, *, need_id=None):
+            return [*self._history, *[row(BKX, to_, text, 100 + n) for n, (to_, text) in enumerate(self.sent)]]
+
+    async def run(extra_after_question):
+        brain._SENT.clear()
+        brain._CROSS_TIMERS.clear()
+        city = HistCity(BKX, rows)
+        await brain._advance_alone(city, rows[0], rows, "N-1", fixed=None, replacing=False)
+        asked = [t for t in to(city, CITIZEN) if t.startswith("consent purpose=cross_asst")]
+        city._history = rows + [row(s, r, t, 50 + i) for i, (s, r, t) in enumerate(extra_after_question)]
+        await asyncio.gather(*list(brain._CROSS_TIMERS))
+        return city, asked
+
+    old = brain._CROSS_SILENCE
+    brain._CROSS_SILENCE = 0.01
+    try:
+        city, asked = await run([])
+        lists = [t for t in to(city, CITIZEN) if t.startswith("offer offer_id=wl-N-1 waiting_list=true")]
+        check("P-magesh-26 domanda di consenso cross-ASST mandata", len(asked) == 1, city.sent)
+        check("P-magesh-26 silenzio: una sola lista d'attesa, in inglese, con procedura e priorità",
+              len(lists) == 1 and "procedure=VIS-FIS" in lists[0] and "priority=B" in lists[0]
+              and "waiting list" in lists[0], city.sent)
+
+        city, _ = await run([(CITIZEN, BKX, "consent purpose=cross_asst consent_ref=cons-N-1-cross_asst")])
+        check("P-magesh-26 consenso arrivato in tempo: nessuna lista d'attesa dal timer",
+              not any("waiting_list=true" in t for t in to(city, CITIZEN)), city.sent)
+
+        city, _ = await run([(CITIZEN, BKX, "Hello? Are you there?")])
+        check("P-magesh-26 il cittadino ha scritto: il timer non fa niente (decide il suo turno)",
+              not any("waiting_list=true" in t for t in to(city, CITIZEN)), city.sent)
+
+        brain._SENT.clear()
+        brain._CROSS_TIMERS.clear()
+        city = HistCity(BKX, rows)
+        await brain._advance_alone(city, rows[0], rows, "N-1", fixed=None, replacing=False)
+        brain._cross_timer(city, rows[0], "N-1", CITIZEN, "VIS-FIS", "B", rows)
+        await asyncio.gather(*list(brain._CROSS_TIMERS))
+        check("P-magesh-26 due timer sullo stesso caso: una sola lista d'attesa",
+              sum("waiting_list=true" in t for t in to(city, CITIZEN)) == 1, city.sent)
+    finally:
+        brain._CROSS_SILENCE = old
+        brain._SENT.clear()
+        brain._CROSS_TIMERS.clear()
+
+
 async def test_x49(check) -> None:
     """X-49: the address is asked when the citizen confirms, before the booking.receipt."""
     BKX, HOSP = "agent:bk", "agent:jdj692g4145e"
@@ -1969,6 +2031,7 @@ async def main() -> int:
     await test_bk62(check)
     await test_bk72(check)
     await test_ops13(check)
+    await test_p_magesh_26(check)
     await test_bk63(check)
 
     async def test_bk67(check):
