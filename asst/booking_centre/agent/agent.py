@@ -1518,7 +1518,31 @@ def _sent(key: str) -> _Sent:
     return entry
 
 
-def _cross_question(chat: list[Message]) -> str:
+# X-51: hospital of the ASST whose h3 physiatrist speaks a rare language (ids from the groups).
+_RARE_LANG_HOSPITAL = {
+    "ka": ("agent:h6r1v45esk77", "Giambellino", "georgiano", "Georgian"),
+    "ur": ("agent:gpr1zqe343gb", "Nord", "urdu", "Urdu"),
+    "fr": ("agent:x0vr9rbwpesr", "Corvetto", "francese", "French"),
+    "ja": ("agent:nanpr5mgm2py", "Lambrate", "giapponese", "Japanese"),
+    "si": ("agent:xtj1dk9x3qej", "Greco", "singalese", "Sinhala"),
+    "ti": ("agent:bb01ggxymm05", "Bicocca", "tigrino", "Tigrinya"),
+}
+
+
+def _rare_hospital(chat: list[Message], procedure: str | None) -> tuple[str, str, str, str] | None:
+    if procedure != "VIS-FIS":
+        return None
+    return _RARE_LANG_HOSPITAL.get(_lang(chat) or "")
+
+
+def _cross_question(chat: list[Message], procedure: str | None = None) -> str:
+    rare = _rare_hospital(chat, procedure)
+    if rare:
+        return (f"May I ask the ASST {rare[1]} for you? Their physiatrist speaks {rare[3]}. "
+                "Please reply with your consent reference."
+                if _lang(chat) != "it" else
+                f"Posso chiedere per lei all'ASST {rare[1]}, dove il fisiatra parla {rare[2]}? "
+                "Mi risponda con il riferimento del suo consenso.")
     return ("May I look for an appointment in another ASST? Please reply with your consent reference."
             if _lang(chat) != "it" else
             "Posso cercare un appuntamento in un'altra ASST? Mi risponda con il riferimento del suo consenso.")
@@ -1545,7 +1569,7 @@ async def _cross_asst(
         ):
             sent.cross_asked = True
             return True
-        if await _say(city, citizen, "consent purpose=cross_asst " + _cross_question(chat)):
+        if await _say(city, citizen, "consent purpose=cross_asst " + _cross_question(chat, procedure)):
             sent.cross_asked = True
         return True
     if sent.cross_sent:
@@ -1562,14 +1586,17 @@ async def _cross_asst(
         return False
     request_id = f"cross-{message.need_id or message.msg_id}"
     sent_any = False
-    for peer in peers or []:
-        target = _peer_id(peer)
+    rare = _rare_hospital(chat, procedure)
+    ordered: list[object] = [rare[0]] if rare else []  # X-51: the rare-language ASST first
+    for peer in [*ordered, *(peers or [])]:
+        target = peer if isinstance(peer, str) else _peer_id(peer)
         if not target or target == city.agent_id or _ours(target) or target in sent.cross_peers:
             continue
-        role = _peer_value(peer, "role")
-        capabilities = _peer_value(peer, "capabilities")
-        if role and role not in _FACILITY_ROLES and service_type not in str(capabilities):
-            continue
+        if not isinstance(peer, str):
+            role = _peer_value(peer, "role")
+            capabilities = _peer_value(peer, "capabilities")
+            if role and role not in _FACILITY_ROLES and service_type not in str(capabilities):
+                continue
         parts = [
             "need.request",
             f"service_type={service_type}",
@@ -1771,7 +1798,8 @@ async def _desk(
         )
         if purpose == "cross_asst" or cross_pending:
             if _cross_consent(chat, city.agent_id)[0] is None:
-                await _say(city, message.sender, "consent purpose=cross_asst " + _cross_question(chat))
+                await _say(city, message.sender, "consent purpose=cross_asst " + _cross_question(
+                    chat, (_prescription_reply(chat, _number(chat)) or {}).get("procedure")))
             else:
                 await _advance(city, message, chat, fixed=fixed, replacing=False)
             return
