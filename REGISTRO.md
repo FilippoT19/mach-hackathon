@@ -28,3 +28,5 @@ controllo se i gruppi "online" hanno un percorso nuovo che li verifica.
 3. CASI.md dice **cosa** abbiamo cambiato; questo registro dice **se ha funzionato**.
 
 | G7 | Booking muto fino a 48 s su catalogo lungo, consenso in italiano a cittadino inglese | 0164 | BK-30 | verificato | 000176, 650004: "sto controllando" subito |
+| G8 | Consenso cross_asst dato come data.response: domanda ripetuta (000175, 21 msg) | 000175 | BK-36 | online (booking 1.0.11) | — |
+| G9 | Mappa: fermata sempre M5 Ca Granda, porte di riserva sbagliate | — | X-50 | online (booking 1.0.12) | — |

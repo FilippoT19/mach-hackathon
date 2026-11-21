@@ -1,7 +1,7 @@
 agent_id: agent:fn64xfq2jft4
 team: team:polimi
 name: booking_centre
-version: 1.0.11
+version: 1.0.13
 cap_versions:
   - "1.0"
 profiles:

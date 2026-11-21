@@ -230,7 +230,23 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     emergency = _emergency(message)
     code = None if emergency else _symptom(message)
     if not emergency and code is None and "prescription_number" in fields:
-        await _renew_prescription(city, message, chat, fields["prescription_number"])
+        number = fields["prescription_number"]
+        wants = re.search(r"rinnov|scadut|renew|expired|nuova ricetta|new prescription", message.text.lower())
+        wants = wants or any(
+            row.sender == LEDGER and number in row.text
+            and re.search(r"expired|scadut|used|PRESCRIPTION_EXPIRED", row.text) for row in chat
+        )
+        ours = _we(chat, agent, f"prescription_number={number}", to=message.sender, word="prescription")
+        if ours and not wants:
+            # P-francesco-37: a valid prescription we just issued is not a renewal request.
+            if not _we(chat, agent, "", to=message.sender, word="prescription.valid"):
+                en = _lang([*chat, message]) != "it"
+                await _say(city, message.sender, f"prescription.valid prescription_number={number} " + (
+                    "Your prescription is valid: please use it with the booking centre to book your visit."
+                    if en else
+                    "La sua ricetta è valida: la usi con il centro prenotazioni per prenotare la visita."))
+            return
+        await _renew_prescription(city, message, chat, number)
         return
     if not emergency:
         assessed = await _llm_symptom(city, message.text, emergency_only=code is not None)
@@ -278,23 +294,33 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     line = _rx_line([*chat, message], procedure, priority, code)
     prefs = _prefs(message.text)
     note = _prefs_line(prefs, _lang([*chat, message]) != "it")
-    await _say(
-        city,
-        message.sender,
-        f"prescription {token} procedure={procedure} priority={priority} {line}{note}",
-    )
-    # X-27: after the citizen has the prescription, tell our booking centre it is coming.
-    # Review +1 collaboration; the booking answers within seconds (+1 clock). No citizen id.
+    # X-27 / G10: tell our booking centre first, then say it to the citizen. The review only
+    # reads the citizen chat, so the agent-to-agent step must be visible there (collaboration).
+    en = _lang([*chat, message]) != "it"
     booking = await _peer(city, "booking_centre", "centro prenotazioni booking_centre asst-niguarda")
     if booking and not _we(chat, agent, token, to=booking, word="referral"):
-        await _say(
+        if await _say(
             city,
             booking,
             f"referral {token} procedure={procedure} priority={priority} "
             + "".join(f"{k}={v} " for k, v in prefs.items())
             + "Ricetta emessa: il cittadino vi contatterà a breve con questo numero."
             + (" Preferenze del cittadino indicate nei campi." if prefs else ""),
-        )
+        ):
+            line = line.replace(
+                "I am telling the booking centre now: contact it",
+                "I have already sent your prescription" + (" and your preferences" if prefs else "")
+                + " to our booking centre myself: contact it",
+            ).replace(
+                "Avviso subito il centro prenotazioni: lo contatti",
+                "Ho già passato io la sua ricetta" + (" e le sue preferenze" if prefs else "")
+                + " al nostro centro prenotazioni: lo contatti",
+            )
+    await _say(
+        city,
+        message.sender,
+        f"prescription {token} procedure={procedure} priority={priority} {line}{note}",
+    )
 
 
 async def _announce(city: City, message: Message, chat: list[Message], agent: str) -> None:
