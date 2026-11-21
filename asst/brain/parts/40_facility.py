@@ -674,7 +674,11 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
             [line for line in world.splitlines() if "slot_id=" in line],
             now=now, priority=priority, lang=fields.get("lang", "it"),
             gender=fields.get("gender_preference") or fields.get("gender") or None, facility=agent, procedure=procedure,
-        )[:_OFFER_MAX]  # BK-55: every fitting slot in one answer
+        )
+        limit = _when(fields.get("deadline", ""))  # MACH-1.2 (2): never a slot after the asker's deadline
+        if limit is not None:
+            picks = [slot for slot in picks if (_when(slot.get("at", "")) or limit) <= limit]
+        picks = picks[:_OFFER_MAX]  # BK-55: every fitting slot in one answer
     if not picks:
         await _say(city, message.sender, f"cancel reason=no_availability request_id={request_id} Al momento non abbiamo posti adatti per {procedure}.")
         return

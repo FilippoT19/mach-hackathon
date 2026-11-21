@@ -340,7 +340,7 @@ def fitting(
         horizon = None
     else:
         horizon = now + timedelta(days=_DEADLINE_DAYS.get(priority or "", 14))
-    earliest = now + _LEAD
+    earliest = now + (_LEAD if priority == "U" else _LEAD_BOOK)
     chosen: list[tuple[int, datetime, dict[str, str]]] = []
     for line in lines:
         slot = fields_of(line)
