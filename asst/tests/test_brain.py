@@ -274,6 +274,29 @@ async def test_facility_proposals(check) -> None:
     check("P-francesco-6 recupera il consenso dall'hold nella storia del Ledger",
           to(city, LEDGER) == ["commit hold_id=H1 consent_ref=C1 fence=2"], city.sent)
 
+    # BK-74 (rule P2): a confirm from another ASST's booking centre puts the citizen's cross_asst
+    # consent on our hold; alone it is the consent; our own booking's hold stays as before.
+    partner = "agent:partner-booking"
+    city = FacilityCity({"hold": ["held hold_id=H74 slot_id=S74 fence=1"]})
+    await city.turn(f"confirm offer_id=O74 slot_id=S74 citizen={CITIZEN} consent_ref=C-BK "
+                    "cross_asst_consent_ref=C-CROSS prescription_number=RX74", sender=partner)
+    holds = [t for t in to(city, LEDGER) if t.startswith("hold ")]
+    check("BK-74 (P2) hold per un'altra ASST porta cross_asst_consent_ref",
+          len(holds) == 1 and "consent_ref=C-BK" in holds[0].split()
+          and "cross_asst_consent_ref=C-CROSS" in holds[0].split(), city.sent)
+    city = FacilityCity()
+    await city.turn(f"confirm offer_id=O75 slot_id=S75 citizen={CITIZEN} cross_asst_consent_ref=C-CROSS",
+                    sender=partner)
+    check("BK-74 (P2) solo cross_asst_consent_ref: hold con quel consenso, nessun missing_consent_ref",
+          any(t.startswith("hold slot_id=S75") and "consent_ref=C-CROSS" in t.split() for t in to(city, LEDGER))
+          and not any("missing_consent_ref" in t for t in to(city, partner)), city.sent)
+    city = FacilityCity()
+    await city.turn(f"confirm offer_id=O76 slot_id=S76 citizen={CITIZEN} consent_ref=C-OURS "
+                    "cross_asst_consent_ref=C-X", sender=booking)
+    check("BK-74 must not break: confirm del nostro booking, hold senza cross_asst_consent_ref",
+          any(t.startswith("hold slot_id=S76") and "consent_ref=C-OURS" in t.split()
+              and "cross_asst_consent_ref" not in t for t in to(city, LEDGER)), city.sent)
+
     city = FacilityCity({
         "hold": ["held hold_id=H1 slot_id=S1 fence=9"],
         "commit": ["refused commit hold_id=H2 NO_CAPACITY", "refused commit hold_id=H1 PRESCRIPTION_EXPIRED"],
@@ -2619,6 +2642,87 @@ async def main() -> int:
                 os.environ["CITY_ROLE"] = old_role
 
     await test_gp17(check)
+
+    async def test_gp18(check):
+        """GP-18: the need was marked in _EARLY_112 before the send. A failed first 112 then
+        silenced every later turn of that need (Codex replay: 1 attempt, 0 escalations sent)."""
+        import os
+
+        def msg(text, mid, need="N-18"):
+            return Message(type="chat", sender=CITIZEN, msg_id=mid, need_id=need, body={"text": text}, recipient="agent:gp")
+
+        class DownCity(FakeCity):
+            """The Relay refuses every message to the citizen in this turn."""
+            async def say(self, to, text, *, status=None):
+                if to == CITIZEN:
+                    raise CapError("RELAY_DOWN", "relay down")
+                return await super().say(to, text, status=status)
+
+        class SlowSayCity(FakeCity):
+            async def say(self, to, text, *, status=None):
+                if text.startswith("escalate.emergency"):
+                    await asyncio.sleep(0.05)
+                return await super().say(to, text, status=status)
+
+        red = "Dottore, ho un forte dolore al petto da mezz'ora."
+        old_role = os.environ.get("CITY_ROLE")
+        os.environ["CITY_ROLE"] = "gp"
+        brain._PEERS.clear()
+        brain._EARLY_112.clear()
+        need = type("N", (), {"is_emergency": False})()
+        try:
+            down = DownCity("agent:gp")
+            down.inbound = msg(red, "g18a")
+            await brain.main(need, down)
+            check("GP-18 primo 112 non partito: il need non risulta già avvisato",
+                  "N-18" not in brain._EARLY_112, sorted(brain._EARLY_112))
+            retry = FakeCity("agent:gp")
+            retry.inbound = msg(red, "g18b")
+            await brain.main(need, retry)
+            esc = [t for t in to(retry, CITIZEN) if t.startswith("escalate.emergency")]
+            check("GP-18 nuovo messaggio dello stesso need: il 112 parte, una volta sola",
+                  len(esc) == 1 and "112" in esc[0], retry.sent)
+            later = FakeCity("agent:gp")
+            later.inbound = msg(red, "g18c")
+            await brain.main(need, later)
+            check("GP-18 messaggio successivo dopo il 112 riuscito: nessun doppione",
+                  not any(t.startswith("escalate.emergency") for t in to(later, CITIZEN)), later.sent)
+
+            class FlakyCity(FakeCity):
+                """Only the first 112 of the turn is refused; the full 112 of _escalate leaves."""
+                failed = False
+                async def say(self, to, text, *, status=None):
+                    if text.startswith("escalate.emergency") and not self.failed:
+                        self.failed = True
+                        raise CapError("RELAY_DOWN", "relay down")
+                    return await super().say(to, text, status=status)
+
+            brain._EARLY_112.clear()
+            flaky = FlakyCity("agent:gp")
+            flaky.inbound = msg(red, "g18f", need="N-18c")
+            await brain.main(need, flaky)
+            after = FakeCity("agent:gp")
+            after.inbound = msg(red, "g18g", need="N-18c")
+            await brain.main(need, after)
+            check("GP-18 primo 112 fallito, 112 completo partito nello stesso turno: il messaggio dopo non lo ripete",
+                  sum(t.startswith("escalate.emergency") for t in to(flaky, CITIZEN)) == 1
+                  and not any(t.startswith("escalate.emergency") for t in to(after, CITIZEN)), (flaky.sent, after.sent))
+
+            brain._EARLY_112.clear()
+            one, two = SlowSayCity("agent:gp"), SlowSayCity("agent:gp")
+            one.inbound, two.inbound = msg(red, "g18d", need="N-18b"), msg(red, "g18e", need="N-18b")
+            await asyncio.gather(brain.main(need, one), brain.main(need, two))
+            both = [t for c in (one, two) for t in to(c, CITIZEN) if t.startswith("escalate.emergency")]
+            check("GP-18 due messaggi ravvicinati dello stesso need: un solo 112", len(both) == 1, (one.sent, two.sent))
+        finally:
+            brain._EARLY_112.clear()
+            brain._EARLY_112_FAILED.clear()
+            if old_role is None:
+                os.environ.pop("CITY_ROLE", None)
+            else:
+                os.environ["CITY_ROLE"] = old_role
+
+    await test_gp18(check)
 
     async def test_mach2(check):
         """MACH-2.0 (red-agent): ring R17, round of 12 R3, mach/lease tokens, R7, R13, R20, R21."""

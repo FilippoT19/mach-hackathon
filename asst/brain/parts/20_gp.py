@@ -114,7 +114,11 @@ async def _escalate(city: City, message: Message, chat: list[Message]) -> None:
     early = (message.need_id or message.msg_id) in _EARLY_112  # GP-17: the 112 already left
     if not early and not _we(chat, agent, "escalate.emergency", to=message.sender, word="escalate.emergency"):
         noticed, near = await asyncio.gather(_notice(), _near())
-        await _say(city, message.sender, _escalate_text(message, en, told=noticed) + (" " + near.strip() if near else ""))
+        if await _say(city, message.sender, _escalate_text(message, en, told=noticed) + (" " + near.strip() if near else "")):
+            key = message.need_id or message.msg_id
+            if key in _EARLY_112_FAILED:  # GP-18: the early 112 failed, this one left
+                _EARLY_112_FAILED.discard(key)
+                _EARLY_112.add(key)
         near = ""
     elif early and message.sender.startswith("citizen:") and not _we(
             chat, agent, "purpose=emergency", to=message.sender, word="data.request"):

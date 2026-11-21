@@ -2439,6 +2439,13 @@ async def _on_confirm(
     offer = _our_offer(chat, agent, offer_id) if offer_id else {}
     slot = fields.get("slot_id") or offer.get("slot_id", "")
     facility = fields.get("facility") or offer.get("facility", "")
+    # BK-74 (rule P2, P-francesco-47): a hold in our ASST for another ASST's citizen needs the
+    # citizen's cross_asst consent, or the Ledger refuses it (CONSENT_MISSING). The partner's
+    # booking centre sends it as cross_asst_consent_ref: it goes on the hold, and alone it is
+    # the consent we have.
+    cross_in = (fields.get("cross_asst_consent_ref", "")
+                if message.sender.startswith("agent:") and not _ours(message.sender) else "")
+    consent = consent or cross_in
     if message.sender.startswith("agent:") and (not slot or not consent):
         # FA-01 (P-francesco-5): a confirm from an agent without slot or consent never gets silence;
         # the consent belongs to the booking centre, so we answer the sender and it can resend.
@@ -2521,6 +2528,8 @@ async def _on_confirm(
             if number:
                 parts.append(f"prescription_number={number}")
             parts.append(f"consent_ref={consent}")
+            if cross_in:
+                parts.append(f"cross_asst_consent_ref={cross_in}")  # BK-74 (P2)
             _HELD_FOR[slot] = (need_key, time.monotonic())  # BK-63
             while len(_HELD_FOR) > _SENT_NEEDS:
                 _HELD_FOR.popitem(last=False)
