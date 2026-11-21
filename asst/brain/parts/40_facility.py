@@ -198,15 +198,21 @@ def _our_commit(chat: list[Message], agent: str, hold_id: str) -> bool:
 
 
 async def _finish_booking(
-    city: City, message: Message, chat: list[Message], slot: str, *, hold_self: bool
+    city: City, message: Message, chat: list[Message], slot: str, *, hold_self: bool,
+    before: "asyncio.Future | None" = None,
 ) -> None:
-    """Hold is in the mailbox. Read the held line and commit before this turn ends."""
+    """Hold is in the mailbox. Read the held line and commit before this turn ends.
+
+    OPS-11: ``before`` is a message to the citizen already on its way (the booking centre's
+    address question). It runs while the held line is read and ends before the next message."""
 
     found = await _await_line(
         city, message.need_id, chat, "held", f"slot_id={slot}", op="hold",
         refusal_matches=lambda row: row.recipient == city.agent_id
         and fields_of(row.text).get("slot_id", slot) == slot,
     )
+    if before is not None:
+        await before
     if found is None:
         _LOG.info("care.held.missing", extra={"need_id": (message.need_id or "")[:48]})
         return
@@ -337,7 +343,12 @@ async def _cancel_booking(
                 break
     identity = f"offer_id={offer_id}" if offer_id else f"slot_id={slot}"
     if not _we(chat, agent, identity, to=target, word="cancel"):
-        await _say(city, target, f"cancel {identity} reason={reason}")
+        line = ""
+        if target.startswith("citizen:"):  # BK-35 / BK-57: the citizen always reads a sentence
+            line = (" I am sorry, that appointment is no longer available. I am looking for another one for you now."
+                    if _lang(chat) != "it" else
+                    " Mi dispiace, quel posto non è più disponibile. Le cerco subito un altro appuntamento.")
+        await _say(city, target, f"cancel {identity} reason={reason}{line}")
 
 
 _BOOKING_REFUSALS = {"prescription_expired", "consent_missing", "no_capacity"}
@@ -371,8 +382,23 @@ async def _on_refused(
     if not re.fullmatch(r"[a-z]+(?:_[a-z0-9]+)*", reason):
         reason = next(iter(words(message.text) & _BOOKING_REFUSALS), "facility_cancelled")
     await _cancel_booking(city, chat, slot, reason=reason, hold_id=hold_id if commit_refused else "")
-    if slot and hold_self:
-        await _advance(city, message, chat, fixed="CONS-GIN", replacing=True)
+    desk = agent == _OUR_AGENTS["booking_centre"]  # BK-57: the booking centre now holds our slots
+    if desk and any(w in reason or w in message.text.lower() for w in _PERMISSION_WORDS):
+        _DESK_HOLDS[0] = False
+        _LOG.info("bk57.desk_holds_off reason=%s", reason[:40])
+    if slot and (hold_self or desk):
+        # P-magesh-9: the cancel just sent is not in ``chat`` yet, so the refused slot looked free
+        # and went out again with the next offers. Remember it: it is never offered again.
+        _sent(message.need_id or message.msg_id).notes.add("refused:" + slot)
+        # FA-22 (journey 000308): the new offers came from the slot list read minutes earlier, so
+        # slots already past went out again (reason=past). Read agenda and slots again first.
+        if desk:
+            reply = _prescription_reply(chat, _number(chat)) or {}
+            procedure = reply.get("procedure", "")
+        else:
+            procedure = "CONS-GIN"
+        await _advance(city, message, chat, fixed=None if desk else "CONS-GIN", replacing=True,
+                       refresh=procedure)
 
 
 _CHECKIN_LIMIT = 3
@@ -641,7 +667,7 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
             [line for line in world.splitlines() if "slot_id=" in line],
             now=now, priority=priority, lang=fields.get("lang", "it"),
             gender=fields.get("gender_preference") or fields.get("gender") or None, facility=agent, procedure=procedure,
-        )[:3]
+        )[:_OFFER_MAX]  # BK-55: every fitting slot in one answer
     if not picks:
         await _say(city, message.sender, f"cancel reason=no_availability request_id={request_id} Al momento non abbiamo posti adatti per {procedure}.")
         return
@@ -651,7 +677,6 @@ async def _partner_request(city: City, message: Message, chat: list[Message]) ->
         + (" wheelchair=true" if agent == "agent:jdj692g4145e" else "")  # common format: accessible hospital
         for s in picks
     ]
-    await _say(city, message.sender, "\n".join(lines + [
-        "Ecco i nostri posti liberi. Dopo il consenso cross_asst del cittadino inviateci la conferma "
-        "con offer_id, slot_id, citizen, consent_ref e prescription_number: rispondiamo con la ricevuta."
-    ]))
+    tail = ("Ecco i nostri posti liberi. Dopo il consenso cross_asst del cittadino inviateci la conferma "
+        "con offer_id, slot_id, citizen, consent_ref e prescription_number: rispondiamo con la ricevuta.")
+    await _say(city, message.sender, "\n".join(_fit(lines, tail) + [tail]))

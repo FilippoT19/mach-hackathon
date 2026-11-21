@@ -75,6 +75,8 @@ _TRUSTED_PARTNERS: set[str] = set()
 # Ids posted by other ASSTs in the mods' group. Copied into _TRUSTED_PARTNERS when the impostors
 # arrive (switching it on now would reject the teams that have not posted yet).
 _KNOWN_PARTNERS = {
+    # San Siro (Municipio 7), team psq-quelli-veri — h3 bn (X-52)
+    "agent:tnzkhsa62kn0", "agent:qsbsfjytc3y5", "agent:k2nwktpp02xx", "agent:yk37jqcnc1r5", "agent:sdca2w4p9f8z",
     # Lorenteggio (Municipio 9), team RASPBERRY
     "agent:qtjne8symjas", "agent:w2qsptc9qqhg", "agent:tmt0bcv0st1f", "agent:n9bf9y6670hp", "agent:mcppmrbjvxag",
     # Nord (Municipio 2), team agentic-paguri — h3 ur
@@ -97,7 +99,7 @@ _KNOWN_PARTNERS = {
 # Rare language of each ASST's h3 physiatrist (shared table in the mods' group).
 _RARE_LANG_BY_ASST = {"giambellino": "ka", "toros": "ro", "precotto": "ro", "nord": "ur",
                       "corvetto": "fr", "brera": "fa", "niguarda": "vi",
-                      "isola": "tl", "ortica": "wo", "greco": "si", "bicocca": "ti", "lambrate": "ja",
+                      "isola": "tl", "ortica": "wo", "greco": "si", "bicocca": "ti", "lambrate": "ja", "san siro": "bn", "sansiro": "bn",
                       "gorla": "sq", "forlanini": "de"}
 
 
@@ -181,7 +183,7 @@ def _we(chat: list[Message], agent: str, token: str, *, to: str, word: str) -> b
     for row in chat:
         if row.sender != agent or row.recipient != to:
             continue
-        if token in row.text.split() and word in words(row.text):
+        if (not token or token in row.text.split()) and word in words(row.text):
             return True
     return False
 
@@ -222,6 +224,7 @@ async def _until(
     """Re-read the case until ``ready`` or the short wait ends. The push may never arrive."""
 
     fresh = chat
+    started = time.monotonic()
     for attempt in range(_PULL_TRIES):
         try:
             fresh = await city.history(need_id=need_id)
@@ -230,6 +233,8 @@ async def _until(
         fresh = _keep(fresh, chat)
         if ready(fresh):
             return fresh
+        if time.monotonic() - started >= _PULL_SECONDS:  # BK-54: slow history() calls
+            break
         if attempt + 1 < _PULL_TRIES:
             await asyncio.sleep(_PULL_PAUSE)
     return fresh
@@ -256,7 +261,10 @@ async def _await_line(
 
     known = {row.msg_id for row in chat}
     fresh = chat
+    started = time.monotonic()
     for attempt in range(_PULL_TRIES):
+        if attempt and time.monotonic() - started >= 2 * _PULL_SECONDS:  # BK-54 (hold/commit: twice the wait)
+            break
         try:
             fresh = await city.history(need_id=need_id)
         except CapError:
@@ -360,9 +368,9 @@ def fitting(
         day = slot.get("day", "")
         if day and day not in spec[2]:
             continue
-        if gender and spec[1] != gender:
-            continue
-        preferred = 0 if days and day in days else 1
+        # P-francesco-31: the doctor's gender is a preference like the days (S_pref), not a wall.
+        # Discarding the other gender left "no local slot" while S still had some (no_booking -1).
+        preferred = (0 if days and day in days else 1) + (1 if gender and spec[1] != gender else 0)
         chosen.append((preferred, at, slot))
     chosen.sort(key=lambda item: (item[0], item[1], item[2].get("slot_id", "")))
     return [slot for _, _, slot in chosen]

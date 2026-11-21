@@ -14,13 +14,67 @@ def _emergency(message: Message) -> bool:
         "can't feel my legs", "cannot feel my legs", "can't move my legs",
     )):
         return True
+    # P-magesh-11: red flags in other words never depend on the model (slow or down).
+    if _RF_CHEST.search(lowered) or _RF_LEGS.search(lowered):
+        return True
     # CO-10 (P-magesh-6): pregnancy + bleeding, strong pain, contractions or waters -> 112.
     pregnant = any(w in lowered for w in ("incinta", "gravidanza", "pregnant", "pregnancy"))
-    danger = any(w in lowered for w in (
-        "sangue", "sanguin", "perdite", "dolore forte", "dolore intenso", "forte dolore", "contrazion",
-        "perso le acque", "rottura delle acque", "liquido", "bleed", "blood", "strong pain",
-        "severe pain", "contraction", "waters broke", "water broke"))
+    # P-magesh-16: danger is a phrase, not a lone word ("esami del sangue" is a normal visit).
+    danger = _RF_PREGNANT.search(lowered) is not None
     return pregnant and danger
+
+
+_RF_PREGNANT = re.compile(
+    r"sanguin\w*|perdit\w* di sangue|perd\w* (?:\w+ )?sangue|sangue (?:dalla vagina|vaginale)"
+    r"|contrazion\w*|perso le acque|rott\w* (?:delle |le )?acque|acque rotte"
+    r"|perd\w* (?:\w+ )?liquido|perdita di liquido"
+    r"|(?:dolor\w*|male)[^.!?]{0,25}\b(?:pancia|addome|addominal\w*|ventre|basso ventre)"
+    r"|(?:pancia|addome|ventre)[^.!?]{0,20}\b(?:dolor\w*|male)"
+    r"|\bbleed\w*|losing blood|\bcontraction\w*|water(?:s)? (?:broke|break\w*)"
+    r"|(?:pain|cramp\w*)[^.!?]{0,20}\b(?:belly|abdom\w*|stomach|tummy)"
+    r"|(?:belly|abdom\w*|stomach|tummy)[^.!?]{0,20}\b(?:pain|hurt\w*|cramp\w*)")
+_RF_CHEST = re.compile(
+    r"(?:\b(?:dolor\w*|male|fa(?:nno)? male|stretta|oppression\w*|peso|pressione|bruciore)\b[^.!?]{0,30}\b(?:petto|torac\w*)\b)"
+    r"|(?:\b(?:petto|torac\w*)\b[^.!?]{0,20}\b(?:dolor\w*|male|stretta|oppression\w*|peso)\b)"
+    r"|(?:\bchest\b[^.!?]{0,25}\b(?:pain\w*|tight\w*|pressure|hurt\w*|ache\w*)\b)"
+    r"|(?:\b(?:pain|tightness|pressure)\b[^.!?]{0,15}\bchest\b)"
+    r"|(?:\bmy chest hurts\b)")
+_RF_LEGS = re.compile(
+    r"(?:\b(?:non sento|non riesco a muovere|perso (?:la )?forza|perdita di forza|senza forza)\b[^.!?]{0,25}\bgamb[ae]\b)"
+    r"|(?:\bgamb[ae]\b[^.!?]{0,20}\b(?:non la sento|non le sento|senza forza|paralizzat\w*|non si muov\w*)\b)"
+    r"|(?:\b(?:can'?t|cannot|can not) (?:feel|move)\b[^.!?]{0,15}\blegs?\b)"
+    r"|(?:\blost (?:the )?strength\b[^.!?]{0,15}\blegs?\b)"
+    r"|(?:\blegs?\b[^.!?]{0,15}\b(?:numb|gave way|went weak)\b)")
+
+
+async def _gp_again(city: City, message: Message, chat: list[Message]) -> None:
+    """P-magesh-10: a later citizen message the table still does not match is never left
+    without an answer (no_reply). After a prescription: repeat it with the next step. Before:
+    one closed question with the protocol choices, then a short safety line."""
+    agent, citizen = city.agent_id, message.sender
+    en = _lang([*chat, message]) != "it"
+    rx = [row for row in chat if row.sender == agent and row.recipient == citizen
+          and first_word(row.text) == "prescription" and "prescription_number=" in row.text]
+    if rx:
+        f = fields_of(rx[-1].text)
+        tokens = " ".join(f"{k}={f[k]}" for k in ("prescription_number", "procedure", "priority") if f.get(k))
+        await _say(city, citizen, f"prescription {tokens} " + (
+            "Your prescription is ready: contact the booking centre with this number to book the visit."
+            if en else
+            "La sua ricetta è pronta: contatti il centro prenotazioni con questo numero per prenotare la visita."))
+        return
+    if not _we(chat, agent, "", to=citizen, word="gp.choices"):
+        await _say(city, citizen, "gp.choices " + (
+            "So I can prepare the right prescription: is it your back, your knee, your heart "
+            "racing, or a routine heart check?" if en else
+            "Per prepararle la ricetta giusta mi aiuta a capire: si tratta della schiena, del "
+            "ginocchio, del cuore che batte forte, o di un controllo del cuore?"))
+        return
+    await _say(city, citizen, "gp.note " + (
+        "I am sorry, I still cannot match your problem. If it gets worse, or you feel chest "
+        "pain, call 112 straight away." if en else
+        "Mi dispiace, non riesco ancora a capire il disturbo. Se peggiora o compare dolore al "
+        "petto chiami subito il 112."))
 
 
 def _red_flag(message: Message) -> bool:
@@ -28,42 +82,60 @@ def _red_flag(message: Message) -> bool:
 
 
 async def _escalate(city: City, message: Message, chat: list[Message]) -> None:
-    """X-41: 112 + notice to our hospital, from any role."""
+    """X-41: 112 + notice to our hospital, from any role.
+
+    X-55: the notice to our hospital and the nearest-ER lookup run together, before the 112
+    message (which therefore does not wait longer than before); the citizen reads "I have already
+    told them" only when the notice really left (the review reads only the citizen chat)."""
     agent = city.agent_id
     en = _lang([*chat, message]) != "it"
-    if not _we(chat, agent, "escalate.emergency", to=message.sender, word="escalate.emergency"):
-        # X-45: nearest hospital to the citizen's zone (Index doors), inside the 112 message.
-        zone = await _zone_point(city, [*chat, message])
-        near = await _nearest_line(city, zone, en, "") if zone else ""
-        await _say(
-            city,
-            message.sender,
-            "escalate.emergency reason=red_flag " + (
-            "I understand, this needs "
-            "attention right now. Call 112 or go to the nearest emergency room. Do not drive: if "
-            "you can, ask someone to go with you. The nearest emergency room in our area is our "
-            "hospital at Via Arganini Gerolamo 38 (wheelchair accessible): I am telling them now."
-            if en else
-            "Capisco, quello che mi descrive va preso sul serio subito. Chiami subito il 112 o "
-            "vada al pronto soccorso più vicino. Non si metta alla guida: se può, si faccia "
-            "accompagnare e non resti da solo. Il pronto soccorso più vicino nella nostra zona è "
-            "il nostro ospedale in Via Arganini Gerolamo 38 (accessibile in sedia a rotelle): "
-            "li avviso io adesso."
-            ) + (" " + near.strip() if near else ""),
-        )
-    # X-42: proactive — ask where the citizen is, then name the nearest emergency room (map).
-    if message.sender.startswith("citizen:") and not _we(chat, agent, "purpose=emergency", to=message.sender, word="data.request"):
-        await _say(city, message.sender, "data.request purpose=emergency fields=address " + (
-                   "Where are you now? I will tell you the nearest emergency room right away." if en else
-                   "Mi dice dove si trova adesso? Le indico subito il pronto soccorso più vicino a lei."))
-    hospital = await _peer(city, "hospital", "ospedale hospital asst-niguarda")
-    if hospital and hospital != agent and not _we(chat, agent, "emergency.notice", to=hospital, word="emergency.notice"):
-        await _say(
+    # X-56 (journey 0000540007): the Index search (up to 5 s) timed out under load, so no notice
+    # left and the 112 waited for nothing ("li avviso io adesso"). Our hospital id is fixed.
+    hospital = _OUR_AGENTS["hospital"]
+
+    async def _notice() -> bool:
+        if not hospital or hospital == agent:
+            return False
+        if _we(chat, agent, "emergency.notice", to=hospital, word="emergency.notice"):
+            return True
+        return await _say(
             city,
             hospital,
             "emergency.notice reason=red_flag Un cittadino con red flag è stato indirizzato "
             "al 112 o al pronto soccorso. Vi avviso in caso arrivi da voi.",
         )
+
+    async def _near() -> str:
+        # X-45: nearest hospital to the citizen's zone (Index doors), inside the 112 message.
+        zone = await _zone_point(city, [*chat, message])
+        return await _nearest_line(city, zone, en, "") if zone else ""
+
+    if not _we(chat, agent, "escalate.emergency", to=message.sender, word="escalate.emergency"):
+        noticed, near = await asyncio.gather(_notice(), _near())
+        told_en = "I have already told them myself." if noticed else "I am telling them now."
+        told_it = "li ho già avvisati io." if noticed else "li avviso io adesso."
+        await _say(
+            city,
+            message.sender,
+            "escalate.emergency reason=red_flag " + (
+            "I understand, this needs "
+            "attention right now. Call 112 or go to the emergency room nearest to you. Do not "
+            "drive: if you can, ask someone to go with you. About the emergency room of "
+            f"our hospital (Via Arganini Gerolamo 38, wheelchair accessible): {told_en}"
+            if en else
+            "Capisco, quello che mi descrive va preso sul serio subito. Chiami subito il 112 o "
+            "vada al pronto soccorso più vicino a lei. Non si metta alla guida: se può, si faccia "
+            "accompagnare e non resti da solo. Il pronto soccorso del nostro ospedale (Via "
+            f"Arganini Gerolamo 38, accessibile in sedia a rotelle): {told_it}"
+            ) + (" " + near.strip() if near else ""),
+        )
+    else:
+        await _notice()
+    # X-42: proactive — ask where the citizen is, then name the nearest emergency room (map).
+    if message.sender.startswith("citizen:") and not _we(chat, agent, "purpose=emergency", to=message.sender, word="data.request"):
+        await _say(city, message.sender, "data.request purpose=emergency fields=address " + (
+                   "Where are you now? I will tell you the nearest emergency room right away." if en else
+                   "Mi dice dove si trova adesso? Le indico subito il pronto soccorso più vicino a lei."))
 
 
 def _symptom(message: Message) -> str | None:
@@ -260,9 +332,18 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
         await _renew_prescription(city, message, chat, number)
         return
     if not emergency:
-        assessed = await _llm_symptom(city, message.text, emergency_only=code is not None)
-        emergency = assessed == "RED_FLAG"
-        code = code or assessed
+        early = _EARLY_LLM.pop(message.msg_id, None)  # OPS-09: started in main() with the history read
+        try:
+            assessed = await early if early is not None else await _llm_symptom(city, message.text, emergency_only=code is not None)
+        except Exception:
+            assessed = None
+        # GP-15 (journey 183): "sento il cuore che batte un po' troppo" matched SYM-PALPITATIONS
+        # by keyword, then the model said RED_FLAG and the citizen got 112 instead of a visit
+        # (no_booking -1). Heart racing alone is the VIS-CARD B protocol; its real red flags
+        # (chest pain, fainting, no breath) are keywords. Back pain keeps the model check
+        # (P-francesco-19: "non riesco più a stare in piedi").
+        emergency = assessed == "RED_FLAG" and code not in ("SYM-PALPITATIONS", "SYM-FOLLOWUP")
+        code = code or (assessed if assessed != "RED_FLAG" else None)
     if emergency:
         await _escalate(city, message, chat)  # X-42: one path for all roles (112, notice, nearest ER)
         return
@@ -284,22 +365,15 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
                     "when? Then I can prepare the right prescription for you straight away.",
                 ),
             )
+        elif (asked and message.sender.startswith("citizen:")
+              and not _we(chat, agent, "", to=message.sender, word="escalate.emergency")):
+            await _gp_again(city, message, chat)
         return
     procedure, priority = _PROTOCOLS[code]
     number = _rx(message.need_id, message.msg_id)
     token = f"prescription_number={number}"
     # The citizen's reply window closes before a ledger round trip comes back, so the
     # prescription is said in this same turn. The ledger write is what the judge reads.
-    if not _we(chat, agent, token, to=LEDGER, word="prescribe"):
-        if not await _say(
-            city,
-            LEDGER,
-            (
-                f"prescribe patient={message.sender} procedure={procedure} priority={priority} "
-                f"symptom_code={code} {token}"
-            ),
-        ):
-            return
     if _we(chat, agent, token, to=message.sender, word="prescription"):
         return
     line = _rx_line([*chat, message], procedure, priority, code)
@@ -309,15 +383,37 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
     # reads the citizen chat, so the agent-to-agent step must be visible there (collaboration).
     en = _lang([*chat, message]) != "it"
     booking = await _peer(city, "booking_centre", "centro prenotazioni booking_centre asst-niguarda")
-    if booking and not _we(chat, agent, token, to=booking, word="referral"):
-        if await _say(
+    # OPS-09: the Ledger write and the referral do not depend on each other: send them together
+    # (one slow round trip instead of two). The citizen hears the prescription only after both.
+    async def _prescribe() -> bool:
+        if _we(chat, agent, token, to=LEDGER, word="prescribe"):
+            return True
+        return await _say(
+            city,
+            LEDGER,
+            (
+                f"prescribe patient={message.sender} procedure={procedure} priority={priority} "
+                f"symptom_code={code} {token}"
+            ),
+        )
+
+    async def _refer() -> bool:
+        if not booking or _we(chat, agent, token, to=booking, word="referral"):
+            return False
+        return await _say(
             city,
             booking,
             f"referral {token} procedure={procedure} priority={priority} "
             + "".join(f"{k}={v} " for k, v in prefs.items())
             + "Ricetta emessa: il cittadino vi contatterà a breve con questo numero."
             + (" Preferenze del cittadino indicate nei campi." if prefs else ""),
-        ):
+        )
+
+    written, referred = await asyncio.gather(_prescribe(), _refer())
+    if not written:
+        return
+    if booking:
+        if referred:
             line = line.replace(
                 "I am telling the booking centre now: contact it",
                 "I have already sent your prescription" + (" and your preferences" if prefs else "")
@@ -412,7 +508,17 @@ async def _on_emergency_where(city: City, message: Message, chat: list[Message])
     _ANSWERED_ER.add(key)
     en = _lang([*chat, message]) != "it"
     point = _citizen_point(message.text)
-    line = await _nearest_line(city, point, en, "") if point else ""
+    best = await _nearest_hospital(city, point) if point else None
+    line = _nearest_words(best, en)
+    # X-55: the nearest ER belongs to another ASST: warn it too (no personal data, no consent
+    # needed) and say so to the citizen. Collaboration across teams, visible in the citizen chat.
+    ours = _OUR_AGENTS["hospital"]  # X-56
+    if best and best[0] not in (ours, city.agent_id) and best[0].startswith("agent:"):
+        if await _say(city, best[0], "emergency.notice reason=red_flag Un cittadino con red flag si trova "
+                      f"vicino a voi (circa {best[2]:.1f} km) ed è stato indirizzato al 112 o al pronto "
+                      "soccorso più vicino: potrebbe arrivare da voi."):
+            line += (" I have also warned that hospital's emergency room myself." if en else
+                     " Ho avvisato io anche il pronto soccorso di quell'ospedale.")
     if not line:
         line = (" The nearest emergency room is our hospital in Via Arganini Gerolamo 38 (wheelchair "
                 "accessible); in an emergency always call 112." if en else

@@ -16,6 +16,7 @@ import logging
 import math
 import os
 import re
+import time
 from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -60,6 +61,7 @@ _RED_FLAGS = (
 )
 _DEADLINE_DAYS = {"B": 2, "D": 5}
 _EMERGENCY_NEEDS: set[str] = set()
+_EARLY_LLM: dict[str, "asyncio.Task[str | None]"] = {}  # OPS-09: msg_id -> symptom check started early
 _RED_FLAGS_MORE = ("sanguinamento abbondante", "heavy bleeding", "non riesco a respirare", "can't breathe", "cannot breathe", "svenut", "fainted")
 _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
 _LOG = logging.getLogger("care")
@@ -67,6 +69,11 @@ _LOG = logging.getLogger("care")
 # the case history and never opens a turn. Wait briefly and read it back from history.
 _PULL_TRIES = 24
 _PULL_PAUSE = 0.25
+# BK-54: a wait is bounded by the clock, not by the number of tries. Under load one history()
+# call takes seconds, so 24 tries became minutes and one booking turn lasted 950-1150 s.
+_PULL_SECONDS = 6.0
+# The whole search of one turn (catalogue pages) must end well inside the citizen's patience.
+_TURN_SECONDS = 40.0
 # Needs whose sent offers this process remembers; the oldest is forgotten first.
 _SENT_NEEDS = 4096
 
@@ -95,8 +102,27 @@ async def main(need: Need, city: City) -> None:
     # it in words and goes on with the journey (red flag first).
     if getattr(need, "is_emergency", False) is True and message.sender.startswith("citizen:"):
         _EMERGENCY_NEEDS.add(message.need_id or message.msg_id)
-    case = await city.history(need_id=message.need_id)
-    await handle(role_of(), city, message, case)
+    # OPS-08: a message from another agent with no key=value token is not part of any MACH
+    # exchange (the deploy conformance probe "visit" is one). End the turn at once: the Relay's
+    # custody.ack check waits ~5 s, and a slow remote history read made the turn miss it.
+    text = (message.text or "").strip()
+    if (not message.sender.startswith("citizen:") and message.sender != LEDGER
+            and "=" not in text and text != "__error__"):
+        _LOG.info("ops08.skip sender=%s", message.sender[:40])
+        return
+    # OPS-09: the GP's symptom check (city.llm, up to 4 s) needs only the citizen's text, so it
+    # runs while the case history is read instead of after it. _gp() takes the result.
+    early = None
+    if role_of() == "gp" and message.sender.startswith("citizen:") and text and not _emergency(message):
+        early = asyncio.get_running_loop().create_task(
+            _llm_symptom(city, message.text, emergency_only=_symptom(message) is not None))
+        _EARLY_LLM[message.msg_id] = early
+    try:
+        case = await city.history(need_id=message.need_id)
+        await handle(role_of(), city, message, case)
+    finally:
+        if early is not None and _EARLY_LLM.pop(message.msg_id, None) is not None:
+            early.cancel()
 
 
 def _asks_address(message: Message) -> bool:
