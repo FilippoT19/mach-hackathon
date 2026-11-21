@@ -10,8 +10,5 @@ role: booking_centre
 capabilities:
   - booking_centre
 no_clinical_advice: true
-# OPS-12: how many pushes the Relay may deliver at once (card schema field, undocumented). The
-# harness runs turns in parallel; booking answered ~15 msg/min with p50 ~4 min before the first word.
-max_inflight: 16
 endpoints:
   mailbox: agent:fn64xfq2jft4
