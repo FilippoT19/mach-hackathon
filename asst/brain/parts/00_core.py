@@ -154,6 +154,13 @@ async def main(need: Need, city: City) -> None:
     # custody.ack check waits ~5 s, and a slow remote history read made the turn miss it.
     text = (message.text or "").strip()
     _TURN_NEED.set((message.need_id or message.msg_id or "-")[:64])  # OPS-13
+    role = role_of()
+    # BK-78 (P-magesh-28): ~6 real minutes per answer. This line says whether the time passes
+    # before our code (delivery queue) or inside it: seconds from sent_at to the start of the turn.
+    sent_at = _when(getattr(message, "sent_at", "") or "")
+    _event("booking.turn" if role == "booking_centre" else f"{role or 'agent'}.turn",
+           lag_s=int((datetime.now(sent_at.tzinfo) - sent_at).total_seconds()) if sent_at else None,
+           sender=_kind(message.sender), act=first_word(text)[:32])
     if message.sender == LEDGER:
         # OPS-13 (BK-72): what the Ledger answered, and how late, was the missing fact.
         got = fields_of(text)
@@ -165,6 +172,8 @@ async def main(need: Need, city: City) -> None:
             and "=" not in text and text != "__error__"):
         _LOG.info("ops08.skip sender=%s", message.sender[:40])
         return
+    if role == "booking_centre":
+        _recovery_start(city, message)  # BK-78: once per process, in the background
     # GP-17 (wave W01QQQ, L1): "forte dolore al petto" got the 112 after 278 s or never: the
     # turn waited for the history read (minutes under load) and the Index. The judge counts only
     # `escalate.emergency` (emergency.no_escalation -2). A red flag in the citizen's own text
