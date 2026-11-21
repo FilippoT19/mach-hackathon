@@ -337,7 +337,12 @@ async def _cancel_booking(
                 break
     identity = f"offer_id={offer_id}" if offer_id else f"slot_id={slot}"
     if not _we(chat, agent, identity, to=target, word="cancel"):
-        await _say(city, target, f"cancel {identity} reason={reason}")
+        line = ""
+        if target.startswith("citizen:"):  # BK-35 / BK-57: the citizen always reads a sentence
+            line = (" I am sorry, that appointment is no longer available. I am looking for another one for you now."
+                    if _lang(chat) != "it" else
+                    " Mi dispiace, quel posto non è più disponibile. Le cerco subito un altro appuntamento.")
+        await _say(city, target, f"cancel {identity} reason={reason}{line}")
 
 
 _BOOKING_REFUSALS = {"prescription_expired", "consent_missing", "no_capacity"}
@@ -371,11 +376,15 @@ async def _on_refused(
     if not re.fullmatch(r"[a-z]+(?:_[a-z0-9]+)*", reason):
         reason = next(iter(words(message.text) & _BOOKING_REFUSALS), "facility_cancelled")
     await _cancel_booking(city, chat, slot, reason=reason, hold_id=hold_id if commit_refused else "")
-    if slot and hold_self:
+    desk = agent == _OUR_AGENTS["booking_centre"]  # BK-57: the booking centre now holds our slots
+    if desk and any(w in reason or w in message.text.lower() for w in _PERMISSION_WORDS):
+        _DESK_HOLDS[0] = False
+        _LOG.info("bk57.desk_holds_off reason=%s", reason[:40])
+    if slot and (hold_self or desk):
         # P-magesh-9: the cancel just sent is not in ``chat`` yet, so the refused slot looked free
         # and went out again with the next offers. Remember it: it is never offered again.
         _sent(message.need_id or message.msg_id).notes.add("refused:" + slot)
-        await _advance(city, message, chat, fixed="CONS-GIN", replacing=True)
+        await _advance(city, message, chat, fixed=None if desk else "CONS-GIN", replacing=True)
 
 
 _CHECKIN_LIMIT = 3
