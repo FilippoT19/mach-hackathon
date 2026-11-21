@@ -26,7 +26,7 @@ from pathlib import Path
 from city_sdk.city import LEDGER, CapError, City, Message, Need, OutOfScope, clinical, understood
 
 ROLES = ("booking_centre", "gp", "hospital", "specialist_care", "family_counseling")
-_MAX_PAGE = 8
+_MAX_PAGE = 20  # BK-38 (P-magesh-8): read the whole local catalogue before going cross-ASST
 # Four agenda hours is about half a minute of real time at 480x, so a slot is still
 # ahead when the citizen decides. One hour was already past by then.
 _LEAD = timedelta(hours=4)

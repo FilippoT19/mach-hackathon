@@ -13,11 +13,11 @@ controllo se i gruppi "online" hanno un percorso nuovo che li verifica.
 
 | # | Causa | Percorsi (need_id finale) | Fix | Stato | Prova |
 |---|---|---|---|---|---|
-| G1 | Booking muto (22:14–22:51): `failed` senza righe negative, cittadino senza risposta | 103–116, 122, 0002x vari | BK-28 | online (booking 1.0.7, 22:51) | 124, 128, 134 rispondono · da vedere se tornano `failed` |
-| G2 | Ciclo offerta/annullo: il cittadino annulla ogni offerta (`reason=deadline`) → `wrong_outcome no_booking` | 129, 119, 0003/0002 (14/20 msg) | BK-29 (+ BK-27 scadenza) | fix su main, in coda (ship10) | — |
+| G1 | Booking muto (22:14–22:51): `failed` senza righe negative, cittadino senza risposta | 103–116, 122, 0002x vari | BK-28 | verificato | 650004 done, 630002 e 280002 booked (booking 1.0.10) |
+| G2 | Ciclo offerta/annullo: il cittadino annulla ogni offerta (`reason=deadline`) → `wrong_outcome no_booking` | 129, 119, 0003/0002 (14/20 msg) | BK-29, BK-31, BK-32, Codex P-14/15/26 | online (booking 1.0.10, 01:01) | 000175, 000176 senza raffiche: da confermare a fine percorso |
 | G3 | Booking muto vecchio (BK-15, livello 2) | 045–065 | BK-15 | verificato | 069–074 done |
 | G4 | Red flag: percorso chiuso al primo messaggio, review gp 0/0/1 (collab 0) | 125, 126, 127, 130, 132, 133 | X-42b (PS più vicino nel primo messaggio) | fix su main, in coda (ship11) | — |
-| G5 | **Collaborazione 0 per tutti gli agenti**, anche con referral e avviso all'ospedale. Regola e19: +1 solo per "uno scambio con un altro agente che ha fatto avanzare il need". Nota su 120: il gp "ha contattato il booking" ma C=0; il booking "ha solo risposto". Il referral + "Ricevuto" non fa avanzare niente. | quasi tutti | G5-a booking.notice, G5-b report.notice | fix su main | — |
+| G5 | **Collaborazione 0 per tutti gli agenti**, anche con referral e avviso all'ospedale. Regola e19: +1 solo per "uno scambio con un altro agente che ha fatto avanzare il need". Nota su 120: il gp "ha contattato il booking" ma C=0; il booking "ha solo risposto". Il referral + "Ricevuto" non fa avanzare niente. | quasi tutti | G5-a booking.notice, G5-b report.notice | online (gp 1.0.8, booking 1.0.10) | review non ancora uscite |
 | G6 | Proattività 0 per booking e strutture | 118, 121, 122, 500002 | P-02 (promemoria), X-31 (mappa) | online parziale | da verificare in un percorso `done` dopo 1.0.7 |
 
 ## Regole
@@ -26,3 +26,7 @@ controllo se i gruppi "online" hanno un percorso nuovo che li verifica.
    verificato, prima capisco **perché** non funziona (come G4: il fix era online ma il percorso si chiudeva prima).
 2. Un fix senza un percorso di prova non è "fatto".
 3. CASI.md dice **cosa** abbiamo cambiato; questo registro dice **se ha funzionato**.
+
+| G7 | Booking muto fino a 48 s su catalogo lungo, consenso in italiano a cittadino inglese | 0164 | BK-30 | verificato | 000176, 650004: "sto controllando" subito |
+| G8 | Consenso cross_asst dato come data.response: domanda ripetuta (000175, 21 msg) | 000175 | BK-36 | online (booking 1.0.11) | — |
+| G9 | Mappa: fermata sempre M5 Ca Granda, porte di riserva sbagliate | — | X-50 | verificato | 000195: indirizzo chiesto, km, fermata metro |

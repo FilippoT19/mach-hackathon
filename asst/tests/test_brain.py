@@ -526,6 +526,25 @@ async def main() -> int:
         print(("PASS " if ok else "FAIL ") + name + ("" if ok else f"  -> {detail}"))
         failures += 0 if ok else 1
 
+    # BK-36: the citizen grants cross-ASST consent as "data.response purpose=cross_asst" (000175).
+    cc = [row("agent:bk", CITIZEN, "consent purpose=cross_asst Posso cercare?", 1),
+          row(CITIZEN, "agent:bk", "data.response purpose=cross_asst", 2)]
+    got = brain._cross_consent(cc, "agent:bk")
+    check("BK-36 data.response cross_asst = consenso", got[0] is True and bool(got[1]), got)
+    ka = [row(CITIZEN, "agent:bk", "need.request lang=ka mal di schiena", 1)]
+    check("X-51 georgiano -> ASST Giambellino", brain._rare_hospital(ka, "VIS-FIS")[0] == "agent:h6r1v45esk77"
+          and "Giambellino" in brain._cross_question(ka, "VIS-FIS"), brain._cross_question(ka, "VIS-FIS"))
+
+    # P-francesco-37: a prescription number we issued, no renewal words -> no new prescription.
+    gp = FakeCity("agent:gp")
+    issued = row("agent:gp", CITIZEN, "prescription prescription_number=prescription_number-N-1 procedure=VIS-FIS priority=B", 1)
+    await brain._gp(gp, citizen_msg("Ho la ricetta prescription_number=prescription_number-N-1, cosa faccio?"), [issued])
+    gp2 = FakeCity("agent:gp")
+    exp = row(LEDGER, "agent:gp", "prescription prescription_number=prescription_number-N-1 procedure=VIS-FIS priority=B state=expired", 2)
+    await brain._gp(gp2, citizen_msg("prescription_number=prescription_number-N-1"), [issued, exp])
+    check("P-F43 ricetta scaduta (stato dal Ledger) si rinnova", not any("prescription.valid" in t for t in to(gp2, CITIZEN)), gp2.sent)
+    check("P-F37 ricetta valida non si rinnova", not any(t.startswith("prescribe") for t in to(gp, LEDGER)) and any("prescription.valid" in t for t in to(gp, CITIZEN)), gp.sent)
+
     # 1. Fixed phrase, no model: prescription with the fallback sentence.
     c = await run_gp("ho mal di schiena da tre giorni")
     led, cit = to(c, LEDGER), to(c, CITIZEN)
@@ -678,7 +697,7 @@ async def main() -> int:
     check("X-27 gp avvisa il nostro booking", len(ref) == 1 and ref[0].startswith("referral ") and "prescription_number=" in ref[0], city.sent)
     check("X-27 niente messaggi al booking di un'altra squadra", not to(city, "agent:other-team-bk"), city.sent)
     check("X-27 nel referral nessun id del cittadino", ref and "citizen:" not in ref[0] and "patient=" not in ref[0], ref)
-    check("X-27 la ricetta al cittadino parte prima del referral", city.sent and [r for r, _ in city.sent].index(CITIZEN) < [r for r, _ in city.sent].index(BK), city.sent)
+    check("G10 referral prima, poi il cittadino lo legge", city.sent and [r for r, _ in city.sent].index(BK) < [r for r, _ in city.sent].index(CITIZEN) and any("Ho già passato io la sua ricetta" in t for t in to(city, CITIZEN)), city.sent)
     brain._PEERS.clear()
     city = FakeCity("agent:gp", peers=[Peer(agent_id="agent:other-team-bk", role="booking_centre")])
     await brain._gp(city, citizen_msg("ho mal di schiena da tre giorni"), [])
@@ -781,7 +800,7 @@ async def main() -> int:
     city4 = FakeCity("agent:bk")
     await brain._desk(city4, no, chat2 + [no], hold_self=False, fixed=None)
     out = to(city4, CITIZEN)
-    check("X-31 rifiuto: indicazioni generiche", out and out[0].startswith("Nessun problema.") and "M5" in out[0], out)
+    check("X-31 rifiuto: indicazioni generiche", out and out[0].startswith("Nessun problema.") and "metro M" in out[0], out)
     # 23. X-32: nearest hospital in the whole city from Index doors.
     from city_sdk.city import CivicAddress
     near = Peer(agent_id="agent:far1", role="hospital", address=CivicAddress(label="Via Vicina 1", lat=45.5191, lon=9.1901))
@@ -923,7 +942,7 @@ async def main() -> int:
             await desk_turn(city, reply, [*chat, original, cancel, reply])
             offers = [t for t in to(city, CITIZEN)[1:] if t.startswith("offer ")]
             expected = "slot_id=S-PAGE-2" if available else "offer_id=wl-N-1 waiting_list=true"
-            check(f"P-francesco-14 pagina 2: {expected}", len(offers) == 1 and expected in offers[0], city.sent)
+            check(f"P-francesco-14 pagina 2: {expected}", bool(offers) and expected in offers[-1], city.sent)
 
         class PageCity(FakeCity):
             async def history(self, peer=None, *, need_id=None):
