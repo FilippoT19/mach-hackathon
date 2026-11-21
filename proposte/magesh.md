@@ -5,6 +5,65 @@ Modello e regole: [../PROPOSTE.md](../PROPOSTE.md). Le più nuove in alto.
 
 <!-- aggiungi qui sotto -->
 
+> **⚠️ DA FARE PER PRIME: P-magesh-10, P-magesh-11, P-magesh-12 (medico di base).**
+> Implementarle **prima di tutte le altre proposte aperte** di questo file. Proteggono le perdite più grandi
+> del medico di base: −2 per una red flag persa e i percorsi falliti per `no_reply`. Sono modifiche piccole
+> in `asst/brain/parts/20_gp.py` e `asst/brain/parts/00_core.py`. Ordine consigliato: 11 → 12 → 10.
+
+### [ ] P-magesh-10: medico di base, secondo messaggio con sintomo non riconosciuto → silenzio
+- Journey: nessuno (lettura del codice su `main` 77b907a) — ruolo: gp
+- Cosa fa il cittadino: scrive un disturbo che la tabella non riconosce ("non mi sento bene"); il medico gli chiede dove e da quando; il cittadino risponde con parole sue che la tabella e il modello ancora non riconoscono ("mi fa male qui sul fianco da tre giorni"). Oppure, dopo aver ricevuto la ricetta, scrive "grazie, e adesso?"
+- Cosa risponde oggi il nostro agente: al primo messaggio la domanda di GP-05 ("Mi descrive meglio il disturbo: dove sente il problema e da quanto tempo?…"). Al secondo: **niente**. In `20_gp.py:292` la risposta parte solo se il medico non ha mai scritto prima a quel cittadino (`asked`); se ha già scritto anche una sola volta, nessuna risposta
+- Review / punti persi: −1 review ("messaggio senza risposta", passivo); il cittadino aspetta 16 minuti, rimanda e dopo 3 tentativi abbandona → `no_reply`, percorso fallito e nessun +2 per la ricetta
+- Cosa dovrebbe fare: **non lasciare mai un messaggio del cittadino senza risposta**. GP-05 resta ("una sola domanda, niente interrogatorio"), ma il secondo messaggio non riconosciuto riceve una risposta diversa e più stretta:
+  1. Se il medico ha già chiesto dettagli e non c'è ancora una ricetta: una domanda chiusa con le scelte che conosciamo, nella lingua del cittadino. Es. "Per prepararle la ricetta giusta mi aiuta a capire: si tratta della schiena, del ginocchio, del cuore che batte forte, o di un controllo del cuore?" / "So I can prepare the right prescription: is it your back, your knee, your heart racing, or a heart check-up?"
+  2. Se il medico ha già mandato una ricetta a questo cittadino: ripetere `prescription prescription_number=… procedure=… priority=…` con una frase breve sul prossimo passo ("La sua ricetta è pronta: contatti il centro prenotazioni con questo numero").
+  3. Dal terzo messaggio non riconosciuto in poi: una frase gentile che non ripete la stessa domanda (per non sembrare un robot), es. "Mi dispiace, non riesco ancora a capire il disturbo. Se peggiora o compare dolore al petto chiami il 112."
+- Test a parole: "dato `non mi sento bene` e poi `mi fa male qui sul fianco da tre giorni` (nessuna parola nota, modello `NONE`), mi aspetto al secondo messaggio una risposta con le quattro scelte, non il silenzio"; "dato una ricetta già mandata e poi `grazie, e adesso?`, mi aspetto di nuovo `prescription prescription_number=…` con il prossimo passo"
+- Priorità secondo te: **P0** (agente muto)
+
+| Caso | Soluzione | Logica | Test |
+|---|---|---|---|
+| Secondo messaggio non riconosciuto → silenzio | Domanda chiusa con le 4 scelte del protocollo | GP-05 vieta l'interrogatorio, non la risposta: ogni messaggio del cittadino ha una risposta | 2 messaggi ignoti → 2 risposte diverse |
+| Messaggio dopo la ricetta → silenzio | Ripetere i token della ricetta + prossimo passo | Il cittadino ha la ricetta ma non sa cosa fare: proattività invece di silenzio | ricetta + "grazie, e adesso?" → `prescription prescription_number=…` |
+
+### [ ] P-magesh-11: medico di base, red flag scritte in altro modo riconosciute solo dal modello
+- Journey: nessuno (lettura del codice su `main` 77b907a) — ruolo: gp (vale anche per gli altri ruoli che usano `_emergency`)
+- Cosa fa il cittadino: descrive un'emergenza con parole diverse da quelle della lista fissa. Es. "ho un forte **male al petto**", "**dolore toracico** da stamattina", "sento un'**oppressione al petto**", "ho perso **forza alla gamba**", "**non sento la gamba** destra", "mi fa male il petto e il braccio sinistro", "chest tightness", "my chest hurts", "I can't feel my leg"
+- Cosa risponde oggi il nostro agente: la lista fissa (`_RED_FLAGS` in `00_core.py:56`, `_RED_FLAGS_MORE` in `00_core.py:65`, le frasi in `20_gp.py:12`) riconosce solo "dolore al petto", "chest pain", "perdita di forza alle gambe", "non sento **più** le gamb**e**" (plurale). Le frasi sopra passano solo se `city.llm` risponde `RED_FLAG` entro 4 s (GP-03). Se il modello è lento, giù o risponde male → **nessuna escalation**: il cittadino riceve la domanda "Mi descrive meglio il disturbo?" o addirittura una ricetta (es. "mal di schiena e non sento la gamba" → ricetta fisiatrica, perché la parola "schiena" viene trovata prima)
+- Review / punti persi: **−2** emergenza (primo agente sul caso senza escalation), più il rischio per la sicurezza del cittadino
+- Cosa dovrebbe fare: la red flag non deve mai dipendere dal modello. Allargare il controllo fisso, che gira prima del modello, con radici di parole invece di frasi esatte:
+  1. **Petto**: "petto" o "torac" insieme a "dolor", "male", "stretta", "oppressione", "peso", "fa male"; in inglese "chest" con "pain", "tight", "pressure", "hurt"
+  2. **Gambe**: "gamba"/"gambe" (singolare e plurale, con o senza "più") con "non sento", "non riesco a muovere", "perso forza", "perdita di forza", "formicolio forte"; in inglese "leg"/"legs" con "can't feel", "cannot move", "lost strength", "numb"
+  3. Il controllo della red flag va fatto **prima** del sintomo: se c'è una red flag, escalation anche se il messaggio contiene "schiena" o "ginocchio"
+  4. Meglio un falso allarme che un'emergenza persa (stessa logica di GP-03)
+- Test a parole: "dato `ho un forte male al petto` con il modello spento, mi aspetto `escalate.emergency reason=red_flag`"; "dato `mal di schiena e non sento la gamba` con il modello spento, mi aspetto `escalate.emergency reason=red_flag` e **nessun** `prescribe`"; "dato `my chest feels tight` con il modello spento, mi aspetto `escalate.emergency reason=red_flag`"
+- Priorità secondo te: **P0** (112)
+
+| Caso | Soluzione | Logica | Test |
+|---|---|---|---|
+| Red flag con parole diverse dalla lista | Controllo fisso con radici (petto/torac + dolore/male/stretta; gamba/e + non sento/forza) | Il modello può essere lento o giù: il −2 e la sicurezza non devono dipendere da lui | "male al petto", modello spento → `escalate.emergency` |
+| Red flag + sintomo noto nello stesso messaggio | Escalation prima della ricetta | La red flag vince sempre sul protocollo | "mal di schiena e non sento la gamba" → escalation, nessun `prescribe` |
+
+### [ ] P-magesh-12: medico di base, il messaggio del 112 aspetta le ricerche prima di partire
+- Journey: nessuno (lettura del codice su `main` 77b907a) — ruolo: gp (`_escalate` è usato da tutti i ruoli)
+- Cosa fa il cittadino: scrive una red flag ("dolore al petto").
+- Cosa risponde oggi il nostro agente: il messaggio giusto (`escalate.emergency reason=red_flag` + "Chiami subito il 112…"), ma **in ritardo**. In `_escalate` (`20_gp.py:30`), prima di mandarlo, il medico aspetta: (a) `_peer` per trovare il nostro ospedale (fino a 5 s, solo la prima volta); (b) insieme (X-55) l'avviso all'ospedale e la ricerca del pronto soccorso più vicino (`_zone_point` + `_nearest_line`, fino a 4 s + 4 s con l'Index lento). Nel caso peggiore il cittadino aspetta **circa 13 secondi** il 112. In più la frase dice sempre "Il pronto soccorso più vicino nella nostra zona è il nostro ospedale in Via Arganini Gerolamo 38", anche se la ricerca subito dopo nomina un altro ospedale più vicino (due frasi in contrasto)
+- Review / punti persi: risposta lenta proprio nel caso più grave (sicurezza, review); rischio −2 audit "offerta descritta in modo falso" se il PS "più vicino" non è il nostro
+- Cosa dovrebbe fare: **il 112 parte per primo, subito, senza aspettare nessuna ricerca.** X-55 resta, ma spostato dopo:
+  1. Primo messaggio, immediato: `escalate.emergency reason=red_flag` + "Capisco, va preso sul serio subito. Chiami subito il 112 o vada al pronto soccorso più vicino. Non si metta alla guida: se può, si faccia accompagnare e non resti da solo." Nessuna ricerca prima di questo messaggio
+  2. Poi, in parallelo: l'avviso `emergency.notice reason=red_flag` al nostro ospedale e la ricerca del PS più vicino
+  3. Secondo messaggio al cittadino, appena finiscono: "Ho già avvisato il nostro ospedale (Via Arganini Gerolamo 38, accessibile in sedia a rotelle)" e, solo se la ricerca lo trova, "Il pronto soccorso più vicino alla sua zona è …". Dire "il più vicino" solo quando la ricerca lo conferma; altrimenti dire "il nostro ospedale"
+  4. La domanda "Mi dice dove si trova adesso?" (X-42) resta dopo
+  - La collaborazione resta visibile nella chat del cittadino (era il motivo di X-55): il "li ho già avvisati" passa solo nel secondo messaggio
+- Test a parole: "dato `dolore al petto` con l'Index che risponde dopo 4 s, mi aspetto `escalate.emergency reason=red_flag` come **primo** messaggio al cittadino, prima di qualsiasi `city.find`"; "dato un PS più vicino di un'altra ASST, mi aspetto che la frase non dica che il nostro ospedale è il più vicino"
+- Priorità secondo te: **P0** (112)
+
+| Caso | Soluzione | Logica | Test |
+|---|---|---|---|
+| Il 112 aspetta `_peer` + ricerca PS (fino a ~13 s) | 112 subito, ricerche dopo, secondo messaggio con avviso e PS più vicino | Nell'emergenza conta il primo secondo; X-55 resta ma non blocca più il 112 | Index lento → primo messaggio = `escalate.emergency` |
+| "Il PS più vicino è il nostro" sempre | Dire "il più vicino" solo se la ricerca lo conferma | Nessuna frase falsa al cittadino (audit −2) | PS di altra ASST più vicino → la frase non dice "il nostro è il più vicino" |
+
 ### [ ] P-magesh-9: consultorio, hold rifiutato → rioffre lo stesso slot rifiutato → la seconda conferma resta senza risposta
 - Journey: N-2026-11-02-8909120001050002 (cittadino 000105, L3, Fallito, wave W01QQQ) — ruolo: family_counseling. Lettura del codice su `main` 78dab8a
 - Cosa fa il cittadino: chiede una visita al consultorio (00:30:13); riceve 3 offerte (10:30, 12:00, 14:30 del 17/11) e, in un secondo messaggio, una quarta (16:00); conferma `of-…-20261117-1030` con `cons-…-booking` (00:30:42). Dopo l'annullamento riceve di nuovo le stesse 3 offerte e riconferma **la stessa** `of-…-1030` (01:03:37)
