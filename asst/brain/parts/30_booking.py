@@ -546,6 +546,18 @@ def _agenda_now(chat: list[Message], message: Message) -> datetime | None:
     return now
 
 
+_AGENDA_STALE = timedelta(seconds=120)  # two agenda hours at 60x
+
+
+def _agenda_stale(chat: list[Message], message: Message) -> bool:
+    """True when this citizen turn opened more than two real minutes after our agenda reading."""
+    if not message.sender.startswith("citizen:"):
+        return False
+    anchor = next((row for row in reversed(chat) if row.sender == LEDGER and first_word(row.text) == "agenda"), None)
+    read_at, turn_at = (_when(anchor.sent_at) if anchor else None), _when(message.sent_at)
+    return read_at is not None and turn_at is not None and turn_at - read_at > _AGENDA_STALE
+
+
 def _within(at: str, deadline: datetime | None) -> bool:
     when = _when(at)
     return deadline is None or when is None or when <= deadline
@@ -1693,6 +1705,17 @@ async def _advance_alone(
     if now is None or world is None:
         _trace("stop", message, why="no_world")
         return
+    if _agenda_stale(chat, message) and f"agenda:{message.msg_id}" not in _sent(key).notes:
+        # BK-61: the agenda line is minutes old (hours of agenda) and the agenda can jump at a
+        # level change (BK-59). Read it again, once per message, instead of trusting our sum.
+        _sent(key).notes.add(f"agenda:{message.msg_id}")
+        said = _SAID.get()
+        had = said is not None and LEDGER in said
+        chat = await _fresh_agenda(city, message, chat)
+        if said is not None and not had:
+            said.discard(LEDGER)  # reading the clock is not an answer: BK-33 still speaks if nothing else does
+        agenda = _ledger(chat, "agenda")
+        now = _when("" if agenda is None else agenda.get("agenda_now", "")) or now
     now = _agenda_now(chat, message) or now  # BK-48: a later turn is later on the agenda too
     # A cancel drops every offer the citizen was holding, so the ones still free are sent again,
     # once per cancel: a second turn for the same cancel or refusal does not repeat them.
