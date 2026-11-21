@@ -8190,14 +8190,35 @@ async def _citizen_cancel(
                 # BK-59 (0169, 0223): the citizen refused for the deadline. Every later slot is past
                 # it too, and a B or D window that ran out means the prescription is expired (P1):
                 # send the citizen to the GP for a renewal, then book with the new number.
-                await _ask_renewal(city, message, chat, citizen, _number(chat))
-                return
+                # BK-65 (P-francesco-60): only when it IS expired: the Ledger says so, or a fresh
+                # agenda reading is past the window. A valid prescription goes on to _advance.
+                if await _window_over(city, message, chat):
+                    await _ask_renewal(city, message, chat, citizen, _number(chat))
+                    return
             if _cancel_reason(chat, message, "past"):
                 chat = await _fresh_agenda(city, message, chat)
     finally:
         if ack is not None:
             await ack
     await _advance(city, message, chat, fixed=fixed, replacing=True, step=step)
+
+
+async def _window_over(city: City, message: Message, chat: list[Message]) -> bool:
+    """BK-65: True when the prescription is really expired: the Ledger said so, else a fresh agenda
+    reading is past the prescription window. A renewal already asked is never asked twice."""
+
+    number = _number(chat)
+    if not number or _we(chat, city.agent_id, "purpose=prescription_renewal", to=message.sender, word="data.request"):
+        return False
+    if _expired_prescription(chat, number):
+        return True
+    # The window is read on the clock we had (the new agenda line would move it along with now).
+    reply = _prescription_reply(chat, number)
+    deadline = _rx_deadline(chat, reply, (reply or {}).get("priority"), number)
+    fresh = await _fresh_agenda(city, message, chat)
+    anchor = next((row for row in reversed(fresh) if row.sender == LEDGER and first_word(row.text) == "agenda"), None)
+    now = _when(fields_of(anchor.text).get("agenda_now", "")) if anchor is not None else None
+    return _expired_prescription(fresh, number) or (now is not None and deadline is not None and now > deadline)
 
 
 def _clock_jumped(chat: list[Message], agent: str, offer_id: str) -> bool:
