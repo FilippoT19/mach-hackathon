@@ -61,6 +61,7 @@ _RED_FLAGS = (
 )
 _DEADLINE_DAYS = {"B": 2, "D": 5}
 _EMERGENCY_NEEDS: set[str] = set()
+_EARLY_ACK: dict[str, "asyncio.Task[bool]"] = {}  # BK-61: msg_id -> cancel.ack sent before the history read
 _EARLY_LLM: dict[str, "asyncio.Task[str | None]"] = {}  # OPS-09: msg_id -> symptom check started early
 _RED_FLAGS_MORE = ("sanguinamento abbondante", "heavy bleeding", "non riesco a respirare", "can't breathe", "cannot breathe", "svenut", "fainted")
 _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
@@ -117,12 +118,21 @@ async def main(need: Need, city: City) -> None:
         early = asyncio.get_running_loop().create_task(
             _llm_symptom(city, message.text, emergency_only=_symptom(message) is not None))
         _EARLY_LLM[message.msg_id] = early
+    # BK-61 (journey 000304): five cancels got no answer in five minutes, each turn was waiting
+    # for its history read. The cancel.ack needs only the citizen's text: it leaves at once.
+    early_ack = None
+    if role_of() == "booking_centre" and _early_cancel(message):
+        early_ack = asyncio.get_running_loop().create_task(_say(city, message.sender, _cancel_ack_text(
+            fields_of(message.text).get("offer_id", ""), _lang([message]) != "it")))
+        _EARLY_ACK[message.msg_id] = early_ack
     try:
         case = await city.history(need_id=message.need_id)
         await handle(role_of(), city, message, case)
     finally:
         if early is not None and _EARLY_LLM.pop(message.msg_id, None) is not None:
             early.cancel()
+        if early_ack is not None and _EARLY_ACK.pop(message.msg_id, None) is not None:
+            await early_ack  # the turn took another road: the ack still reaches the citizen
 
 
 def _asks_address(message: Message) -> bool:

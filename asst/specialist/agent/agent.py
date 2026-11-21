@@ -59,6 +59,7 @@ _RED_FLAGS = (
 )
 _DEADLINE_DAYS = {"B": 2, "D": 5}
 _EMERGENCY_NEEDS: set[str] = set()
+_EARLY_ACK: dict[str, "asyncio.Task[bool]"] = {}  # BK-61: msg_id -> cancel.ack sent before the history read
 _EARLY_LLM: dict[str, "asyncio.Task[str | None]"] = {}  # OPS-09: msg_id -> symptom check started early
 _RED_FLAGS_MORE = ("sanguinamento abbondante", "heavy bleeding", "non riesco a respirare", "can't breathe", "cannot breathe", "svenut", "fainted")
 _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
@@ -115,12 +116,21 @@ async def main(need: Need, city: City) -> None:
         early = asyncio.get_running_loop().create_task(
             _llm_symptom(city, message.text, emergency_only=_symptom(message) is not None))
         _EARLY_LLM[message.msg_id] = early
+    # BK-61 (journey 000304): five cancels got no answer in five minutes, each turn was waiting
+    # for its history read. The cancel.ack needs only the citizen's text: it leaves at once.
+    early_ack = None
+    if role_of() == "booking_centre" and _early_cancel(message):
+        early_ack = asyncio.get_running_loop().create_task(_say(city, message.sender, _cancel_ack_text(
+            fields_of(message.text).get("offer_id", ""), _lang([message]) != "it")))
+        _EARLY_ACK[message.msg_id] = early_ack
     try:
         case = await city.history(need_id=message.need_id)
         await handle(role_of(), city, message, case)
     finally:
         if early is not None and _EARLY_LLM.pop(message.msg_id, None) is not None:
             early.cancel()
+        if early_ack is not None and _EARLY_ACK.pop(message.msg_id, None) is not None:
+            await early_ack  # the turn took another road: the ack still reaches the citizen
 
 
 def _asks_address(message: Message) -> bool:
@@ -6755,7 +6765,8 @@ async def _desk_route(
     if "booking.receipt" in kind and message.sender.startswith("agent:"):
         await _forward_receipt(city, message, chat)
         return
-    if message.sender.startswith("citizen:") and _asked_where(chat, city.agent_id, message):
+    if (message.sender.startswith("citizen:") and _asked_where(chat, city.agent_id, message)
+            and not _citizen_cancels(message.text)):  # BK-61: a cancel is not an address answer
         await _on_where(city, message, chat)
         return
     if first_word(message.text) == "data.response" and (message.need_id or message.msg_id) in _ANSWERED_WHERE:
@@ -8021,6 +8032,28 @@ async def _nearest_line(city: City, point: tuple[float, float], en: bool, booked
     return _nearest_words(await _nearest_hospital(city, point), en)
 
 
+def _cancel_ack_text(offer_id: str, en: bool) -> str:
+    return ("cancel.ack " + (f"offer_id={offer_id} " if offer_id else "")
+            + ("Understood, I have withdrawn that offer." if en else "Capito, ho ritirato quell'offerta."))
+
+
+def _early_cancel(message: Message) -> bool:
+    """BK-61: a citizen cancel of one offer that can be acknowledged before the case is read:
+    nothing else in the message asks for another road (confirm, red flag, clinical question)."""
+
+    text = message.text or ""
+    if not message.sender.startswith("citizen:") or not _citizen_cancels(text):
+        return False
+    offer_id = fields_of(text).get("offer_id", "")
+    if not offer_id or "confirm" in words(text) or _red_flag(message) or _emergency(message) or clinical(text):
+        return False
+    mark = _sent(f"cancel:{message.need_id or message.msg_id}:{offer_id}")
+    if mark.notes & {"ack", "early"}:
+        return False  # a retry of the same cancel: already answered
+    mark.notes.add("early")
+    return True
+
+
 async def _citizen_cancel(
     city: City, message: Message, chat: list[Message], *, fixed: str | None
 ) -> None:
@@ -8041,12 +8074,14 @@ async def _citizen_cancel(
     mark.notes.add("ack")
     en = _lang(chat) != "it"
     # OPS-11: the ack goes out while the case is read again; it is out before any next message.
-    ack = asyncio.ensure_future(_say(
-        city,
-        citizen,
-        "cancel.ack " + (f"offer_id={offer_id} " if offer_id else "")
-        + ("Understood, I have withdrawn that offer." if en else "Capito, ho ritirato quell'offerta."),
-    ))
+    # BK-61: main() may have sent it already, before the first history read.
+    ack = _EARLY_ACK.pop(message.msg_id, None)
+    if ack is not None:
+        said = _SAID.get()
+        if said is not None:
+            said.add(citizen)
+    else:
+        ack = asyncio.ensure_future(_say(city, citizen, _cancel_ack_text(offer_id, en)))
     try:
         async with _need_gate(_GATES, need_key):
             try:  # cancels of one batch run at the same time: read what the others already wrote
