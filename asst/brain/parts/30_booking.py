@@ -2829,6 +2829,10 @@ async def _ask_where(city: City, message: Message, chat: list[Message], citizen:
     """X-31/X-49: one data.request per case for address, assistance and car, with its purpose."""
     if _we(chat, city.agent_id, "purpose=booking", to=citizen, word="data.request"):
         return
+    asked = _sent(message.need_id or message.msg_id).notes
+    if "where_asked" in asked:
+        return  # BK-75: asked in this process; the case history does not show it yet (two questions, 12:27:51/52Z)
+    asked.add("where_asked")
     en = _lang(chat) != "it"
     if early:
         line = (

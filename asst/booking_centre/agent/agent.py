@@ -946,6 +946,14 @@ async def _gp_again(city: City, message: Message, chat: list[Message]) -> None:
             if en else
             "La sua ricetta è pronta: contatti il centro prenotazioni con questo numero per prenotare la visita."))
         return
+    if _we(chat, agent, "", to=citizen, word="gp.report"):
+        # GP-23: after "I have your report", a reply with no symptom is not a new triage.
+        await _say(city, citizen, "gp.note " + (
+            "Your report is in your file. If you have a new problem, tell me where you feel it and "
+            "since when, and I will prepare the right prescription." if en else
+            "Il referto è nel suo fascicolo. Se ha un disturbo nuovo, mi dica dove lo sente e da "
+            "quando, e le preparo la ricetta giusta."))
+        return
     if not _we(chat, agent, "", to=citizen, word="gp.choices"):
         await _say(city, citizen, "gp.choices " + (
             "So I can prepare the right prescription: is it your back, your knee, your heart "
@@ -1065,6 +1073,39 @@ def _symptom(message: Message) -> str | None:
     return None
 
 
+# GP-23 (proactivity, closing the loop): our specialist sends report.notice only with the citizen's
+# report_sharing consent (SP-10), with citizen= and lang=. The GP tells the citizen it has the
+# report. It promises nothing it does not do: the GP prescribes no follow-up on its own (SP-11 open).
+_GP_TOLD_REPORT: set[tuple[str, str]] = set()
+
+
+async def _report_to_citizen(city: City, message: Message, chat: list[Message], booking_id: str) -> None:
+    fields = fields_of(message.text)
+    citizen = fields.get("citizen", "")
+    if not booking_id or not citizen.startswith("citizen:") or not _ours(message.sender):
+        return  # only our specialist's consented notice names the citizen
+    key = (citizen, booking_id)
+    if key in _GP_TOLD_REPORT or _we(chat, city.agent_id, f"booking_id={booking_id}", to=citizen, word="gp.report"):
+        return
+    _GP_TOLD_REPORT.add(key)
+    if len(_GP_TOLD_REPORT) > _SENT_NEEDS:
+        _GP_TOLD_REPORT.clear()
+        _GP_TOLD_REPORT.add(key)
+    en = (fields.get("lang") or _lang(chat)) != "it"
+    await _say(city, citizen, f"gp.report booking_id={booking_id} " + (
+        "I am your GP: the specialist has sent me the report of your visit, as you allowed, and I "
+        "have put it in your file. If your symptoms change or you have a doubt, write to me." if en else
+        "Sono il suo medico di base: lo specialista mi ha inviato il referto della sua visita, come "
+        "lei ha autorizzato, e l'ho messo nel suo fascicolo. Se i disturbi cambiano o ha un dubbio, "
+        "mi scriva."))
+
+
+def _symptoms_named(message: Message) -> list[str]:
+    """GP-12: every protocol symptom the citizen's words name, in table order."""
+    lowered = message.text.lower()
+    return [name for name, phrases in _KEYWORDS if any(phrase in lowered for phrase in phrases)]
+
+
 def _our_rx(chat: list[Message], agent: str) -> dict[str, str]:
     found: dict[str, str] = {}
     for row in chat:
@@ -1115,21 +1156,40 @@ def _rx_line(
     visit = _VISIT.get(procedure or "", ("la visita", "the visit"))[k]
     when = _WHEN.get(priority or "", ("", ""))[k]
     where = _WHERE.get(procedure or "", ("", ""))[k]
+    safety = _safety_line(en)
     if en:
         return (
             f"Thank you for telling me about {symptom}, I understand it is worrying. As your GP I "
             f"have prescribed {visit}" + (f", {when}" if when else "") + ". I am telling the "
             "booking centre now: contact it with this prescription number and it will offer you "
             "the first suitable slots" + (f". The visit is {where}" if where else "") + ". On the "
-            "day, bring your health card and this number."
+            "day, bring your health card and this number." + safety
         )
     return (
         f"Grazie per avermi descritto {symptom}, capisco che la preoccupi. Come suo medico di base "
         f"le ho prescritto {visit}" + (f", {when}" if when else "") + ". Avviso subito il centro "
         "prenotazioni: lo contatti con questo numero di ricetta e le proporrà i primi posti "
         "adatti" + (f". La visita si fa {where}" if where else "") + ". Il giorno della visita "
-        "porti la tessera sanitaria e questo numero."
+        "porti la tessera sanitaria e questo numero." + safety
     )
+
+
+# GP-22 (proactivity): after the prescription, the red flags of the city's protocol, so the citizen
+# knows when not to wait for the visit. Only the two red flags the kit names (the example's
+# _RED_FLAGS table; chat_play: "SYM-PALPITATIONS ... red flag if the text says chest pain"). The kit
+# does not tie "loss of strength in the legs" to one symptom, so both go with every prescription:
+# no diagnosis, no symptom-specific advice. The line passes clinical() or is left out.
+_SAFETY = (
+    " Se nel frattempo compaiono dolore al petto o perdita di forza alle gambe, non aspetti la "
+    "visita: chiami subito il 112.",
+    " If in the meantime you get chest pain or loss of strength in your legs, do not wait for the "
+    "visit: call 112 straight away.",
+)
+
+
+def _safety_line(en: bool) -> str:
+    line = _SAFETY[1 if en else 0]
+    return "" if clinical(line) else line
 
 
 def _renewal_source(chat: list[Message], number: str) -> dict[str, str] | None:
@@ -1210,6 +1270,7 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
         if not _we(chat, agent, f"booking_id={bid}", to=message.sender, word="report.notice.ack"):
             await _say(city, message.sender, f"report.notice.ack booking_id={bid} Grazie, leggo il referto "
                        "e richiamo io il paziente se serve un controllo.")
+        await _report_to_citizen(city, message, chat, bid)
         return
     if first_word(message.text) == "booking.notice" and message.sender.startswith("agent:"):
         # G5: the booking tells us the visit is booked; we close the loop for the follow-up.
@@ -1294,6 +1355,20 @@ async def _gp(city: City, message: Message, chat: list[Message]) -> None:
         elif (asked and message.sender.startswith("citizen:")
               and not _we(chat, agent, "", to=message.sender, word="escalate.emergency")):
             await _gp_again(city, message, chat)
+        return
+    # GP-12: two protocol symptoms in one message ("il ginocchio, ma anche la schiena") with
+    # different rows (VIS-FIS D or B...): one targeted question instead of guessing the first.
+    # Once per need: if the answer still names both, the first keyword wins as before.
+    named = _symptoms_named(message)
+    if (len({_PROTOCOLS[c] for c in named}) > 1 and "symptom_code" not in fields
+            and not _we(chat, agent, "", to=message.sender, word="gp.which")):
+        en = _lang([*chat, message]) != "it"
+        a, b = (_SYMPTOM_NAME[c][1 if en else 0] for c in named[:2])
+        await _say(city, message.sender, "gp.which " + (
+            f"Thank you for telling me. You mention {a} and {b}: which one bothers you most right "
+            "now? Then I prescribe the right visit straight away." if en else
+            f"Grazie di avermelo detto. Mi parla di {a} e di {b}: quale dei due le dà più fastidio "
+            "adesso? Così le prescrivo subito la visita giusta.") + _safety_line(en))
         return
     procedure, priority = _PROTOCOLS[code]
     number = _rx(message.need_id, message.msg_id)
@@ -8384,6 +8459,10 @@ async def _ask_where(city: City, message: Message, chat: list[Message], citizen:
     """X-31/X-49: one data.request per case for address, assistance and car, with its purpose."""
     if _we(chat, city.agent_id, "purpose=booking", to=citizen, word="data.request"):
         return
+    asked = _sent(message.need_id or message.msg_id).notes
+    if "where_asked" in asked:
+        return  # BK-75: asked in this process; the case history does not show it yet (two questions, 12:27:51/52Z)
+    asked.add("where_asked")
     en = _lang(chat) != "it"
     if early:
         line = (
@@ -9213,6 +9292,10 @@ async def _facility(
         attempt = _checkin_refused(city.agent_id, message, chat)
         if attempt is not None:
             await _answer_checkin_refusal(city, attempt, chat, reason=message.text)
+    elif reports and message.sender.startswith("citizen:") and head != "checkin" and (
+        booking := _report_pending(chat, city.agent_id, message.sender)
+    ):  # SP-10: the answer to our report_sharing question (consent_ref, or a refusal in words)
+        await _on_report_consent(city, message, chat, booking)
     elif head == "checkin" and message.sender.startswith("citizen:") and (
         "booking_id=" in message.text or not _checkin_question(message.text)
     ):  # P-francesco-12: act checkin + booking_id is always registered, even with a question
@@ -9792,20 +9875,116 @@ async def _on_checked_in(
         )
     if citizen and not _we(chat, city.agent_id, token, to=citizen, word="checkin"):
         await _confirm_checkin(city, message, chat, citizen)
-    if reports and not _we(chat, city.agent_id, token, to=LEDGER, word="report"):
-        await _say(city, LEDGER, f"report booking_id={booking_id} outcome_code=VISIT")
-    if not reports:
+    if not reports or not citizen or _we(chat, city.agent_id, token, to=LEDGER, word="report"):
         return
+    # SP-10: the report waits for the citizen's answer to the report_sharing consent (e19).
+    if not _we(chat, city.agent_id, "purpose=report_sharing", to=citizen, word="consent"):
+        en = _lang(chat) != "it"
+        if await _say(city, citizen, "consent purpose=report_sharing "
+                      + ("May I share your report?" if en else "Posso condividere il suo referto?")):
+            _report_timer(city, message, citizen, booking_id, chat)
+
+
+# --- SP-10: consent to the specialist's report (e19 "Consenso al referto dello specialista",
+# facility.md point 4, P-francesco-17/61). After the check-in the specialist asks
+#   consent purpose=report_sharing Posso condividere il suo referto?
+# The citizen answers with a `consent` whose text carries consent_ref=<id>: that id goes to the
+# Ledger in `report ... consent_ref=<id>`. A no comes in plain words, without the field asked:
+# it is a refusal and the report is filed anyway, not shared (e19 "I rifiuti arrivano in parole
+# semplici"). Not shared means no report.notice to the GP (city:audit over-disclosure -2).
+# Before SP-10 the report went to the Ledger at once, without consent_ref, and the GP got it anyway.
+# The follow-up prescription (prescribe ... follow_up_of=) is NOT here: the kit gives no criterion
+# for when the path requires it nor its priority, so it is left to a documented rule.
+# _REPORT_SILENCE is our choice, not the kit's: a citizen who never answers must not leave the
+# report unfiled ("Referto mancante" -1); e19 warns that waiting for an answer that never comes
+# keeps the journey stuck until the timeout. A report filed without consent_ref cannot get it later
+# (no Ledger command updates a report), so the wait must cover the city's delays: REGISTRO G16 p50
+# 235 s per message, MACH-2.0 R13 median 254 s. 240 s as P-magesh-26. Local run (time x100): a yes
+# after 150 s or 230 s is shared with 240 s, lost with 90 s; no answer -> filed, not shared.
+_REPORT_SILENCE = 240.0
+_REPORT_TIMERS: set["asyncio.Task[None]"] = set()
+_REPORT_FILED: OrderedDict[tuple[str, str | None, str], None] = OrderedDict()
+
+
+def _report_pending(chat: list[Message], agent: str, citizen: str) -> str | None:
+    """The booking_id whose report_sharing consent we asked ``citizen``, report not filed yet."""
+    if not _we(chat, agent, "purpose=report_sharing", to=citizen, word="consent"):
+        return None
+    booking_id = next(
+        (fields_of(row.text).get("booking_id", "") for row in reversed(chat)
+         if row.sender == agent and row.recipient == citizen and first_word(row.text) == "checkin"
+         and fields_of(row.text).get("booking_id")),
+        "",
+    )
+    if not booking_id or _we(chat, agent, f"booking_id={booking_id}", to=LEDGER, word="report"):
+        return None
+    return booking_id
+
+
+async def _on_report_consent(city: City, message: Message, chat: list[Message], booking_id: str) -> None:
+    """The citizen's answer to our report_sharing question: consent_ref -> shared, else refusal."""
+    fields = fields_of(message.text)
+    ref = fields.get("consent_ref", "")
+    if fields.get("purpose") not in (None, "report_sharing"):
+        ref = ""  # a consent_ref for another purpose is not consent to share the report
+    await _file_report(city, message, chat, booking_id, consent_ref=ref or None)
+
+
+async def _file_report(
+    city: City, message: Message, chat: list[Message], booking_id: str, *, consent_ref: str | None,
+) -> None:
+    agent = city.agent_id
+    token = f"booking_id={booking_id}"
+    key = (agent, message.need_id, booking_id)
+    if key in _REPORT_FILED or _we(chat, agent, token, to=LEDGER, word="report"):
+        return
+    _REPORT_FILED[key] = None
+    if len(_REPORT_FILED) > _SENT_NEEDS:
+        _REPORT_FILED.popitem(last=False)
+    _event("facility.report", message.need_id, booking=booking_id, shared=str(bool(consent_ref)).lower())
+    await _say(city, LEDGER, f"report {token} outcome_code=VISIT" + (f" consent_ref={consent_ref}" if consent_ref else ""))
     found = await _await_line(city, message.need_id, chat, "reported", token, op="report")
     if found is None:
         _LOG.info("care.report.missing", extra={"need_id": (message.need_id or "")[:48]})
         return
     reply, fresh = found
     if first_word(reply.text) == "reported":
-        await _on_reported(city, reply, fresh)
+        await _on_reported(city, reply, fresh, shared=bool(consent_ref))
 
 
-async def _on_reported(city: City, message: Message, chat: list[Message]) -> None:
+def _report_timer(city: City, message: Message, citizen: str, booking_id: str, chat: list[Message]) -> None:
+    try:
+        task = asyncio.get_running_loop().create_task(
+            _report_silence(city, message, citizen, booking_id, list(chat)))
+    except RuntimeError:  # no running loop: nothing to schedule
+        return
+    _REPORT_TIMERS.add(task)
+    task.add_done_callback(_REPORT_TIMERS.discard)
+
+
+async def _report_silence(
+    city: City, message: Message, citizen: str, booking_id: str, chat: list[Message],
+) -> None:
+    known = {row.msg_id for row in chat} | {message.msg_id}
+    try:
+        await asyncio.sleep(_REPORT_SILENCE)
+        try:
+            fresh = _keep(await city.history(need_id=message.need_id), chat)
+        except CapError:
+            fresh = chat
+        if any(row.sender == citizen and row.msg_id not in known for row in fresh):
+            return  # the citizen answered: that turn files the report
+        await _file_report(city, message, fresh, booking_id, consent_ref=None)
+    except Exception:  # a background step must never raise into the loop
+        _LOG.exception("care.report_silence_failed need_id=%s", (message.need_id or "")[:48])
+
+
+def _report_shared(chat: list[Message], agent: str, token: str) -> bool:
+    return any(row.sender == agent and row.recipient == LEDGER and first_word(row.text) == "report"
+               and token in row.text.split() and "consent_ref" in fields_of(row.text) for row in chat)
+
+
+async def _on_reported(city: City, message: Message, chat: list[Message], *, shared: bool | None = None) -> None:
     booking_id = fields_of(message.text).get("booking_id", "")
     citizen = _citizen(chat)
     if not booking_id or not citizen:
@@ -9813,23 +9992,43 @@ async def _on_reported(city: City, message: Message, chat: list[Message]) -> Non
     token = f"booking_id={booking_id}"
     if _we(chat, city.agent_id, token, to=citizen, word="report"):
         return
+    if shared is None:
+        shared = _report_shared(chat, city.agent_id, token)
+    if not shared:
+        # SP-10: refused or no answer. Filed, not shared: no report.notice, and we do not say the
+        # GP can read it.
+        line = await _human(
+            city,
+            chat,
+            "the specialist visit is done; the report is filed and, as the citizen chose, not shared",
+            "La visita è conclusa e il referto è archiviato. Come ha scelto, non lo condivido con "
+            "nessuno. Grazie di essersi affidato a noi.",
+            en="Your visit is complete and the report is filed. As you chose, I am not sharing it "
+            "with anyone. Thank you for trusting us.",
+        )
+        await _say(city, citizen, f"report booking_id={booking_id} outcome_code=VISIT {line}")
+        return
     line = await _human(
         city,
         chat,
-        "the specialist visit is done and the report is filed; the citizen's GP can read it",
+        "the specialist visit is done and the report is filed; with the citizen's consent the GP can read it",
         "La visita è conclusa e il referto è archiviato. Il suo medico di base può consultarlo; "
         "se serve un controllo, sarà lui a indicarglielo. Grazie di essersi affidato a noi.",
         en="Your visit is complete and the report is filed. Your GP can read it and will tell "
         "you if a follow-up is needed. Thank you for trusting us.",
     )
     # G5 / SP-20 / G10: share the report with the citizen's GP first, then say so to the citizen.
+    # SP-10: only with the citizen's report_sharing consent.
     gp = await _peer(city, "gp", "medico di base gp asst-niguarda")
     if gp and gp != city.agent_id and not _we(chat, city.agent_id, token, to=gp, word="report.notice"):
-        if await _say(city, gp, f"report.notice {token} outcome_code=VISIT Referto archiviato per il vostro "
-                      "paziente: potete leggerlo e decidere il controllo."):
-            line += (" I have sent the report to your GP myself, so they can plan any follow-up with you."
+        # GP-23: citizen= and lang= so the GP can tell the citizen it has the report (consented share).
+        if await _say(city, gp, f"report.notice {token} outcome_code=VISIT citizen={citizen} lang={_lang(chat)} "
+                      "Referto archiviato per il vostro paziente: potete leggerlo e decidere il controllo."):
+            line += (" With your consent, I have sent the report to your GP myself, so they can plan any "
+                     "follow-up with you."
                      if _lang(chat) != "it" else
-                     " Ho inviato io il referto al suo medico di base, così potrà decidere con lei il controllo.")
+                     " Come mi ha autorizzato, ho inviato io il referto al suo medico di base, così potrà "
+                     "decidere con lei il controllo.")
     await _say(city, citizen, f"report booking_id={booking_id} outcome_code=VISIT {line}")
 
 
