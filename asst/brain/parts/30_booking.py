@@ -2351,6 +2351,9 @@ async def _on_confirm(
         line = ("I am sorry, that appointment is no longer available. Here are the other free ones."
                 if _lang(chat) != "it" else
                 "Mi dispiace, quel posto non è più disponibile. Le propongo gli altri orari liberi.")
+        _event("booking.confirm", message.need_id, step="no_capacity", slot_id=slot,
+               why="held_elsewhere" if busy else "ledger_refused",
+               holder=(_HELD_FOR.get(slot) or ("",))[0][-12:])  # OPS-13
         await _say(city, citizen, f"cancel offer_id={offer_id or 'of-' + slot} reason=no_capacity {line}")
         await _advance(city, message, chat, fixed="CONS-GIN" if hold_self else None, replacing=True)
         return
@@ -2367,6 +2370,8 @@ async def _on_confirm(
             _HELD_FOR[slot] = (need_key, time.monotonic())  # BK-63
             while len(_HELD_FOR) > _SENT_NEEDS:
                 _HELD_FOR.popitem(last=False)
+            _event("booking.confirm", message.need_id, step="hold", slot_id=slot,
+                   facility=_kind(facility), sender=_kind(message.sender))  # OPS-13
             if not await _ledger_ask(city, message, " ".join(parts)):
                 _HELD_FOR.pop(slot, None)
                 return
@@ -2415,6 +2420,8 @@ async def _on_confirm(
         accepted, cross_ref = _cross_consent(chat, agent)
         if accepted and cross_ref:
             parts.append(f"cross_asst_consent_ref={cross_ref}")  # common format between ASSTs
+    _event("booking.confirm", message.need_id, step="forward", slot_id=slot, facility=_kind(target),
+           cross=str(target not in _OUR_AGENTS.values()).lower())  # OPS-13
     if await _say(city, target, " ".join(parts)) and message.sender.startswith("citizen:"):
         # X-49: ask where the citizen comes from while the facility locks the slot, so the
         # receipt can carry the exact route. The receipt never waits for this answer.
