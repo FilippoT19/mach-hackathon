@@ -2025,7 +2025,9 @@ async def _forward_receipt(city: City, message: Message, chat: list[Message]) ->
 
 async def _send_forwarded_receipt(
     city: City, message: Message, chat: list[Message], booking_id: str, ledger_ref: str,
+    *, facility: str | None = None, zone_route: bool = True,
 ) -> None:
+    facility = facility or message.sender  # BK-61: the Ledger's committed line names no facility
     citizen = _citizen(chat)
     if not citizen:
         return
@@ -2038,18 +2040,21 @@ async def _send_forwarded_receipt(
         "the visit is booked and confirmed; on the day of the visit the citizen checks in at "
         "the facility with this receipt",
         "La visita è prenotata e confermata. Il giorno della visita si presenti "
-        + _FACILITY_WHERE.get(message.sender, "in struttura")
+        + _FACILITY_WHERE.get(facility, "in struttura")
         + " con questa ricevuta e la tessera sanitaria per il check-in. Se non può venire, "
         "ci scriva prima: le spostiamo l'appuntamento e liberiamo il posto per un altro cittadino.",
         en="Your visit is booked and confirmed. On the day, please come "
-        + _FACILITY_WHERE_EN.get(message.sender, "to the facility")
+        + _FACILITY_WHERE_EN.get(facility, "to the facility")
         + " with this receipt and your health card for check-in. If you cannot come, write to "
         "us first: we will move the appointment and free the slot for another citizen.",
     )
     # G5 / G10 collaboration: tell the GP first, then say it in the receipt (the review reads only
     # the citizen chat, so the agent-to-agent step must be visible there).
     # OPS-11: the route (Index doors) does not depend on the GP notice: both run at once.
-    route = asyncio.ensure_future(_where_route(city, message, chat, message.sender))
+    # BK-61: the booking centre's own receipt leaves seconds after the address question. Without
+    # an answer yet it gives no route from the district: the exact one follows the answer.
+    wants_route = zone_route or (message.need_id or "") in _WHERE_OF
+    route = asyncio.ensure_future(_where_route(city, message, chat, facility) if wants_route else _nothing())
     try:
         gp = await _peer(city, "gp", "medico di base gp asst-niguarda")
     except BaseException:
@@ -2057,7 +2062,7 @@ async def _send_forwarded_receipt(
         raise
     if gp and gp != city.agent_id and not _we(chat, city.agent_id, token, to=gp, word="booking.notice"):
         number = _number(chat) or ""
-        if await _say(city, gp, f"booking.notice {token} ledger_ref={ledger_ref} facility={message.sender} "
+        if await _say(city, gp, f"booking.notice {token} ledger_ref={ledger_ref} facility={facility} "
                       + (f"prescription_number={number} " if number else "")
                       + "Visita prenotata e confermata per il vostro paziente: vi avvisiamo per il controllo dopo il referto."):
             line += (" I have also informed your GP about this booking myself, so they can follow up after the visit."
@@ -2080,7 +2085,7 @@ async def _send_forwarded_receipt(
     # X-31: proactive next step — ask where the citizen lives and how they move, then tell them
     # the best way to reach the facility (distance from the map, transit, access, Area B).
     if message.need_id:
-        _BOOKED_AT[message.need_id] = message.sender
+        _BOOKED_AT[message.need_id] = facility
     await _ask_where(city, message, chat, citizen, early=False)
 
 
