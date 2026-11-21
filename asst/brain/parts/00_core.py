@@ -70,6 +70,29 @@ _EARLY_112: set[str] = set()  # GP-17: needs whose 112 left before the history r
 _RED_FLAGS_MORE = ("sanguinamento abbondante", "heavy bleeding", "non riesco a respirare", "can't breathe", "cannot breathe", "svenut", "fainted")
 _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
 _LOG = logging.getLogger("care")
+# OPS-14: which build took a decision. `seats.py --brain` replaces this line with the digest of the
+# joined parts, so the id is inside agent.py in the image and never comes from the local card
+# (the CLI bumps that after each release; card and `city status` have shown different versions).
+_BUILD = "dev"
+_CARD_VERSION: list[str] = []
+_STARTED: list[bool] = []
+
+
+def _build_tag() -> str:
+    """``build=<id> card=<version>``: the card version is read from the card INSIDE the image
+    (``CITY_CARD``), the one the release was built with. Read once; "-" when there is none."""
+
+    if not _CARD_VERSION:
+        version = "-"
+        try:
+            for line in Path(os.environ.get("CITY_CARD", "")).read_text(encoding="utf-8").splitlines():
+                if line.startswith("version:"):
+                    version = re.sub(r"[^0-9A-Za-z.+-]", "", line.split(":", 1)[1])[:20] or "-"
+                    break
+        except OSError:
+            pass
+        _CARD_VERSION.append(version)
+    return f"build={_BUILD} card={_CARD_VERSION[0]}"
 # The Relay accepts a ledger reply and then the agent rejects the push, so the reply sits in
 # the case history and never opens a turn. Wait briefly and read it back from history.
 _PULL_TRIES = 24
@@ -115,6 +138,10 @@ async def main(need: Need, city: City) -> None:
     # custody.ack check waits ~5 s, and a slow remote history read made the turn miss it.
     text = (message.text or "").strip()
     _TURN_NEED.set((message.need_id or message.msg_id or "-")[:64])  # OPS-13
+    if not _STARTED:
+        # OPS-14: the first line of a build in the log is the earliest proof that it is serving.
+        _STARTED.append(True)
+        _event("build.start", role=role_of())
     if message.sender == LEDGER:
         # OPS-13 (BK-72): what the Ledger answered, and how late, was the missing fact.
         got = fields_of(text)

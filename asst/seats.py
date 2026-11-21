@@ -9,6 +9,7 @@ Run from asst/:
 Edit ONLY the files in brain/parts/ (one per role). brain/agent.py and <agent>/agent/agent.py
 are generated: never edit them by hand. The parts are joined in name order (00_, 10_, 20_ ...).
 """
+import hashlib
 import py_compile
 import re
 import shutil
@@ -28,6 +29,7 @@ SEATS = {  # folder: (card role, capability)
 }
 # The first two lines of every part are a label for humans; they are not part of the brain.
 _LABEL = ("# PART:", "# Non è un modulo a sé:")
+_BUILD_LINE = '_BUILD = "dev"\n'
 
 
 def build() -> str:
@@ -38,7 +40,18 @@ def build() -> str:
     for part in parts:
         lines = part.read_text(encoding="utf-8").splitlines(keepends=True)
         out += [line for line in lines if not line.startswith(_LABEL)]
-    return "".join(out)
+    source = "".join(out)
+    # OPS-14: the build id is the digest of the joined parts, written into the brain itself, so it
+    # travels inside the image with agent.py (not with the local card, which the CLI bumps).
+    if source.count(_BUILD_LINE) != 1:
+        sys.exit(f"brain/parts must hold exactly one line {_BUILD_LINE.strip()!r}")
+    build = "b-" + hashlib.sha256(source.encode("utf-8")).hexdigest()[:12]
+    return source.replace(_BUILD_LINE, f'_BUILD = "{build}"\n')
+
+
+def build_id() -> str:
+    """The id `seats.py --brain` stamps for the parts as they are now (`python seats.py --build-id`)."""
+    return re.search(r'^_BUILD = "(b-[0-9a-f]{12})"$', build(), re.M).group(1)
 
 
 def compiles(source: str) -> str | None:
@@ -93,6 +106,9 @@ def set_city_role(city_yaml: Path, role: str) -> None:
 
 
 def main(root: Path = HERE) -> None:
+    if "--build-id" in sys.argv:
+        print(build_id())
+        return
     if "--check" in sys.argv:
         check(root)
         return

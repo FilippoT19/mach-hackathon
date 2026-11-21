@@ -635,6 +635,113 @@ async def test_bk72(check) -> None:
     wipe()
 
 
+async def test_ops14(check) -> None:
+    """OPS-14: every decision line names the build that is running (stamped in the brain by
+    seats.py, so it travels with the image) and the version of the card inside the image."""
+    import logging
+    import os
+    import re as _re
+    import tempfile
+    bk, spec = brain._OUR_AGENTS["booking_centre"], brain._OUR_AGENTS["specialist"]
+    rx = "prescription_number-RX-14"
+    build = getattr(brain, "_BUILD", "")
+    sspec = importlib.util.spec_from_file_location("seats", HERE / "seats.py")
+    seats = importlib.util.module_from_spec(sspec)
+    sspec.loader.exec_module(seats)
+    want = getattr(seats, "build_id", lambda: "?")()
+    copies = [(HERE / f / "agent" / "agent.py").read_text(encoding="utf-8") for f in seats.SEATS]
+    check("OPS-14 id della build scritto nel brain da seats.py, uguale nelle 5 copie che vanno nell'immagine",
+          bool(_re.fullmatch(r"b-[0-9a-f]{12}", build)) and build == want
+          and all(f'_BUILD = "{build}"' in text for text in copies), (build, want))
+
+    lines: list[str] = []
+
+    class Grab(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+
+    class DeadCity(FakeCity):
+        async def say(self, to, text, *, status=None):
+            raise CapError("RELAY_DOWN", "relay down")
+
+    grab = Grab()
+    brain._LOG.addHandler(grab)
+    old_level = brain._LOG.level
+    brain._LOG.setLevel(logging.INFO)
+    old_env = {k: os.environ.get(k) for k in ("CITY_ROLE", "CITY_CARD")}
+    with tempfile.TemporaryDirectory() as tmp:
+        card = Path(tmp) / "card.yaml"
+        card.write_text("agent_id: agent:x\nversion: 9.9.9\nrole: booking_centre\n", encoding="utf-8")
+        os.environ["CITY_ROLE"] = "booking_centre"
+        os.environ["CITY_CARD"] = str(card)
+        getattr(brain, "_CARD_VERSION", []).clear()
+        getattr(brain, "_STARTED", []).clear()
+        tag = f"build={build} card=9.9.9"
+        try:
+            city = FakeCity(bk)
+            city.inbound = row(brain.LEDGER, bk, "refused hold slot_id=S-9 reason=no_capacity", 1)
+            for _ in range(2):
+                try:
+                    await brain.main(type("N", (), {"is_emergency": False})(), city)
+                except Exception:
+                    pass  # only the log lines matter here
+            got = next((l for l in lines if l.startswith("ledger.in")), "")
+            check("OPS-14 ledger.in: build e versione della card nell'immagine, con need_id",
+                  "need_id=N-1" in got and tag in got, lines)
+            starts = [l for l in lines if l.startswith("build.start")]
+            check("OPS-14 una riga build.start per processo (prima riga della build nei log)",
+                  len(starts) == 1 and tag in starts[0] and "role=booking_centre" in starts[0], starts)
+            card.write_text("agent_id: agent:x\nversion: 1.2.3\nrole: booking_centre\n", encoding="utf-8")
+            check("OPS-14 l'id della build non dipende dalla card: card diversa, stesso id",
+                  getattr(brain, "_BUILD", "") == build and tag in " ".join(l for l in lines if l.startswith("ledger.in")), "")
+
+            lines.clear()
+            brain._SENT.clear(); brain._HELD_FOR.clear()
+            brain._DESK_HOLDS[0] = True
+            case = [
+                row(CITIZEN, bk, f"need.request lang=it prescription_number={rx}", 0),
+                row(brain.LEDGER, bk, f"prescription prescription_number={rx} procedure=VIS-CARD priority=D state=issued", 1),
+                row(brain.LEDGER, bk, "agenda agenda_now=2026-11-02T07:00:00Z", 2),
+                row(brain.LEDGER, bk, "slots page=1/1\n" + "\n".join(
+                    f"slot_id=S-{i:02d} doctor_id=asst-niguarda-s1 facility={spec} procedure=VIS-CARD "
+                    f"at=2026-11-04T{8 + i:02d}:00:00Z day=wed free=1" for i in range(4)), 3),
+            ]
+            await brain._advance_alone(FakeCity(bk), case[3], case, "N-1", fixed=None, replacing=False)
+            win = next((l for l in lines if l.startswith("booking.window")), "")
+            check("OPS-14 booking.window: build e versione", "need_id=N-1" in win and tag in win, lines)
+
+            lines.clear()
+            offer = row(bk, CITIZEN, f"offer offer_id=of-S-00 slot_id=S-00 doctor_id=asst-niguarda-s1 facility={spec} "
+                        f"procedure=VIS-CARD agenda_date=2026-11-04T08:00:00Z priority=D prescription_number={rx}", 4)
+            confirm = row(CITIZEN, bk, "confirm offer_id=of-S-00 consent_ref=cons-N-1-booking", 5)
+            brain._SENT.clear(); brain._HELD_FOR.clear()
+            await brain._on_confirm(FakeCity(bk), confirm, [*case, offer, confirm], hold_self=False)
+            held = next((l for l in lines if l.startswith("booking.confirm") and "step=hold" in l), "")
+            check("OPS-14 booking.confirm: build e versione", "need_id=N-1" in held and tag in held, lines)
+
+            for dead, word in ((False, "ok=true"), (True, "ok=false")):
+                lines.clear()
+                token = brain._TURN_NEED.set("N-14")
+                try:
+                    await brain._say((DeadCity if dead else FakeCity)(bk), CITIZEN,
+                                     "booking.receipt booking_id=H-14 ledger_ref=L-14 La aspettiamo in Via Roma 1.")
+                finally:
+                    brain._TURN_NEED.reset(token)
+                out = next((l for l in lines if l.startswith("booking.receipt.sent")), "")
+                check(f"OPS-14 invio della ricevuta {word}: riga con need, booking_id, build; nessun testo del cittadino",
+                      "need_id=N-14" in out and word in out and "booking_id=H-14" in out and "to=citizen" in out
+                      and tag in out and "Via" not in out and CITIZEN not in out, lines)
+        finally:
+            brain._LOG.removeHandler(grab)
+            brain._LOG.setLevel(old_level)
+            for k, v in old_env.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+            getattr(brain, "_CARD_VERSION", []).clear()
+
+
 async def test_ops13(check) -> None:
     """OPS-13: one log line per decision, with need_id= in the text, no citizen text."""
     import logging
@@ -2163,6 +2270,7 @@ async def main() -> int:
     await test_bk62(check)
     await test_bk72(check)
     await test_ops13(check)
+    await test_ops14(check)
     await test_p_magesh_26(check)
     await test_bk63(check)
 

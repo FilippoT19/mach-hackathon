@@ -68,6 +68,29 @@ _EARLY_112: set[str] = set()  # GP-17: needs whose 112 left before the history r
 _RED_FLAGS_MORE = ("sanguinamento abbondante", "heavy bleeding", "non riesco a respirare", "can't breathe", "cannot breathe", "svenut", "fainted")
 _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
 _LOG = logging.getLogger("care")
+# OPS-14: which build took a decision. `seats.py --brain` replaces this line with the digest of the
+# joined parts, so the id is inside agent.py in the image and never comes from the local card
+# (the CLI bumps that after each release; card and `city status` have shown different versions).
+_BUILD = "b-07f5e60053de"
+_CARD_VERSION: list[str] = []
+_STARTED: list[bool] = []
+
+
+def _build_tag() -> str:
+    """``build=<id> card=<version>``: the card version is read from the card INSIDE the image
+    (``CITY_CARD``), the one the release was built with. Read once; "-" when there is none."""
+
+    if not _CARD_VERSION:
+        version = "-"
+        try:
+            for line in Path(os.environ.get("CITY_CARD", "")).read_text(encoding="utf-8").splitlines():
+                if line.startswith("version:"):
+                    version = re.sub(r"[^0-9A-Za-z.+-]", "", line.split(":", 1)[1])[:20] or "-"
+                    break
+        except OSError:
+            pass
+        _CARD_VERSION.append(version)
+    return f"build={_BUILD} card={_CARD_VERSION[0]}"
 # The Relay accepts a ledger reply and then the agent rejects the push, so the reply sits in
 # the case history and never opens a turn. Wait briefly and read it back from history.
 _PULL_TRIES = 24
@@ -113,6 +136,10 @@ async def main(need: Need, city: City) -> None:
     # custody.ack check waits ~5 s, and a slow remote history read made the turn miss it.
     text = (message.text or "").strip()
     _TURN_NEED.set((message.need_id or message.msg_id or "-")[:64])  # OPS-13
+    if not _STARTED:
+        # OPS-14: the first line of a build in the log is the earliest proof that it is serving.
+        _STARTED.append(True)
+        _event("build.start", role=role_of())
     if message.sender == LEDGER:
         # OPS-13 (BK-72): what the Ledger answered, and how late, was the missing fact.
         got = fields_of(text)
@@ -533,18 +560,23 @@ def _event(event: str, need_id: str | None = None, /, **fields: object) -> None:
     need = (need_id or _TURN_NEED.get())[:64]
     tail = " ".join(f"{k}={str(v)[:80]}" for k, v in fields.items() if v not in (None, ""))
     try:
-        _LOG.info(f"{event} need_id={need} {tail}".rstrip(), extra={"need_id": need})
+        _LOG.info(f"{event} need_id={need} {tail}".rstrip() + f" {_build_tag()}", extra={"need_id": need})  # OPS-14
     except Exception:  # a log line must never break a turn
         pass
 
 
 async def _say(city: City, to: str, text: str) -> bool:
+    receipt = first_word(text) == "booking.receipt"  # OPS-14: did the receipt leave, and from which build
     try:
         await city.say(to, text)
     except CapError as error:
         _event("say.fail", to=_kind(to), act=first_word(text)[:32], error=type(error).__name__,
                detail=str(error).replace("\n", " ")[:80])
+        if receipt:
+            _event("booking.receipt.sent", ok="false", to=_kind(to), booking_id=fields_of(text).get("booking_id"))
         return False
+    if receipt:
+        _event("booking.receipt.sent", ok="true", to=_kind(to), booking_id=fields_of(text).get("booking_id"))
     said = _SAID.get()
     if said is not None:
         said.add(to)
@@ -6516,7 +6548,7 @@ def _trace(step: str, message: Message, **fields: object) -> None:
     tail = " ".join(f"{k}={v}" for k, v in fields.items() if v not in (None, ""))
     try:
         _LOG.info(
-            f"booking.{step} need_id={need} {tail}".rstrip(),
+            f"booking.{step} need_id={need} {tail}".rstrip() + f" {_build_tag()}",  # OPS-14
             extra={"need_id": need, "msg_id": (message.msg_id or "")[:64]},
         )
     except Exception:  # a log line must never break a turn
