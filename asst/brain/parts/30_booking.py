@@ -564,6 +564,28 @@ _RX_DATE_KEYS = ("issued_at", "issued", "issue_date", "prescribed_at", "created_
 _RX_LIMIT_KEYS = ("valid_until", "expires_at", "expiry", "deadline", "due", "due_by")
 
 
+def _trace_window(
+    message: Message, now: datetime | None, priority: str | None, reply: dict[str, str] | None,
+    deadline: datetime | None, lines: list[str], fit: list[dict[str, str]], chosen: list[dict[str, str]],
+) -> None:
+    """BK-71 (N-...0002600005): 25 B of 25 reached the cross-ASST consent with no local offer and
+    the journeys do not show the Ledger. One line per search: agenda time, deadline and its source
+    (a Ledger field or the chat chronology), the names of the prescription fields (no values but
+    dates) and why the catalogue slots dropped. Diagnostic only: it changes no decision."""
+    reply = reply or {}
+    source = next((f"ledger:{k}" for k in (*_RX_LIMIT_KEYS, *_RX_DATE_KEYS) if _when(reply.get(k, ""))), "")
+    source = source or ("chrono" if deadline is not None else "none")
+    stamp = lambda t: t.strftime("%Y-%m-%dT%H:%M") if t is not None else "-"  # noqa: E731
+    times = sorted(t for t in (_when(fields_of(line).get("at", "")) for line in lines) if t is not None)
+    lead = (_LEAD if priority == "U" else _LEAD_BOOK)
+    early = sum(1 for t in times if now is not None and t <= now + lead)
+    late = sum(1 for t in times if deadline is not None and t > deadline)  # whole catalogue, not only `fit`
+    keys = ",".join(sorted(k for k in reply if k != "prescription_number"))
+    _trace("window", message, priority=priority, now=stamp(now), deadline=stamp(deadline), deadline_from=source,
+           rx_keys=keys or "-", catalog=len(lines), first=stamp(times[0] if times else None),
+           last=stamp(times[-1] if times else None), early=early, fit=len(fit), late=late, chosen=len(chosen))
+
+
 def _before_rx_deadline(slot: dict[str, str], reply: dict[str, str] | None, priority: str | None) -> bool:
     """BK-27: the priority window counts from the prescription, not from today. A slot after the
     citizen's deadline is refused (no_booking -1), so it is never offered."""
@@ -2038,22 +2060,24 @@ async def _advance_alone(
         # BK-63: new offers after a cancel come first from the pages already read (no Ledger round:
         # the verdict came five minutes after the cancels). The next page is asked only if none fits.
         lines = _all_slot_lines(chat, agent)
+    fit = fitting(
+        lines,
+        now=now,
+        priority=priority,
+        lang=_lang(chat),
+        gender=_gender(chat),
+        days=_days(chat),
+        facility=agent if fixed == "CONS-GIN" else None,
+        procedure=procedure,
+    )
     chosen = [
         slot
-        for slot in fitting(
-            lines,
-            now=now,
-            priority=priority,
-            lang=_lang(chat),
-            gender=_gender(chat),
-            days=_days(chat),
-            facility=agent if fixed == "CONS-GIN" else None,
-            procedure=procedure,
-        )
+        for slot in fit
         if slot.get("slot_id") not in taken and _before_rx_deadline(slot, reply, priority)
         and _within(slot.get("at", ""), deadline) and not _learned_out(slot, learned)
         and not _held_elsewhere(slot.get("slot_id", ""), key)  # BK-63
     ]
+    _trace_window(message, now, priority, reply, deadline, lines, fit, chosen)  # BK-71
     chosen = _best_tier(chosen, _days(chat), _gender(chat))  # BK-60
     _trace(
         "slots", message, procedure=procedure, priority=priority, lang=_lang(chat),
