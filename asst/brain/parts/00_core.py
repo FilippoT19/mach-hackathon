@@ -66,6 +66,7 @@ _DEADLINE_DAYS = {"B": 2, "D": 5}
 _EMERGENCY_NEEDS: set[str] = set()
 _EARLY_ACK: dict[str, "asyncio.Task[bool]"] = {}  # BK-61: msg_id -> cancel.ack sent before the history read
 _EARLY_LLM: dict[str, "asyncio.Task[str | None]"] = {}  # OPS-09: msg_id -> symptom check started early
+_EARLY_112: set[str] = set()  # GP-17: needs whose 112 left before the history read
 _RED_FLAGS_MORE = ("sanguinamento abbondante", "heavy bleeding", "non riesco a respirare", "can't breathe", "cannot breathe", "svenut", "fainted")
 _RX = re.compile(r"^prescription_number-[A-Z0-9-]{4,40}$")
 _LOG = logging.getLogger("care")
@@ -117,6 +118,20 @@ async def main(need: Need, city: City) -> None:
             and "=" not in text and text != "__error__"):
         _LOG.info("ops08.skip sender=%s", message.sender[:40])
         return
+    # GP-17 (wave W01QQQ, L1): "forte dolore al petto" got the 112 after 278 s or never: the
+    # turn waited for the history read (minutes under load) and the Index. The judge counts only
+    # `escalate.emergency` (emergency.no_escalation -2). A red flag in the citizen's own text
+    # needs nothing else: the 112 leaves now, once per need; the turn then adds the rest.
+    if message.sender.startswith("citizen:") and text and first_word(text) != "data.response" and _emergency(message):
+        key = message.need_id or message.msg_id
+        if key not in _EARLY_112:
+            if len(_EARLY_112) > 4 * _SENT_NEEDS:
+                _EARLY_112.clear()
+            _EARLY_112.add(key)
+            hospital = _OUR_AGENTS.get("hospital", "")
+            await _say(city, message.sender, _escalate_text(
+                message, _lang([message]) != "it",
+                told=None if not hospital or hospital == city.agent_id else False))
     # OPS-09: the GP's symptom check (city.llm, up to 4 s) needs only the citizen's text, so it
     # runs while the case history is read instead of after it. _gp() takes the result.
     early = None
@@ -132,7 +147,9 @@ async def main(need: Need, city: City) -> None:
             fields_of(message.text).get("offer_id", ""), _lang([message]) != "it")))
         _EARLY_ACK[message.msg_id] = early_ack
     try:
+        _remember_ledger([message], city.agent_id)  # BK-67: a Ledger push is kept before anything else
         case = await city.history(need_id=message.need_id)
+        _remember_ledger(case, city.agent_id)
         await handle(role_of(), city, message, case)
     finally:
         if early is not None and _EARLY_LLM.pop(message.msg_id, None) is not None:

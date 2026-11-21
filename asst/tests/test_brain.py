@@ -16,6 +16,7 @@ spec = importlib.util.spec_from_file_location("brain", HERE / "brain" / "agent.p
 brain = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(brain)
 brain._PULL_TRIES = 1  # no waiting in tests
+brain._MEMORY_ON = False  # BK-67: the shared Ledger memory is on only inside test_bk67
 CITIZEN = "citizen:c-1"
 
 
@@ -476,6 +477,19 @@ async def test_p17_never_silent(check) -> None:
         brain._desk_route, brain._EARLY_STATUS = real, early
 
 
+async def test_bk66(check) -> None:
+    """BK-66 (0002120005): two questions, "Which consent_ref?", then the request again in plain words."""
+    bk = "agent:bk"
+    q = "consent purpose=cross_asst May I ask the ASST Giambellino for you?"
+    chat = [row(CITIZEN, bk, "need.request lang=ka prescription_number=prescription_number-RX-66", 1),
+            row(bk, CITIZEN, q, 2), row(bk, CITIZEN, q, 3), row(CITIZEN, bk, "Which consent_ref?", 4),
+            row(CITIZEN, bk, "Hello. My back hurts. need.request lang=ka prescription_number=prescription_number-RX-66", 5)]
+    check("BK-66 richiesta ripetuta dopo 'Which consent_ref?' non e' un rifiuto",
+          brain._cross_consent(chat, bk) == (None, ""), brain._cross_consent(chat, bk))
+    no = [*chat[:4], row(CITIZEN, bk, "no grazie", 5)]
+    check("BK-66 'no grazie' resta un rifiuto", brain._cross_consent(no, bk)[0] is False, brain._cross_consent(no, bk))
+
+
 async def test_bk59_fa20(check) -> None:
     """BK-59: agenda jump at a level change (deadline -> renewal, past -> read the agenda again).
     FA-21: a held line after the wait still gets its commit."""
@@ -821,7 +835,11 @@ async def main() -> int:
     await brain._desk(city, msg, [msg], hold_self=False, fixed=None)
     ack = to(city, GP)
     check("X-27 booking risponde al gp", len(ack) == 1 and ack[0].startswith("referral.ack ") and "prescription_number=prescription_number-RX-1" in ack[0], city.sent)
-    check("X-27 booking non scrive al cittadino né al Ledger", all(r == GP for r, _ in city.sent), city.sent)
+    # BK-67: at the referral the booking also asks the Ledger for agenda and catalogue (refresh),
+    # after the ack and never to the citizen.
+    check("X-27 booking non scrive al cittadino; al Ledger solo il rinfresco BK-67, dopo l'ack",
+          city.sent[0][0] == GP and all(r in (GP, LEDGER) for r, _ in city.sent)
+          and all(t == "agenda" or t.startswith("world procedure=VIS-FIS page=") for t in to(city, LEDGER)), city.sent)
     done = [msg, Message(type="chat", sender=BK, msg_id="r2", need_id="N-1", body={"text": ack[0] if ack else ""}, recipient=GP)]
     city = FakeCity(BK)
     await brain._desk(city, msg, done, hold_self=False, fixed=None)
@@ -1219,8 +1237,14 @@ async def main() -> int:
             reply = row(LEDGER, booking, page, 7)
             await desk_turn(city, reply, [*chat, original, cancel, reply])
             offers = [t for t in to(city, CITIZEN)[1:] if t.startswith("offer ")]
-            expected = "slot_id=S-PAGE-2" if available else "offer_id=wl-N-1 waiting_list=true"
-            check(f"P-francesco-14 pagina 2: {expected}", bool(offers) and expected in offers[-1], city.sent)
+            if available:
+                check("P-francesco-14 pagina 2: slot_id=S-PAGE-2", bool(offers) and "slot_id=S-PAGE-2" in offers[-1], city.sent)
+            else:
+                # BK-68: nothing local is left. The other ASSTs come before the waiting list (the answer
+                # set is the whole city): the citizen is asked for the cross-ASST consent, once.
+                asked = [t for t in to(city, CITIZEN) if t.startswith("consent ") and "purpose=cross_asst" in t]
+                check("P-francesco-14 pagina 2 vuota: consenso cross_asst prima della lista d'attesa (BK-68)",
+                      len(asked) == 1 and not any("waiting_list=true" in t for t in to(city, CITIZEN)), city.sent)
 
         class PageCity(FakeCity):
             async def history(self, peer=None, *, need_id=None):
@@ -1751,6 +1775,276 @@ async def main() -> int:
 
     await test_bk62(check)
     await test_bk63(check)
+
+    async def test_bk67(check):
+        """BK-67: agenda and catalogue of the Ledger are kept in process memory, shared by the cases."""
+        import time as _t
+        bk = brain._OUR_AGENTS["booking_centre"]
+
+        def slot(sid, doc, at, day, fac=hospital, proc="VIS-FIS"):
+            return f"slot_id={sid} doctor_id=asst-niguarda-{doc} facility={fac} procedure={proc} at={at} day={day} free=1"
+
+        def wipe():
+            brain._SENT.clear(); brain._HELD_FOR.clear(); brain._WORLD.clear(); brain._AGENDA_ROW.clear()
+            brain._ASKED_AT.clear(); brain._PARTNER_DONE.clear()
+
+        # (1) memory and harvest
+        brain._MEMORY_ON = True
+        wipe()
+        fis1 = row(LEDGER, bk, "slots page=1/2\n" + slot("A1", "h1", "2026-11-03T10:00:00Z", "tue"), 1)
+        fis2 = row(LEDGER, bk, "slots page=2/2\n" + slot("B1", "h2", "2026-11-04T10:00:00Z", "wed"), 2)
+        card = row(LEDGER, bk, "slots page=1/1\n" + slot("C1", "s1", "2026-11-04T10:00:00Z", "wed", proc="VIS-CARD"), 3)
+        ag = row(LEDGER, bk, "agenda agenda_now=2026-11-02T07:00:00Z", 4)
+        empty = row(LEDGER, bk, "slots page=1/1", 5)
+        fake = row("agent:impostore", bk, "slots page=1/1\n" + slot("X1", "h1", "2026-11-03T10:00:00Z", "tue"), 6)
+        other_to = row(LEDGER, "agent:altro", "slots page=3/3\n" + slot("Y1", "h1", "2026-11-03T10:00:00Z", "tue"), 7)
+        brain._remember_ledger([fis1, fis2, card, ag, empty, fake, other_to], bk)
+        got = brain._memory_rows("VIS-FIS")
+        check("BK-67 memoria: agenda + pagine VIS-FIS in ordine", [r.msg_id for r in got] == ["h4", "h1", "h2"], got)
+        check("BK-67 memoria: mai righe di un'altra procedura", all("VIS-CARD" not in r.text for r in got), got)
+        check("BK-67 memoria: impostore e destinatario diverso ignorati", "X1" not in str(got) and "Y1" not in str(got), got)
+        check("BK-67 memoria: catalogo vecchio di 31 minuti non usato",
+              [r.msg_id for r in brain._memory_rows("VIS-FIS", at=_t.time() + 31 * 60)] == ["h4"], "")
+        check("BK-67 memoria: agenda vecchia di 46 minuti non usata",
+              brain._memory_rows("VIS-FIS", at=_t.time() + 46 * 60) == [], "")
+
+        # (2) the second citizen of the same procedure: offers at once, no world/agenda question
+        wipe()
+        p1 = "slots page=1/2\n" + "\n".join(slot(f"A{i}", "h1", f"2026-11-03T1{i}:00:00Z", "tue") for i in range(3))
+        p2 = "slots page=2/2\n" + "\n".join([slot("B1", "h2", "2026-11-04T10:00:00Z", "wed"), slot("B2", "h2", "2026-11-05T10:00:00Z", "thu")])
+        warm = [row(LEDGER, bk, "agenda agenda_now=2026-11-02T07:00:00Z", 90), row(LEDGER, bk, p1, 91), row(LEDGER, bk, p2, 92)]
+        brain._remember_ledger(warm, bk)
+        ref = row(brain._OUR_AGENTS["gp"], bk, f"referral prescription_number={rx_number} procedure=VIS-FIS priority=D", 0)
+        ask = row(CITIZEN, bk, f"Vorrei una visita need.request lang=it prescription_number={rx_number} service_type=hospital.physiatry", 1)
+        city = FakeCity(bk)
+        await desk_turn(city, ask, [ref, ask])
+        offers = [t for t in to(city, CITIZEN) if t.startswith("offer ")]
+        check("BK-67 memoria calda: UN messaggio di offerte nello stesso turno", len(offers) == 1, city.sent)
+        check("BK-67 memoria calda: al Ledger parte solo il rinfresco, dopo le offerte non si aspetta niente",
+              all(t == "agenda" or t.startswith("world procedure=VIS-FIS page=") for t in to(city, LEDGER))
+              and not any(t.startswith("status") for t in to(city, CITIZEN)), city.sent)
+        check("BK-67 offerte su almeno due giorni e due medici",
+              len(offers) == 1 and "agenda_day=tue" in offers[0] and ("agenda_day=wed" in offers[0] or "agenda_day=thu" in offers[0])
+              and "h1" in offers[0] and "h2" in offers[0], offers)
+        # empty memory: today's behaviour
+        wipe()
+        city = FakeCity(bk)
+        await desk_turn(city, ask, [ask])
+        check("BK-67 memoria vuota: domande al Ledger come prima",
+              "world procedure=VIS-FIS page=1" in to(city, LEDGER) and "agenda" in to(city, LEDGER), to(city, LEDGER))
+        # harvest from the history of a case
+        wipe()
+
+        class Hist(FakeCity):
+            async def history(self, peer=None, *, need_id=None):
+                return [row(LEDGER, bk, p1, 91)]
+        await brain._until(Hist(bk), "N-1", [], lambda rows: True)
+        check("BK-67 raccolta: la storia riletta riempie la memoria", 1 in brain._WORLD.get("VIS-FIS", {}), brain._WORLD)
+
+        # (3) refresh at the referral, warm-up from the Ledger history of every case
+        wipe()
+        city = FakeCity(bk)
+        await brain._on_referral(city, ref, [ref])
+        asks = to(city, LEDGER)
+        check("BK-67 referral: parte il rinfresco di agenda e 4 pagine",
+              "agenda" in asks and all(f"world procedure=VIS-FIS page={n}" in asks for n in (1, 2, 3, 4)), asks)
+        check("BK-67 referral: l'ack al gp parte comunque",
+              any(t.startswith("referral.ack") for t in to(city, brain._OUR_AGENTS["gp"])), city.sent)
+        city2 = FakeCity(bk)
+        await brain._refresh_memory(city2, ref, "VIS-FIS")
+        check("BK-67 rinfresco: non si ripete entro 120 secondi", to(city2, LEDGER) == [], to(city2, LEDGER))
+        wipe()
+        said: set[str] = set()
+        token = brain._SAID.set(said)
+        try:
+            city2 = FakeCity(bk)
+            await brain._refresh_memory(city2, ask, "VIS-FIS")
+        finally:
+            brain._SAID.reset(token)
+        check("BK-67 rinfresco: scrive al Ledger ma il turno non risulta 'già parlato' (BK-33)",
+              len(to(city2, LEDGER)) == 5 and LEDGER not in said, (city2.sent, said))
+        wipe()
+
+        class All(FakeCity):
+            async def history(self, peer=None, *, need_id=None):
+                return list(warm) if peer == LEDGER and need_id is None else []
+        city = All(bk)
+        await desk_turn(city, ask, [ref, ask])
+        check("BK-67 memoria fredda: offerte dalla storia del Ledger di tutti i casi",
+              len([t for t in to(city, CITIZEN) if t.startswith("offer ")]) == 1, city.sent)
+        wipe()
+
+        class Slow(FakeCity):
+            async def history(self, peer=None, *, need_id=None):
+                if peer == LEDGER and need_id is None:
+                    await asyncio.sleep(30)
+                return []
+        brain._WARM_SECONDS, keep = 0.05, brain._WARM_SECONDS
+        city = Slow(bk)
+        started = _t.monotonic()
+        await brain._warm_memory(city)
+        brain._WARM_SECONDS = keep
+        check("BK-67 memoria fredda: una storia lenta non ferma il turno", _t.monotonic() - started < 2, _t.monotonic() - started)
+
+        # (3b) MACH-1.3 R1: our facility answers a partner's need.request from memory, in the same turn
+        wipe()
+        brain._remember_ledger([row(LEDGER, hospital, "agenda agenda_now=2026-11-02T07:00:00Z", 90), row(LEDGER, hospital, p2.replace("page=2/2", "page=1/1"), 92)], hospital)
+        req = row("agent:partner-bk", hospital, "need.request mach=1.3 service_type=hospital.physiatry procedure=VIS-FIS priority=D "
+                  "deadline=2026-11-06T18:00:00Z lease_s=480 request_id=ring-N-77", 1)
+        city = FakeCity(hospital)
+        await brain._partner_request(city, req, [req])
+        out = to(city, "agent:partner-bk")
+        check("BK-67 struttura: offerta al partner dalla memoria, nello stesso turno",
+              len(out) == 1 and out[0].startswith("offer ") and "request_id=ring-N-77" in out[0] and "slot_id=B1" in out[0], city.sent)
+        wipe()
+        city = FakeCity(hospital)
+        await brain._partner_request(city, req, [req])
+        # (4) the "offers already sent" status repeats the open offer lines (351, 310, 266: the
+        # citizen answered "Which offer_id, slot_id?" to a status that named none)
+        offer = "\n".join(f"offer offer_id=of-A{i} slot_id=A{i} doctor_id=asst-niguarda-h1 facility={hospital} procedure=VIS-FIS "
+                          f"agenda_date=2026-11-03T1{i}:00:00Z agenda_day=tue" for i in range(3)) + "\nEcco i posti liberi."
+        hist = [ask, row(bk, CITIZEN, offer, 5), row(CITIZEN, bk, "cancel offer_id=of-A0 reason=day", 6)]
+        again = row(CITIZEN, bk, "Allora? Mi fate sapere?", 7)
+        city4 = FakeCity(bk)
+        await brain._still_here(city4, again, [*hist, again], fixed=None)
+        out4 = to(city4, CITIZEN)
+        check("BK-67 status con offerte aperte: ripete le righe offer ancora aperte",
+              len(out4) == 1 and out4[0].startswith("offer ") and "offer_id=of-A1" in out4[0] and "slot_id=A1" in out4[0]
+              and "offer_id=of-A2" in out4[0], out4)
+        check("BK-67 status con offerte aperte: non ripete l'offerta annullata", out4 and "of-A0" not in out4[0], out4)
+        check("BK-67 status con offerte aperte: resta sotto 2000 caratteri", out4 and len(out4[0]) <= 2000, out4)
+        city4 = FakeCity(bk)
+        await brain._still_here(city4, ask, [ask, row(bk, CITIZEN, offer, 5)], fixed=None)
+        check("BK-67 status: offerte partite DOPO il messaggio del cittadino, nessuna copia", to(city4, CITIZEN) == [], city4.sent)
+        # (5) findings of the branch review
+        wipe()  # only page 3 in memory (1-2 still in flight): not used, the search asks the Ledger
+        brain._remember_ledger([row(LEDGER, bk, "agenda agenda_now=2026-11-02T07:00:00Z", 90),
+                                row(LEDGER, bk, "slots page=3/3\n" + slot("Z1", "h2", "2026-11-11T10:00:00Z", "wed"), 93)], bk)
+        check("BK-67 revisione: pagine non contigue da 1 non sono usate",
+              [r.msg_id for r in brain._memory_rows("VIS-FIS")] == ["h90"], brain._memory_rows("VIS-FIS"))
+        wipe()  # the case has page 3 of its own: memory pages 1-2 still count
+        brain._remember_ledger(warm, bk)
+        own = row(LEDGER, bk, "slots page=3/3\n" + slot("Z1", "h2", "2026-11-11T10:00:00Z", "wed"), 50)
+        merged = brain._with_memory([ask, own], "VIS-FIS")
+        check("BK-67 revisione: le pagine in memoria restano anche se il caso ha una pagina sua",
+              {"h91", "h92", "h50"} <= {r.msg_id for r in merged}, [r.msg_id for r in merged])
+        wipe()  # a remembered agenda, read 30 minutes before the case began, does not shrink the window
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        t0 = _dt.now(_tz.utc)
+        iso_ = lambda t: t.isoformat().replace("+00:00", "Z")
+        old_ag = Message(type="chat", sender=LEDGER, msg_id="ag-old", need_id="N-0", recipient=bk,
+                         body={"text": "agenda agenda_now=2026-11-02T07:00:00Z"}, sent_at=iso_(t0 - _td(minutes=30)))
+        first = Message(type="chat", sender=CITIZEN, msg_id="c1", need_id="N-1", recipient=bk,
+                        body={"text": f"need.request prescription_number={rx_number}"}, sent_at=iso_(t0))
+        limit = brain._rx_deadline([first, old_ag], None, "B", rx_number)
+        want = _dt(2026, 11, 2, 7, tzinfo=_tz.utc) + _td(hours=30) + _td(days=2) - _td(minutes=30)
+        check("BK-67 revisione: agenda letta 30 minuti prima del caso, finestra B intera (48 ore dal caso)",
+              limit is not None and abs((limit - want).total_seconds()) < 5, (limit, want))
+        wipe()  # the refresh does not feed itself: one refresh per answer from memory
+        brain._remember_ledger(warm, bk)
+        city5 = FakeCity(bk)
+        await desk_turn(city5, ask, [ref, ask])
+        brain._ASKED_AT.clear()
+        push = row(LEDGER, bk, p1, 77)
+        before = len(to(city5, LEDGER))
+        await desk_turn(city5, push, [ref, ask, row(bk, CITIZEN, [t for t in to(city5, CITIZEN) if t.startswith("offer ")][0], 60), push])
+        check("BK-67 revisione: una spinta del Ledger non fa ripartire il rinfresco", len(to(city5, LEDGER)) == before, to(city5, LEDGER)[before:])
+        wipe()  # BK-45 still stops: pages after the deadline are not all read
+        pg1 = "slots page=1/8\n" + slot("F0", "h1", "2026-11-03T10:00:00Z", "tue").replace("free=1", "free=0")
+        pg2 = "slots page=2/8\n" + slot("L1", "h2", "2026-11-12T10:00:00Z", "thu")
+        case = [row(CITIZEN, bk, f"need.request lang=it prescription_number={rx_number}", 0),
+                row(LEDGER, bk, f"prescription prescription_number={rx_number} procedure=VIS-FIS priority=B state=issued issued_at=2026-11-02T07:00:00Z", 1),
+                row(LEDGER, bk, "agenda agenda_now=2026-11-02T07:00:00Z", 2), row(LEDGER, bk, pg1, 3),
+                row(bk, LEDGER, "world procedure=VIS-FIS page=2", 4), row(LEDGER, bk, pg2, 5)]
+        city5 = FakeCity(bk)
+        await brain._advance_alone(city5, case[5], case, "N-1", fixed=None, replacing=False)
+        check("BK-67 revisione: pagina intera oltre la scadenza, non si chiede la pagina 3 (BK-45)",
+              "world procedure=VIS-FIS page=3" not in to(city5, LEDGER), city5.sent)
+        wipe()
+        check("BK-67 struttura: memoria vuota, domande al Ledger come prima",
+              "agenda" in to(city, LEDGER) and any(t.startswith("world procedure=VIS-FIS") for t in to(city, LEDGER)), city.sent)
+        wipe()
+        brain._MEMORY_ON = False
+
+    await test_bk67(check)
+
+    async def test_bk68(check):
+        """BK-68: the agenda has no Saturday or Sunday (e19: a week of the race lasts 120 real minutes)."""
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        bk = brain._OUR_AGENTS["booking_centre"]
+        U = _tz.utc
+
+        def slot(sid, doc, at, day, fac=hospital, proc="VIS-FIS"):
+            return f"slot_id={sid} doctor_id=asst-niguarda-{doc} facility={fac} procedure={proc} at={at} day={day} free=1"
+
+        fri16 = _dt(2026, 12, 4, 16, tzinfo=U)  # a Friday
+        check("BK-68 venerdì 16:00 + 2 giorni di agenda = martedì 16:00", brain._agenda_add(fri16, _td(days=2)) == _dt(2026, 12, 8, 16, tzinfo=U), brain._agenda_add(fri16, _td(days=2)))
+        check("BK-68 lunedì 10:00 + 5 giorni = lunedì dopo 10:00",
+              brain._agenda_add(_dt(2026, 12, 7, 10, tzinfo=U), _td(days=5)) == _dt(2026, 12, 14, 10, tzinfo=U), "")
+        check("BK-68 lunedì 02:00 - 4 ore = venerdì 22:00",
+              brain._agenda_add(_dt(2026, 12, 7, 2, tzinfo=U), -_td(hours=4)) == _dt(2026, 12, 4, 22, tzinfo=U), "")
+        check("BK-68 un orario di sabato vale lunedì 00:00",
+              brain._agenda_add(_dt(2026, 12, 5, 12, tzinfo=U), _td(hours=1)) == _dt(2026, 12, 7, 1, tzinfo=U), "")
+        check("BK-68 mercoledì + 3 ore resta mercoledì",
+              brain._agenda_add(_dt(2026, 12, 2, 9, tzinfo=U), _td(hours=3)) == _dt(2026, 12, 2, 12, tzinfo=U), "")
+        rep = {"issued_at": "2026-12-04T16:00:00Z"}
+        check("BK-68 ricetta B di venerdì: lunedì e martedì mattina sono nei tempi",
+              brain._before_rx_deadline({"at": "2026-12-07T10:30:00Z"}, rep, "B")
+              and brain._before_rx_deadline({"at": "2026-12-08T10:30:00Z"}, rep, "B")
+              and not brain._before_rx_deadline({"at": "2026-12-08T16:30:00Z"}, rep, "B"), "")
+        check("BK-68 scadenza B di venerdì 16:00 = martedì 16:00",
+              brain._rx_deadline([], rep, "B", rx_number) == _dt(2026, 12, 8, 16, tzinfo=U), brain._rx_deadline([], rep, "B", rx_number))
+        iso_ = lambda t: t.isoformat().replace("+00:00", "Z")
+        t0 = _dt.now(U)
+        ag = Message(type="chat", sender=LEDGER, msg_id="ag", need_id="N-1", recipient=bk,
+                     body={"text": "agenda agenda_now=2026-12-04T22:00:00Z"}, sent_at=iso_(t0 - _td(minutes=4)))
+        turn = Message(type="chat", sender=CITIZEN, msg_id="c1", need_id="N-1", recipient=bk, body={"text": "ciao"}, sent_at=iso_(t0))
+        got = brain._agenda_now([ag], turn)
+        check("BK-68 agenda letta venerdì 22:00, 4 minuti reali dopo è lunedì 02:00 (non sabato)",
+              got is not None and abs((got - _dt(2026, 12, 7, 2, tzinfo=U)).total_seconds()) < 120, got)
+        # the journeys of 05:15Z: B prescribed on Friday afternoon, the citizen reaches us on Monday 00:10
+        brain._SENT.clear(); brain._HELD_FOR.clear()
+        p1 = "slots page=1/1\n" + "\n".join([slot("M1", "h1", "2026-12-07T10:30:00Z", "mon"), slot("T1", "h1", "2026-12-08T10:30:00Z", "tue")])
+        chat = [row(CITIZEN, bk, f"need.request lang=it prescription_number={rx_number}", 0),
+                row(LEDGER, bk, f"prescription prescription_number={rx_number} procedure=VIS-FIS priority=B state=issued issued_at=2026-12-04T16:00:00Z", 1),
+                row(LEDGER, bk, "agenda agenda_now=2026-12-07T00:10:00Z", 2), row(LEDGER, bk, p1, 3)]
+        city = FakeCity(bk)
+        await brain._advance_alone(city, chat[0], chat, "N-1", fixed=None, replacing=False)
+        out = to(city, CITIZEN)
+        check("BK-68 ricetta B di venerdì, lunedì mattina: offerte di lunedì e martedì, non lista d'attesa",
+              len(out) == 1 and "slot_id=M1" in out[0] and "slot_id=T1" in out[0] and "waiting_list" not in out[0], city.sent)
+        # a partner's deadline without a time zone (MACH-1.3 examples) is read, not ignored
+        brain._PARTNER_DONE.clear()
+        hchat = [row(LEDGER, hospital, "agenda agenda_now=2026-12-07T00:10:00Z", 1), row(LEDGER, hospital, p1, 2)]
+        req = row("agent:partner-bk", hospital, "need.request mach=1.3 procedure=VIS-FIS priority=D after=2026-12-07T06:00 "
+                  "deadline=2026-12-07T18:00 request_id=ring-N-78", 3)
+        city = FakeCity(hospital)
+        await brain._partner_request(city, req, [*hchat, req])
+        out = to(city, "agent:partner-bk")
+        check("BK-68 struttura: deadline= senza fuso orario rispettato (solo lo slot di lunedì)",
+              len(out) == 1 and "slot_id=M1" in out[0] and "slot_id=T1" not in out[0], city.sent)
+        brain._PARTNER_DONE.clear()
+        # a catalogue page that never arrives: the other ASSTs before the waiting list, and no dead end
+        brain._SENT.clear()
+        far = "slots page=1/3\n" + slot("X9", "h1", "2026-12-21T10:30:00Z", "mon")
+        chat = [row(CITIZEN, bk, f"need.request lang=it prescription_number={rx_number}", 0),
+                row(LEDGER, bk, f"prescription prescription_number={rx_number} procedure=VIS-FIS priority=B state=issued issued_at=2026-12-04T16:00:00Z", 1),
+                row(LEDGER, bk, "agenda agenda_now=2026-12-07T00:10:00Z", 2), row(LEDGER, bk, far, 3)]
+        city = FakeCity(bk)
+        await desk_turn(city, chat[0], chat)
+        out = to(city, CITIZEN)
+        check("BK-68 pagina mai arrivata: domanda di consenso cross_asst, non lista d'attesa",
+              any(t.startswith("consent ") and "purpose=cross_asst" in t for t in out) and not any("waiting_list=true" in t for t in out), city.sent)
+        yes = row(CITIZEN, bk, "Sì, va bene. consent consent_ref=cons-1 purpose=cross_asst", 9)
+        asked = row(bk, CITIZEN, next(t for t in out if t.startswith("consent ")), 8)
+        asks2 = [row(bk, LEDGER, t, 20 + i) for i, t in enumerate(to(city, LEDGER))]
+        city = FakeCity(bk)
+        await desk_turn(city, yes, [*chat, *asks2, asked, yes])
+        check("BK-68 dopo il sì, senza partner: lista d'attesa nello stesso turno (nessun vicolo cieco)",
+              any("waiting_list=true" in t for t in to(city, CITIZEN)), city.sent)
+        brain._SENT.clear()
+
+    await test_bk68(check)
     await test_francesco_15(check)
     await test_francesco_16(check)
     await test_francesco_18(check)
@@ -1763,6 +2057,70 @@ async def main() -> int:
     await test_x49(check)
     await test_p17_never_silent(check)
     await test_bk59_fa20(check)
+    await test_bk66(check)
+
+    async def test_gp17(check):
+        """GP-17 (wave W01QQQ, L1): 'forte dolore al petto' got the 112 after 278 s or never
+        (emergency.no_escalation -2 on 8 of 12). The 112 leaves before the history read."""
+        import os
+        HO17 = "agent:jdj692g4145e"
+
+        class SlowCity(FakeCity):
+            seen = None
+            async def history(self, peer=None, *, need_id=None):
+                await asyncio.sleep(0.01)
+                if self.seen is None:
+                    self.seen = [(r, t) for r, t in self.sent]
+                return []
+
+        old_role = os.environ.get("CITY_ROLE")
+        os.environ["CITY_ROLE"] = "gp"
+        brain._PEERS.clear()
+        brain._EARLY_112.clear()
+        try:
+            def msg(text, mid, need="N-17"):
+                return Message(type="chat", sender=CITIZEN, msg_id=mid, need_id=need, body={"text": text}, recipient="agent:gp")
+            city = SlowCity("agent:gp")
+            city.inbound = msg("Dottore, da stamattina ho un forte dolore al petto e sono in ansia.", "g17a")
+            await brain.main(type("N", (), {"is_emergency": False})(), city)
+            first = city.seen[0] if city.seen else ("", "")
+            check("GP-17 il 112 parte prima della lettura della storia",
+                  first[0] == CITIZEN and first[1].startswith("escalate.emergency reason=red_flag") and "112" in first[1], city.seen)
+            check("GP-17 il 112 nomina il pronto soccorso adatto al sintomo (cardiologia)",
+                  "cardiolog" in first[1].lower(), first)
+            esc = [t for t in to(city, CITIZEN) if t.startswith("escalate.emergency")]
+            check("GP-17 un solo 112 nel turno", len(esc) == 1, city.sent)
+            check("GP-17 dopo il 112 avviso al nostro ospedale", any(t.startswith("emergency.notice") for t in to(city, HO17)), city.sent)
+            check("GP-17 dopo il 112 chiede dove si trova", any(t.startswith("data.request purpose=emergency fields=address") for t in to(city, CITIZEN)), city.sent)
+            # the citizen sends the same content again (new envelope): no second 112
+            again = SlowCity("agent:gp")
+            again.inbound = msg("Dottore, da stamattina ho un forte dolore al petto e sono in ansia.", "g17b")
+            await brain.main(type("N", (), {"is_emergency": False})(), again)
+            check("GP-17 il secondo invio dello stesso need non ripete il 112",
+                  not any(t.startswith("escalate.emergency") for t in to(again, CITIZEN)), again.sent)
+            # no red flag: nothing leaves before the history read
+            calm = SlowCity("agent:gp")
+            calm.inbound = msg("Ho mal di schiena da due settimane", "g17c", need="N-17c")
+            await brain.main(type("N", (), {"is_emergency": False})(), calm)
+            check("GP-17 senza red flag niente prima della storia", calm.seen == [], calm.seen)
+            legs = SlowCity("agent:gp")
+            legs.inbound = msg("I can't feel my legs since this morning", "g17d", need="N-17d")
+            await brain.main(type("N", (), {"is_emergency": False})(), legs)
+            check("GP-17 gambe: 112 in inglese con neurologia",
+                  legs.seen and legs.seen[0][1].startswith("escalate.emergency") and "neurolog" in legs.seen[0][1].lower() and "Call 112" in legs.seen[0][1], legs.seen)
+            preg = SlowCity("agent:gp")
+            preg.inbound = msg("Sono incinta e ho perdite di sangue", "g17e", need="N-17e")
+            await brain.main(type("N", (), {"is_emergency": False})(), preg)
+            check("GP-17 gravidanza: 112 con ostetricia",
+                  preg.seen and "ostetric" in preg.seen[0][1].lower(), preg.seen)
+        finally:
+            brain._EARLY_112.clear()
+            if old_role is None:
+                os.environ.pop("CITY_ROLE", None)
+            else:
+                os.environ["CITY_ROLE"] = old_role
+
+    await test_gp17(check)
     print(f"\n{failures} test falliti" if failures else "\nTUTTI I TEST OK")
     return 1 if failures else 0
 
